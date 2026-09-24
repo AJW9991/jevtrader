@@ -340,9 +340,12 @@ class SignatureGateTest(unittest.TestCase):
         with open(self.protocol, "w") as fh:
             fh.write("# PROTOCOL\n\n## 5. Signature\n\n" + line + "\n")
 
-    def test_the_repo_as_committed_is_unsigned(self):
-        with mock.patch.object(config, "PROTOCOL", os.path.join(config.REPO, "PROTOCOL.md")):
-            self.assertFalse(jev.signed())
+    def test_the_real_protocol_has_exactly_one_parseable_signature_line(self):
+        # Was "the repo as committed is unsigned" until Alex signed on 2026-09-24. What must
+        # hold for good: the gate can find the line, so rewording PROTOCOL.md cannot turn
+        # the gate into a permanent "unsigned" (or, worse, match a second line).
+        with open(os.path.join(config.REPO, "PROTOCOL.md"), encoding="utf-8") as fh:
+            self.assertEqual(len(jev._SIG.findall(fh.read())), 1)
 
     def test_unsigned_forms_refuse_before_key_ledger_or_socket(self):
         for line in ("In force from: `____________`  Signed: `____________`",
