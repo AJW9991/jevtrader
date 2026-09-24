@@ -1,0 +1,38 @@
+{
+  "version": "v1",
+  "frozen": "2026-09-23",
+  "note": "The day-one wording. Its criteria restate the rule that defines arm C on purpose: arm A then measures how faithfully Jev follows a rule it is given (test-retest, agreement with rule_c, calibration). Arm B is what the night shift makes of this same text. Only the `action` question is ever rewritten; skip/up15/down15 are carried unchanged into every later version. Wording is original; the shape (one choice with three criteria, one veto noul) follows the public article this project measures.",
+  "action": {
+    "type": "choice",
+    "instructions": "Decide whether to be long SOL for the next fifteen minutes. Buy on strength only when the book can absorb the order; get flat when the move fades or the market turns violent.",
+    "criteria": {
+      "buy": "the trend is pumping, volatility is not violent, and liquidity is not thin",
+      "sell": "the trend is dumping, or volatility is violent",
+      "hold": "anything else: keep whatever position is already on"
+    }
+  },
+  "skip": {
+    "type": "noul",
+    "instructions": "Conditions are too hostile to trade at all this cycle.",
+    "criteria": {
+      "yes": "liquidity is thin and volatility is violent, or the flow is a bot war on a thin book",
+      "no": "the market is orderly enough that a small order would fill near the quote"
+    }
+  },
+  "up15": {
+    "type": "noul",
+    "instructions": "The mid price will be higher fifteen minutes from now.",
+    "criteria": {
+      "yes": "the trend and flow point to the price rising over the next quarter hour",
+      "no": "the price is more likely to be flat or lower"
+    }
+  },
+  "down15": {
+    "type": "noul",
+    "instructions": "The mid price will be lower fifteen minutes from now.",
+    "criteria": {
+      "yes": "the trend and flow point to the price falling over the next quarter hour",
+      "no": "the price is more likely to be flat or higher"
+    }
+  }
+}
