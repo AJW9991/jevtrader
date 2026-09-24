@@ -404,4 +404,4 @@ tracked the `trend` word on the shakedown, with the word printed beside the
 statistic as a descriptive comparator; §1, §7 and §9 read H2 accordingly; §8.4
 names the health-only command for the day-14 look.
 
-T0 (first tick_id of day 1): `____________________`   Sealed by: `____________`   on: `____________`
+T0 (first tick_id of day 1): `20260925T214000Z`   Sealed by: `Alex Ward — approved in chat 2026-09-24 ("approved for all"), fields filled by Claude`   on: `2026-09-24T21:40:33Z`
