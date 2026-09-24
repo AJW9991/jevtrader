@@ -461,6 +461,19 @@ class CycleTest(unittest.TestCase):
         self.assertEqual((row["absence"], row["jev"]["error"], row["jev"]["key_path"]), ("jev", "no-key", None))
         self.assert_nothing_sent()
 
+    def test_sleep_to_boundary_resleeps_when_woken_early(self):
+        # 2026-09-24 attended run: time.sleep returned ~90 ms early twice in 181 ticks, so
+        # the next tick floored to the minute just done. The sleep must not return before
+        # the wall clock crosses the boundary, however early each wake is.
+        clock = [1000.0]                                       # 16 min 40 s: boundary at 1020
+        def fake_sleep(s):
+            clock[0] += max(0.0, s - 0.09)                     # every wake 90 ms early
+        with mock.patch("time.time", side_effect=lambda: clock[0]), \
+             mock.patch("time.sleep", side_effect=fake_sleep):
+            cycle._sleep_to_boundary()
+        self.assertGreaterEqual(clock[0], 1020.0)
+        self.assertEqual(int(clock[0]) // config.CADENCE_S, 17)
+
     def test_unsigned_protocol_observes_but_never_sends_or_bills(self):
         # The repo as committed: PROTOCOL.md unsigned. A live tick still records the feed,
         # the state and arm C -- observation is free and outlives sending -- but jev.ask

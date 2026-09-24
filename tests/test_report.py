@@ -20,7 +20,7 @@ horizon, and this fixture used to pin that); m 7..9 flat; m 10..19 down; m 22..2
 gap (past the log). Blocks (no --t0) are anchored at 10:00: k0 = m 0..14, k1 = m 15..29,
 k2 = m 30..41.
 """
-import contextlib, io, json, os, tempfile, unittest
+import contextlib, io, json, math, os, tempfile, unittest
 
 from loop import book, config, outcomes, report, rules, state
 
@@ -142,7 +142,11 @@ class Synthetic(unittest.TestCase):
     def test_sections_render_in_order(self):
         pos = [self.text.index(t) for t in report.TITLES]
         self.assertEqual(pos, sorted(pos))
-        self.assertEqual(len(report.TITLES), 6)
+        # 2026-09-24, decided by Alex: H2 moved to the direction probabilities (§6); the old
+        # arm-A confidence table stays as a descriptive §7, so there are seven sections, not six.
+        self.assertEqual(len(report.TITLES), 7)
+        self.assertTrue(report.TITLES[5].startswith("6. H2: "))
+        self.assertIn("rule-matching, not outcomes (descriptive)", report.TITLES[6])
         self.assertNotIn("p-value", self.text.lower())
         self.assertNotIn("p=", self.text)
         self.assertTrue(self.text.startswith("jev-paper-loop report: coinbase SOL-USD, cadence 60 s, horizon 900 s, log "))
@@ -306,6 +310,37 @@ class Synthetic(unittest.TestCase):
         self.assertIn("[0.50, 0.70)", text)
         self.assertIn("[0.99, 1.00]", text)
         self.assertRegex(text, r"\[0\.70, 0\.85\)\s+5\s+2\s+40\.0%")
+        # descriptive since 2026-09-24: beside P(correct), how often a.argmax IS rule_c per bin
+        # (m 7..9 hold = rule 3/3; m 22..26 A holds on 24, 25 against the rule's sell: 3/5; m 10..19 buy 9/9)
+        self.assertEqual([(b["rule"], b["p_rule"]) for b in c["bins"]], [(3, 1.0), (3, 3 / 5), (9, 1.0), (0, None)])
+        self.assertRegex(text, r"\[0\.70, 0\.85\)\s+5\s+2\s+40\.0%\s+60\.0%")
+        self.assertTrue(c["lines"][0].startswith("  not H2 (PREREG §5, 2026-09-24): "))
+
+    def test_h2_on_the_fixture(self):
+        # Blocks anchored at 10:00. k0's first live row is m 5 (gap), k1's is m 16 (m 15 is the
+        # jev absence), k2's is m 30 (gap): one unit, so r is undefined and the report says so.
+        h = report.h2(self.rows, self.outs)
+        a = 1e4 * math.log(100.0 / 101.0)                               # m 10..19 at 101 -> 100 at t+15
+        self.assertEqual((h["blocks"], h["dropped"]), (3, {"gap": 2}))
+        u = h["units"]
+        self.assertEqual([(p["tick"], p["lean"]) for p in u["pairs"]], [("20260923T101600Z", -0.1)])
+        self.assertAlmostEqual(u["pairs"][0]["ret"], a, places=9)
+        self.assertEqual((u["n"], u["r"], u["rho"], u["why"]), (1, None, None, "fewer than 2 pairs (n 1)"))
+        # every live tick with a pair: m 7..9 (lean -0.1, ret 0), m 10..12 (0.695, a), m 13, 14, 16..19
+        # (-0.1, a), m 22..26 (-0.1, 0) = 17; dropped as gaps: m 5, 6, 27..41 = 17
+        e = h["every"]
+        self.assertEqual((e["n"], h["dropped_every"]), (17, {"gap": 17}))
+        # r by hand, a factored out (r is sign(a) times a function of the leans alone):
+        # sxy/a = 3(0.695) + 6(-0.1) - 17 mx my/a, mx = 0.685/17, my/a = 9/17; syy/a^2 = 9 - 81/17
+        sxy = 3 * 0.695 - 0.6 - 0.685 * 9 / 17
+        sxx = 3 * 0.695 ** 2 + 14 * 0.01 - 0.685 ** 2 / 17
+        self.assertAlmostEqual(e["r"], -sxy / math.sqrt(sxx * (9 - 81 / 17)), places=12)
+        text = "\n".join(h["lines"])
+        self.assertIn("Pearson r(lean, ret_h_bps) over 1 units: undefined (fewer than 2 pairs (n 1))", text)
+        self.assertIn("3 blocks with a live row, dropped: gap 2, missing noul 0; 1 units", text)
+        self.assertIn("anchored at the log's first tick 20260923T100000Z; no --t0, so descriptive only", text)
+        self.assertIn("measured tails (>= 0.99 / < 0.15): units up15 0/0, down15 0/0; every tick up15 3/0, down15 0/0", text)
+        self.assertIn(report.TITLES[5] + "\n" + text + "\n", self.text)
 
     def test_bin_edges(self):
         self.assertEqual([report._bin(x) for x in (0.49, 0.5, 0.69, 0.7, 0.85, 0.99, 1.0)], [None, 0, 0, 1, 2, 3, 3])
@@ -330,6 +365,30 @@ class Synthetic(unittest.TestCase):
             with self.assertRaises(SystemExit) as cm:
                 report.main(["--log", self.log, "--since", "yesterday"])
         self.assertEqual(cm.exception.code, 2)
+
+    def test_health_only_is_sections_1_to_3_and_nothing_else(self):
+        # PREREG §8.4: the day-14 look reads report §1-§3 only. Without --health every run prints
+        # H1's and H2's headline numbers; --health neither computes nor prints sections 4-7.
+        code, out = _main(["--log", self.log, "--health"])
+        self.assertEqual(code, 0)
+        note = ("health only (--health, PREREG §8.4's day-14 look): sections 1-3; sections 4-7 are neither"
+                " computed nor printed\n")
+        self.assertEqual(out.splitlines()[1] + "\n", note)
+        cut = self.text.index("\n\n" + report.TITLES[3])
+        self.assertEqual(out.replace(note, "", 1), self.text[:cut] + "\n")   # sections 1-3 exactly as the full report
+        for t in report.TITLES[:3]:
+            self.assertIn(t, out)
+        for t in report.TITLES[3:]:
+            self.assertNotIn(t, out)
+        for word in ("H1 statistic", "H2 statistic", "Pearson", "Spearman", "Brier", "P(correct)", "pair B-C"):
+            self.assertIn(word, self.text)                              # the full report prints each of them ...
+            self.assertNotIn(word, out)                                 # ... and the blind look none
+        self.assertEqual(report.render(self.rows, self.bad, self.log, health_only=True), out)
+        with tempfile.TemporaryDirectory() as d:
+            code, out = _main(["--log", os.path.join(d, "none.jsonl"), "--health"])
+        self.assertEqual(code, 0)
+        self.assertIn("no log at", out)
+        self.assertNotIn(report.TITLES[5], out)
 
 
 class SampleAndSides(unittest.TestCase):
@@ -399,6 +458,222 @@ class SampleAndSides(unittest.TestCase):
         self.assertNotEqual(d2, 0.0)
 
 
+def _h2_row(m, mid, up, down, mode="live"):
+    """A live, answered row at minute m after 10:00 (m may pass 59) with the two direction
+    nouls set; up None drops the up15 noul (rules read it as 0.0, the report as missing)."""
+    x = _row(22)
+    x.update(tick_id=f"20260923T{10 + m // 60:02d}{m % 60:02d}00Z", ts_rx=f"2026-09-23T{10 + m // 60:02d}:{m % 60:02d}:00.100Z",
+             mid=mid, bid=mid - 0.01, ask=mid + 0.01, mode=mode, absence=None)
+    if mode == "dry":
+        x.update(answers=None, columns={"a": None, "b": None})
+        return x
+    x["answers"]["up15"] = {"type": "noul"} if up is None else {"type": "noul", "noul": up}
+    x["answers"]["down15"] = {"type": "noul", "noul": down}
+    x["columns"] = {"a": rules.for_arm(x["answers"], "a"), "b": rules.for_arm(x["answers"], "b")}
+    return x
+
+
+def _h2_log(rets, nouls, dry=(), missing=(), other=(0.995, 0.05)):
+    """Blocks of 15 minutes from 10:00, one more than len(rets); every row of block k has mid
+    M_k and M_{k+1} = M_k exp(rets[k] / 1e4), so every tick of block k has ret_h_bps = rets[k]
+    (the last block's t+h is past the log: gap). nouls: {minute: (up, down)}, else `other`."""
+    mids = [100.0]
+    for y in rets:
+        mids.append(mids[-1] * math.exp(y / 1e4))
+    return [_h2_row(m, mids[m // 15], *nouls.get(m, other), mode="dry" if m in dry else "live")
+            for m in range(15 * len(mids)) if m not in missing]
+
+
+class H2(unittest.TestCase):
+    """PREREG §5 (2026-09-24, decided by Alex): Pearson r between lean = up15 - down15 and
+    ret_h_bps on the first live row of each 900 s block, rho, Brier vs the base rate, tails.
+
+    The log: 90 minutes, six blocks, ret by block (-10, 0, 0, +10, 0, gap). Minute 15 is dry
+    and minute 30 is missing, so the first live rows are m 0, 16, 31, 45, 60, 75. Their nouls
+    (up, down): (0.3, 0.2), (0.4, 0.3), (0.5, 0.2), (0.6, 0.1), (missing, 0.4), default; every
+    other row is (0.995, 0.05), a tail on each side. 0.3 - 0.2 and 0.4 - 0.3 differ in binary
+    and are both 0.1 after the report's rounding, a tie."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.rows = _h2_log([-10, 0, 0, 10, 0], {0: (0.3, 0.2), 16: (0.4, 0.3), 31: (0.5, 0.2), 45: (0.6, 0.1),
+                                                60: (None, 0.4)}, dry={15}, missing={30})
+        cls.outs = outcomes.join(cls.rows)
+        cls.h = report.h2(cls.rows, cls.outs)
+
+    def test_pearson_and_spearman_by_hand(self):
+        # x = (1, 2, 3, 4), y = (1, 3, 2, 4): dx = dy up to order = (-1.5, -.5, .5, 1.5); sxy 4, sxx = syy = 5
+        self.assertAlmostEqual(report.pearson([1, 2, 3, 4], [1, 3, 2, 4]), 0.8, places=15)
+        self.assertAlmostEqual(report.spearman([1, 2, 3, 4], [1, 3, 2, 4]), 0.8, places=15)
+        # ties take the mean rank: (0.1, 0.1, 0.3, 0.5) -> (1.5, 1.5, 3, 4); (-10, 0, 0, 10) -> (1, 2.5, 2.5, 4)
+        self.assertEqual(report.ranks([0.1, 0.1, 0.3, 0.5]), [1.5, 1.5, 3.0, 4.0])
+        self.assertEqual(report.ranks([0.0, -10.0, 10.0, 0.0]), [2.5, 1.0, 4.0, 2.5])
+        # r: dx = (-.15, -.15, .05, .25), dy = (-10, 0, 0, 10): sxy 4, sxx .11, syy 200 -> 4 / sqrt(22)
+        self.assertAlmostEqual(report.pearson([0.1, 0.1, 0.3, 0.5], [-10, 0, 0, 10]), 4 / math.sqrt(22), places=12)
+        # rho: rank dx = (-1, -1, .5, 1.5), dy = (-1.5, 0, 0, 1.5): 3.75 / 4.5 = 5/6
+        self.assertAlmostEqual(report.spearman([0.1, 0.1, 0.3, 0.5], [-10, 0, 0, 10]), 5 / 6, places=12)
+
+    def test_units_are_the_first_live_row_of_each_block(self):
+        u = self.h["units"]
+        self.assertEqual([p["tick"][9:13] for p in u["pairs"]], ["1000", "1016", "1031", "1045"])
+        self.assertEqual([p["lean"] for p in u["pairs"]], [0.1, 0.1, 0.3, 0.5])
+        for p, y in zip(u["pairs"], (-10.0, 0.0, 0.0, 10.0)):
+            self.assertAlmostEqual(p["ret"], y, places=9)
+        self.assertEqual([p["label"] for p in u["pairs"]], ["down", "flat", "flat", "up"])
+        self.assertEqual((self.h["blocks"], self.h["dropped"]), (6, {"noul": 1, "gap": 1}))   # m 60, m 75
+        self.assertAlmostEqual(u["r"], 4 / math.sqrt(22), places=9)                      # the pair above, by hand
+        self.assertAlmostEqual(u["rho"], 5 / 6, places=12)
+        self.assertIsNone(u["why"])
+        text = "\n".join(self.h["lines"])
+        self.assertIn(f"H2 statistic (PREREG §5), Pearson r(lean, ret_h_bps) over 4 units: {4 / math.sqrt(22):.4f};"
+                      f" Spearman rho {5 / 6:.4f} (descriptive)", text)
+        self.assertIn("6 blocks with a live row, dropped: gap 1, missing noul 1; 4 units", text)
+
+    def test_every_tick_is_beside_the_statistic_not_it(self):
+        # live rows with a pair: m 0..74 less m 15 (dry), 30 (missing), 60 (no up15) = 72; m 75..89: gap
+        e = self.h["every"]
+        self.assertEqual((e["n"], self.h["dropped_every"]), (72, {"gap": 15, "noul": 1}))
+        want = [m for m in range(75) if m not in (15, 30, 60)]
+        self.assertEqual([p["tick"] for p in e["pairs"]], [f"20260923T{10 + m // 60:02d}{m % 60:02d}00Z" for m in want])
+        firsts = {0: 0.1, 16: 0.1, 31: 0.3, 45: 0.5}
+        xs = [firsts.get(m, 0.945) for m in want]
+        ys = [(-10.0, 0.0, 0.0, 10.0, 0.0)[m // 15] for m in want]
+        self.assertAlmostEqual(e["r"], report.pearson(xs, ys), places=9)
+        self.assertNotAlmostEqual(e["r"], self.h["units"]["r"], places=2)
+
+    def test_perfectly_informative_lean_is_r_1(self):
+        # ret_h_bps = 100 x lean at every unit: a straight line through the units
+        leans = {0: (0.4, 0.6), 15: (0.55, 0.45), 30: (0.65, 0.35), 45: (0.57, 0.5)}      # -0.2, 0.1, 0.3, 0.07
+        rows = _h2_log([-20, 10, 30, 7], leans)
+        u = report.h2(rows, outcomes.join(rows))["units"]
+        self.assertEqual([p["lean"] for p in u["pairs"]], [-0.2, 0.1, 0.3, 0.07])
+        self.assertAlmostEqual(u["r"], 1.0, places=9)
+        self.assertEqual(u["rho"], 1.0)
+        self.assertEqual(report.pearson([-0.5, -0.1, 0.2, 0.7], [3 * x + 2 for x in (-0.5, -0.1, 0.2, 0.7)]), 1.0)
+        self.assertLessEqual(report.pearson([0.1, 0.2, 0.3], [0.1, 0.2, 0.3]), 1.0)          # clamped, never 1 + eps
+
+    def test_constant_lean_is_undefined_and_said_so(self):
+        # every lean is 0.2 once rounded, though 0.5 - 0.3, 0.6 - 0.4 and 0.7 - 0.5 differ in binary
+        rows = _h2_log([-10, 5, 20], {0: (0.5, 0.3), 15: (0.6, 0.4), 30: (0.3, 0.1)}, other=(0.7, 0.5))
+        h = report.h2(rows, outcomes.join(rows))
+        for s in (h["units"], h["every"]):
+            self.assertEqual((s["r"], s["rho"], s["why"]), (None, None, "no variance in lean"))
+        self.assertEqual(h["units"]["n"], 3)
+        self.assertIsNone(report.pearson([0.1] * 3, [1.0, 2.0, 3.0]))    # 0.1 * 3 / 3 != 0.1: the residue is not r
+        self.assertIsNone(report.pearson([1.0, 2.0], [5.0, 5.0]))
+        self.assertIsNone(report.pearson([1.0], [2.0]))
+        text = report.render(rows, [], "x")                            # the whole report, not a crash
+        self.assertIn("Pearson r(lean, ret_h_bps) over 3 units: undefined (no variance in lean);"
+                      " Spearman rho undefined (no variance in lean)", text)
+        self.assertIn("every live tick (overlapping horizons, descriptive, never the statistic): r undefined"
+                      " (no variance in lean)", text)
+
+    def test_brier_against_the_base_rate_by_hand(self):
+        # units: up15 (.3, .4, .5, .6) vs up (0, 0, 0, 1): (.09 + .16 + .25 + .16) / 4 = .165; p = .25,
+        # base .25 * .75 = .1875. down15 (.2, .3, .2, .1) vs down (1, 0, 0, 0): (.64 + .09 + .04 + .01) / 4 = .195
+        bu, bd = self.h["units"]["brier_up"], self.h["units"]["brier_down"]
+        for got, want in ((bu, (0.165, 0.1875, 0.25)), (bd, (0.195, 0.1875, 0.25))):
+            for g, w in zip(got, want):
+                self.assertAlmostEqual(g, w, places=12)
+        self.assertEqual(report.brier([], []), (None, None, None))
+        b, base, p = report.brier([0.9, 0.9, 0.9], [1.0, 1.0, 1.0])     # all up: the base rate is perfect
+        self.assertAlmostEqual(b, 0.01, places=12)
+        self.assertEqual((base, p), (0.0, 1.0))
+        self.assertRegex("\n".join(self.h["lines"]), r"units\s+4\s+0\.1650\s+0\.1875\s+0\.250\s+0\.1950\s+0\.1875\s+0\.250")
+
+    def test_tail_counts(self):
+        # units: only m 45's down15 0.1 is in a tail (< 0.15); every tick adds the 68 other rows at (0.995, 0.05)
+        self.assertEqual(self.h["units"]["tails"], {"up": (0, 0), "down": (0, 1)})
+        self.assertEqual(self.h["every"]["tails"], {"up": (68, 0), "down": (0, 69)})
+        # the edges: >= 0.99 is the high tail, < 0.15 the low; 0.989 and 0.15 are the band
+        ps = [{"up": u, "down": 0.5, "lean": 0.0, "ret": 0.0, "label": "flat"} for u in (0.99, 0.989, 0.15, 0.149)]
+        self.assertEqual(report._h2_stats(ps)["tails"], {"up": (1, 1), "down": (0, 0)})
+        self.assertIn("measured tails (>= 0.99 / < 0.15): units up15 0/0, down15 0/1; every tick up15 68/0, down15 0/69",
+                      "\n".join(self.h["lines"]))
+
+    def test_the_trend_word_beside_the_statistic_by_hand(self):
+        # PREREG §5: Jev sees only the four words and rule_c acts on `trend`, so the report puts
+        # the word (dumping -1, flat 0, pumping +1) beside lean. Blocks: ret (-10, 6, 6, 10, -12, gap),
+        # trend (dumping, flat, flat, pumping, flat, flat), first-row leans (-0.3, 0, 0.1, 0.3, -0.1).
+        trends = ("dumping", "flat", "flat", "pumping", "flat", "flat")
+        rows = _h2_log([-10, 6, 6, 10, -12], {0: (0.2, 0.5), 15: (0.4, 0.4), 30: (0.5, 0.4), 45: (0.6, 0.3),
+                                               60: (0.4, 0.5)})
+        for m, r in enumerate(rows):
+            r["adj"] = dict(r["adj"], trend=trends[m // 15])
+            r["state"], r["rule_c"] = state.state_string(r["adj"]), state.rule_c(r["adj"])
+        h = report.h2(rows, outcomes.join(rows))
+        u = h["units"]
+        self.assertEqual([(p["lean"], p["trend"]) for p in u["pairs"]], [(-0.3, -1), (0.0, 0), (0.1, 0), (0.3, 1), (-0.1, 0)])
+        w = u["word"]
+        # x = (-.3, 0, .1, .3, -.1), t = (-1, 0, 0, 1, 0), y = (-10, 6, 6, 10, -12); every mean is 0
+        # r(x, t): sxt .6, sxx .2, stt 2 -> .6 / sqrt(.4) = 3 / sqrt(10)
+        self.assertAlmostEqual(w["lean_trend"]["r"], 3 / math.sqrt(10), places=9)
+        # r(t, y): sty 20, syy 100 + 36 + 36 + 100 + 144 = 416 -> 20 / sqrt(832) = 5 / (2 sqrt(13))
+        self.assertAlmostEqual(w["trend_ret"]["r"], 5 / (2 * math.sqrt(13)), places=9)
+        # within flat: x = (0, .1, -.1), y = (6, 6, -12), mean 0: sxy 1.8, sxx .02, syy 216 -> sqrt(3)/2
+        self.assertAlmostEqual(w["flat"]["r"], math.sqrt(3) / 2, places=9)
+        self.assertEqual((w["lean_trend"]["n"], w["trend_ret"]["n"], w["flat"]["n"]), (5, 5, 3))
+        # every tick: m 0..74 (m 75..89 is the gap block); the first rows as above, every other 0.945
+        firsts = {0: -0.3, 15: 0.0, 30: 0.1, 45: 0.3, 60: -0.1}
+        xs = [firsts.get(m, 0.945) for m in range(75)]
+        ts = [report.TREND_SIGN[trends[m // 15]] for m in range(75)]
+        ys = [(-10.0, 6.0, 6.0, 10.0, -12.0)[m // 15] for m in range(75)]
+        we = h["every"]["word"]
+        self.assertAlmostEqual(we["lean_trend"]["r"], report.pearson(xs, ts), places=9)
+        self.assertAlmostEqual(we["trend_ret"]["r"], report.pearson(ts, ys), places=9)
+        fl = [m for m in range(75) if ts[m] == 0]
+        self.assertAlmostEqual(we["flat"]["r"], report.pearson([xs[m] for m in fl], [ys[m] for m in fl]), places=9)
+        self.assertEqual(we["flat"]["n"], 45)
+        text = "\n".join(h["lines"])
+        self.assertIn(f"    units       r(lean, trend) {3 / math.sqrt(10):.4f};"
+                      f" r(trend, ret_h_bps) {5 / (2 * math.sqrt(13)):.4f};"
+                      f" r(lean, ret_h_bps | trend flat) {math.sqrt(3) / 2:.4f} over 3", text)
+        # the statistic itself is unchanged by the comparator: sxy = 3 + 0 + .6 + 3 + 1.2 = 7.8 -> 7.8 / sqrt(.2 * 416)
+        self.assertAlmostEqual(u["r"], 7.8 / math.sqrt(0.2 * 416), places=9)
+
+    def test_the_trend_word_undefined_is_said_so(self):
+        # the class fixture is `dumping` on every row: no variance in the word, and no flat pair
+        for s in (self.h["units"], self.h["every"]):
+            w = s["word"]
+            self.assertEqual((w["lean_trend"]["r"], w["lean_trend"]["why"]), (None, "no variance in trend"))
+            self.assertEqual((w["trend_ret"]["r"], w["trend_ret"]["why"]), (None, "no variance in trend"))
+            self.assertEqual((w["flat"]["r"], w["flat"]["why"], w["flat"]["n"]), (None, "fewer than 2 pairs (n 0)", 0))
+        self.assertIn("    units       r(lean, trend) undefined (no variance in trend); r(trend, ret_h_bps) undefined"
+                      " (no variance in trend); r(lean, ret_h_bps | trend flat) undefined (fewer than 2 pairs (n 0)) over 0",
+                      "\n".join(self.h["lines"]))
+        self.assertEqual(report.TREND_SIGN, {"dumping": -1, "flat": 0, "pumping": 1})
+        self.assertEqual(set(report.TREND_SIGN), set(state.TREND))
+
+    def test_t0_restricts_h2_to_the_sample(self):
+        # T0 10:15: the sample is m 15..89, blocks re-anchored there; units m 16, 31, 45 (m 60 no
+        # up15, m 75 gap): x (0.1, 0.3, 0.5), y (0, 0, 10). dx (-.2, 0, .2), dy (-10/3, -10/3, 20/3):
+        # sxy 2, sxx .08, syy 600/9 -> r = 2 / sqrt(16/3) = sqrt(3)/2; rho: ranks (1, 2, 3), (1.5, 1.5, 3)
+        # -> 1.5 / sqrt(2 * 1.5) = sqrt(3)/2
+        with tempfile.TemporaryDirectory() as d:
+            log = os.path.join(d, "decisions.jsonl")
+            _write(log, self.rows, garbage=False)
+            code, out = _main(["--log", log, "--t0", "2026-09-23T10:15"])
+            cut = report.in_sample(self.rows, report._t0("2026-09-23T10:15"))
+        self.assertEqual(code, 0)
+        h = report.h2(cut, self.outs, report._t0("2026-09-23T10:15"))
+        self.assertEqual([p["tick"][9:13] for p in h["units"]["pairs"]], ["1016", "1031", "1045"])
+        self.assertAlmostEqual(h["units"]["r"], math.sqrt(3) / 2, places=9)
+        self.assertAlmostEqual(h["units"]["rho"], math.sqrt(3) / 2, places=12)
+        self.assertEqual(h["every"]["n"], 72 - 15)                        # m 0..14 are before T0
+        self.assertIn("anchored at T0 2026-09-23T10:15Z (--t0); 5 blocks with a live row, dropped: gap 1,"
+                      " missing noul 1; 3 units", out)
+        self.assertIn(f"over 3 units: {math.sqrt(3) / 2:.4f}; Spearman rho {math.sqrt(3) / 2:.4f} (descriptive)", out)
+        with tempfile.TemporaryDirectory() as d:                     # PREREG §8.4: the blind look, on the sample
+            log = os.path.join(d, "decisions.jsonl")
+            _write(log, self.rows, garbage=False)
+            code, blind = _main(["--log", log, "--t0", "2026-09-23T10:15", "--health"])
+        self.assertEqual(code, 0)
+        self.assertIn("T0 2026-09-23T10:15Z", blind.splitlines()[0])
+        self.assertIn("H2 statistic", out)
+        self.assertNotIn("H2 statistic", blind)
+        self.assertNotIn(report.TITLES[5], blind)
+
+
 class Degenerate(unittest.TestCase):
     def test_missing_log(self):
         with tempfile.TemporaryDirectory() as d:
@@ -411,6 +686,8 @@ class Degenerate(unittest.TestCase):
         self.assertIn("no row carries both", out)
         self.assertIn("no answered rows", out)
         self.assertIn("nothing to calibrate", out)
+        self.assertIn("no unit yet: no block's first live row has both nouls and an outcome", out)
+        self.assertIn("over 0 units: undefined (fewer than 2 pairs (n 0))", out)
         for t in report.TITLES:
             self.assertIn(t, out)
 
@@ -435,6 +712,8 @@ class Degenerate(unittest.TestCase):
         self.assertIn("C equity 0.00 bps, trades 0, forced holds 5", text)   # a dry row is a forced hold for every arm
         self.assertIn("A equity 0.00 bps, trades 0, forced holds 5", text)
         self.assertIn("nothing to calibrate", text)
+        self.assertIn("no unit yet", text)                               # dry rows are never H2 units
+        self.assertIn("dry-only log: 5 rows and none answered; sections 3-7 need live rows", text)
 
     def test_no_network_no_key_no_write(self):
         import inspect

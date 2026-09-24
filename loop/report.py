@@ -1,4 +1,4 @@
-"""make report: the six sections of CONTRACT §4, plain text, from the decision log alone.
+"""make report: the seven sections of CONTRACT §4, plain text, from the decision log alone.
 
 May: read data/decisions.jsonl (outcomes.load), join every tick to t+h (outcomes.join),
 replay the paper book per arm, column and fee (book.replay) and print counts, rates and
@@ -26,6 +26,18 @@ hold different qty (NOTIONAL/ask at each entry), so their d_t is (qx - qy) * dmi
 noise, not a disagreement. The t+h join runs over the whole log, so a sample row near the end
 still finds its outcome in the row after the sample.
 
+H2 (PREREG §5; 2026-09-24, decided by Alex: H2 moves to the direction probabilities) is read
+in §6: lean_t = up15.noul - down15.noul (v1's nouls, one pair per tick, shared by A and B)
+against ret_h_bps of the same outcome join, Pearson r on the first live row of each 900 s
+block (the same anchor as the blocks above), with Spearman rho, Brier against the base rate
+and the measured-tail counts beside it. Pearson, Spearman (average ranks) and Brier are
+written out here, stdlib only; no interval and no p-value (PREREG §5's bootstrap runs once,
+by hand). Beside the statistic, the `trend` word as a no-model comparator (-1/0/+1): Jev sees only
+the four words, so r(lean, trend), r(trend, ret) and r(lean, ret) within `flat` show how much of
+lean the word already is. §7 keeps the old arm-A confidence table, descriptive: v1's action
+criteria restate rule_c, so that confidence reads how well the answer matched the rule, not the
+market. --health prints sections 1-3 only (PREREG §8.4's day-14 look) and computes nothing else.
+
 An empty, missing or dry-only log is said so at the top; health and occupancy still print
 (a dry log has adjectives), the other sections say what they lack.
 """
@@ -47,8 +59,16 @@ BLOCK_S = config.HORIZON_S                          # 900: PREREG §3's block, o
 SAMPLE_DAYS = 28                                    # PREREG §2: the sample is [T0, T0 + 28 days)
 TICKS_PER_DAY = 86400 // config.CADENCE_S          # 1440: trades/day is per 1440 TICKS, so a day of outage does not dilute it
 OCCUPANCY_FLAG = 0.95                               # §4.2: a word above this share is a constant, and arms cannot disagree on one
-CAL_EDGES = tuple(config.CONF_THRESHOLDS) + (1.0,)  # §4.6: [0.5,0.7) [0.7,0.85) [0.85,0.99) [0.99,1.0]; the last edge is closed
-CORRECT = {("buy", "up"), ("sell", "down"), ("hold", "flat")}   # §4.6: argmax was right iff it named the move that came
+CAL_EDGES = tuple(config.CONF_THRESHOLDS) + (1.0,)  # §4.7: [0.5,0.7) [0.7,0.85) [0.85,0.99) [0.99,1.0]; the last edge is closed
+CORRECT = {("buy", "up"), ("sell", "down"), ("hold", "flat")}   # §4.7: argmax was right iff it named the move that came
+NOUL_HIGH = config.NOUL_TAIL                        # §4.6 tails: the measured noul tails (JEV PROTOCOL 2.2), >= 0.99 ...
+NOUL_LOW = 0.15                                     # ... and < 0.15; everything between is the unmeasured band
+LEAN_DP = 12                                        # lean = round(up - down, 12): the nouls are decimals, so this drops
+                                                    # binary noise only (0.4 - 0.3 != 0.3 - 0.2 in floats) and equal
+                                                    # leans stay equal for "no variance" and for tied ranks
+TREND_SIGN = {"dumping": -1, "flat": 0, "pumping": 1}   # §4.6's no-model comparator: the `trend` word as a sign. Jev
+                                                    # sees only the four words and rule_c acts on this one, so the
+                                                    # report shows how much of lean it already is (PREREG §5, §9)
 CHOICES = rules.CHOICES
 ARMS = ("a", "b", "c")
 
@@ -101,7 +121,7 @@ def _jev(row, k):
 
 
 def answered(rows):
-    """Rows that carry a model column: what sections 3-6 need and a dry log lacks."""
+    """Rows that carry a model column: what sections 3-7 need and a dry log lacks."""
     return [r for r in rows if _col(r, "a", "argmax") in CHOICES or _col(r, "b", "argmax") in CHOICES]
 
 
@@ -344,7 +364,180 @@ def table(rows, outs, t0=None):
             "anchor": anchor}
 
 
-# ---- §4.6 calibration, arm A ---------------------------------------------------------------
+# ---- §4.6 H2: the direction lean against the 15-minute return (PREREG §5) -------------------
+def pearson(xs, ys):
+    """Pearson r of two equal-length sequences, or None where it is undefined: fewer than two
+    pairs, or either side constant. Constancy is tested on the values (a float mean of equal
+    values can differ from them in the last bit, and r of that residue is noise, not 0)."""
+    n = len(xs)
+    if n < 2 or len(set(xs)) < 2 or len(set(ys)) < 2:
+        return None
+    mx, my = sum(xs) / n, sum(ys) / n
+    sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    sxx = sum((x - mx) ** 2 for x in xs)
+    syy = sum((y - my) ** 2 for y in ys)
+    if sxx <= 0 or syy <= 0:
+        return None
+    return max(-1.0, min(1.0, sxy / math.sqrt(sxx * syy)))       # clamp the last-bit overshoot of a perfect fit
+
+
+def ranks(xs):
+    """1-based ranks; a run of equal values shares the mean of the ranks it spans."""
+    order = sorted(range(len(xs)), key=lambda i: xs[i])
+    out, i = [0.0] * len(xs), 0
+    while i < len(order):
+        j = i
+        while j + 1 < len(order) and xs[order[j + 1]] == xs[order[i]]:
+            j += 1
+        for k in range(i, j + 1):
+            out[order[k]] = (i + j) / 2 + 1
+        i = j + 1
+    return out
+
+
+def spearman(xs, ys):
+    """Spearman rho = Pearson r of the average ranks; None where that is undefined."""
+    return pearson(ranks(xs), ranks(ys))
+
+
+def brier(ps, ys):
+    """(Brier, base-rate Brier, base rate) for probabilities ps of the 0/1 events ys. The base
+    rate predicts the sample frequency ybar for every row, so its Brier is ybar * (1 - ybar);
+    it is computed the same way as the forecast's. (None, None, None) with no pairs."""
+    if not ps:
+        return None, None, None
+    n = len(ps)
+    ybar = sum(ys) / n
+    return (sum((p - y) ** 2 for p, y in zip(ps, ys)) / n, sum((ybar - y) ** 2 for y in ys) / n, ybar)
+
+
+def _why_undefined(xs, ys, xn="lean", yn="ret_h_bps"):
+    if len(xs) < 2:
+        return f"fewer than 2 pairs (n {len(xs)})"
+    if len(set(xs)) < 2:
+        return f"no variance in {xn}"
+    if len(set(ys)) < 2:
+        return f"no variance in {yn}"
+    return None
+
+
+def _corr(xs, ys, xn, yn):
+    return {"n": len(xs), "r": pearson(xs, ys), "why": _why_undefined(xs, ys, xn, yn)}
+
+
+def _live(r):
+    return r.get("mode") == "live" and r.get("absence") is None
+
+
+def _h2_pair(r, outs):
+    """One tick's (lean, ret) with what Brier and the tails need, or the reason it is not one:
+    "noul" (either direction noul missing or not a number) or "gap" (no outcome at t + h)."""
+    u, d = (_answer(r, "up15") or {}).get("noul"), (_answer(r, "down15") or {}).get("noul")
+    if not (_num(u) and _num(d)):
+        return "noul"
+    o = outs.get(r.get("tick_id")) or {}
+    if o.get("absence") is not None or not _num(o.get("ret_h_bps")) or o.get("label") is None:
+        return "gap"
+    return {"tick": r["tick_id"], "up": u, "down": d, "lean": round(u - d, LEAN_DP), "ret": o["ret_h_bps"],
+            "label": o["label"], "trend": TREND_SIGN.get((r.get("adj") or {}).get("trend"))}
+
+
+def _h2_stats(ps):
+    xs, ys = [p["lean"] for p in ps], [p["ret"] for p in ps]
+    tails = {q: (sum(1 for p in ps if p[q] >= NOUL_HIGH), sum(1 for p in ps if p[q] < NOUL_LOW)) for q in ("up", "down")}
+    w = [p for p in ps if p.get("trend") is not None]                # the pairs whose row names a trend word
+    fl = [p for p in w if p["trend"] == 0]
+    word = {"lean_trend": _corr([p["lean"] for p in w], [p["trend"] for p in w], "lean", "trend"),
+            "trend_ret": _corr([p["trend"] for p in w], [p["ret"] for p in w], "trend", "ret_h_bps"),
+            "flat": _corr([p["lean"] for p in fl], [p["ret"] for p in fl], "lean", "ret_h_bps")}
+    return {"n": len(ps), "r": pearson(xs, ys), "rho": spearman(xs, ys), "why": _why_undefined(xs, ys),
+            "brier_up": brier([p["up"] for p in ps], [1.0 if p["label"] == "up" else 0.0 for p in ps]),
+            "brier_down": brier([p["down"] for p in ps], [1.0 if p["label"] == "down" else 0.0 for p in ps]),
+            "tails": tails, "word": word, "pairs": ps}
+
+
+def _rv(s, what):
+    return f"{s[what]:.4f}" if s[what] is not None else f"undefined ({s['why']})"
+
+
+def _word_line(name, s):
+    w = s["word"]
+    return (f"    {name:<12}r(lean, trend) {_rv(w['lean_trend'], 'r')}; r(trend, ret_h_bps) {_rv(w['trend_ret'], 'r')};"
+            f" r(lean, ret_h_bps | trend flat) {_rv(w['flat'], 'r')} over {w['flat']['n']}")
+
+
+def _span(ps, k):
+    v = [p[k] for p in ps]
+    return f"{min(v):.2f}..{max(v):.2f}" if v else "-"
+
+
+def h2(rows, outs, t0=None):
+    """PREREG §5. Units: the first live row (mode live, absence null) of each 900 s block
+    anchored at T0 (--t0) or the log's first tick; that row's pair, or the block is dropped
+    (a gap outcome, or a noul missing). "every tick" is every live row with a pair: the
+    horizons overlap, so it is printed beside the statistic, never as it."""
+    live = sorted((r for r in rows if _live(r)), key=lambda r: r["tick_id"])   # stable: log order within a minute
+    every, drop_every = [], collections.Counter()
+    for r in live:
+        p = _h2_pair(r, outs)
+        if isinstance(p, dict):
+            every.append(p)
+        else:
+            drop_every[p] += 1
+    units, drop, firsts = [], collections.Counter(), {}
+    anchor = where = None
+    if live:                                                         # the table's anchor: the log's first tick, any row
+        first = min(r["tick_id"] for r in rows)
+        anchor = t0 if t0 is not None else tick_epoch(first)
+        where = (f"T0 {_iso_minute(t0)} (--t0)" if t0 is not None
+                 else f"the log's first tick {first}; no --t0, so descriptive only")
+        for r in live:
+            firsts.setdefault(int((tick_epoch(r["tick_id"]) - anchor) // BLOCK_S), r)
+        for k in sorted(firsts):
+            p = _h2_pair(firsts[k], outs)
+            if isinstance(p, dict):
+                units.append(dict(p, k=k))
+            else:
+                drop[p] += 1
+    su, se = _h2_stats(units), _h2_stats(every)
+    lines = [
+        "  lean_t = up15.noul - down15.noul, in [-1, 1]: Jev's own direction probabilities, asked from v1 once per tick"
+        " and shared by A and B (never rewritten); y = ret_h_bps of the outcome join (SPEC §11). No inference here:"
+        " PREREG §5's block bootstrap runs once, at the end",
+        f"  units (PREREG §5): the first live row of each {BLOCK_S} s block anchored at {where or '-'}; {len(firsts)}"
+        f" blocks with a live row, dropped: gap {drop['gap']}, missing noul {drop['noul']}; {su['n']} units."
+        " Days excluded by stop rule 3 are NOT removed here",
+        f"  H2 statistic (PREREG §5), Pearson r(lean, ret_h_bps) over {su['n']} units: {_rv(su, 'r')};"
+        f" Spearman rho {_rv(su, 'rho')} (descriptive)",
+        f"  every live tick (overlapping horizons, descriptive, never the statistic): r {_rv(se, 'r')},"
+        f" rho {_rv(se, 'rho')} over {se['n']} ticks; dropped: gap {drop_every['gap']}, missing noul {drop_every['noul']}",
+        "  the trend word beside it (no model; descriptive, never claimed): Jev sees only the four words (SPEC §5) and"
+        " rule_c buys only on pumping and sells on dumping or violent (SPEC §6), so lean may recode the word;"
+        " trend = +1 pumping, 0 flat, -1 dumping, on the same pairs",
+        _word_line("units", su),
+        _word_line("every tick", se),
+    ]
+    if units:
+        xs = [p["lean"] for p in units]
+        lines.append(f"  over the units: lean min {min(xs):.2f}, mean {_mean(xs):.4f}, max {max(xs):.2f};"
+                     f" up15 {_span(units, 'up')}, down15 {_span(units, 'down')}")
+    lines.append("  Brier (descriptive; base = the base rate's Brier, predicting the sample frequency p)")
+    lines.append(f"    {'':<12}{'n':>6}{'up15':>9}{'base':>9}{'p(up)':>8}{'down15':>9}{'base':>9}{'p(down)':>9}")
+    for name, s in (("units", su), ("every tick", se)):
+        bu, bd = s["brier_up"], s["brier_down"]
+        lines.append(f"    {name:<12}{s['n']:>6}{_f(bu[0], 4):>9}{_f(bu[1], 4):>9}{_f(bu[2], 3):>8}"
+                     f"{_f(bd[0], 4):>9}{_f(bd[1], 4):>9}{_f(bd[2], 3):>9}")
+
+    def tl(s):
+        return f"up15 {s['tails']['up'][0]}/{s['tails']['up'][1]}, down15 {s['tails']['down'][0]}/{s['tails']['down'][1]}"
+    lines.append(f"  measured tails (>= {NOUL_HIGH:g} / < {NOUL_LOW:g}): units {tl(su)}; every tick {tl(se)}")
+    if not units:
+        lines.append("  no unit yet: no block's first live row has both nouls and an outcome")
+    return {"lines": lines, "units": su, "every": se, "blocks": len(firsts), "dropped": dict(drop),
+            "dropped_every": dict(drop_every), "anchor": anchor}
+
+
+# ---- §4.7 arm A's choice confidence: rule-matching, not outcomes (descriptive) --------------
 def _bin(c):
     for i in range(len(CAL_EDGES) - 1):
         lo, hi = CAL_EDGES[i], CAL_EDGES[i + 1]
@@ -354,7 +547,10 @@ def _bin(c):
 
 
 def calibration(rows, outs):
-    bins = [[0, 0] for _ in CAL_EDGES[:-1]]
+    """The table the first H2 read (until 2026-09-24): P(a.argmax correct against the label)
+    per confidence bin, now descriptive, with the share of each bin where a.argmax == rule_c
+    beside it, which is what the confidence tracks when the criteria restate the rule."""
+    bins = [[0, 0, 0] for _ in CAL_EDGES[:-1]]
     below, n = 0, 0
     for r in rows:
         a, x = _answer(r, "a_action"), _col(r, "a", "argmax")
@@ -363,19 +559,23 @@ def calibration(rows, outs):
             continue
         i = _bin(a["confidence"])
         if i is None:
-            below += 1                                               # under 0.5 (or over 1): not a §4.6 bin, but counted, never hidden
+            below += 1                                               # under 0.5 (or over 1): not a §4.7 bin, but counted, never hidden
             continue
         bins[i][0] += 1
         bins[i][1] += (x, lab) in CORRECT
+        bins[i][2] += x == r.get("rule_c")
         n += 1
-    lines = [f"  arm A rows with an answer and an outcome label: {n} in bins, {below} outside [{CAL_EDGES[0]}, {CAL_EDGES[-1]}]",
-             f"  {'confidence':<14}{'n':>6}{'correct':>9}{'P(correct)':>12}"]
+    lines = ["  not H2 (PREREG §5, 2026-09-24): v1's action criteria restate rule_c (SPEC §8), so a.argmax is the rule"
+             " and this confidence reads how well the answer matched it, not the market; nearly every answer is hold,"
+             " which is correct only when |ret_h| < 5 bps",
+             f"  arm A rows with an answer and an outcome label: {n} in bins, {below} outside [{CAL_EDGES[0]}, {CAL_EDGES[-1]}]",
+             f"  {'confidence':<14}{'n':>6}{'correct':>9}{'P(correct)':>12}{'= rule_c':>10}"]
     out = []
-    for i, (k, c) in enumerate(bins):
+    for i, (k, c, m) in enumerate(bins):
         lo, hi = CAL_EDGES[i], CAL_EDGES[i + 1]
         close = "]" if i == len(bins) - 1 else ")"
-        lines.append(f"  [{lo:.2f}, {hi:.2f}{close:<3}{k:>6}{c:>9}{_r(_rate(c, k)):>12}")
-        out.append({"lo": lo, "hi": hi, "n": k, "correct": c, "p": _rate(c, k)})
+        lines.append(f"  [{lo:.2f}, {hi:.2f}{close:<3}{k:>6}{c:>9}{_r(_rate(c, k)):>12}{_r(_rate(m, k)):>10}")
+        out.append({"lo": lo, "hi": hi, "n": k, "correct": c, "p": _rate(c, k), "rule": m, "p_rule": _rate(m, k)})
     if not n:
         lines.append("  nothing to calibrate: no arm-A answer has an outcome yet")
     return {"lines": lines, "n": n, "below": below, "bins": out}
@@ -383,25 +583,36 @@ def calibration(rows, outs):
 
 # ---- the whole thing -----------------------------------------------------------------------
 TITLES = ("1. health", "2. adjective occupancy", "3. test-retest (a_action vs b_action on the same question)",
-          "4. a.argmax vs rule_c", "5. paired book: pair x column x fee", "6. calibration, arm A")
+          "4. a.argmax vs rule_c", "5. paired book: pair x column x fee",
+          "6. H2: direction lean (up15 - down15) vs the 15-min return",
+          "7. arm A choice confidence vs rule-matching, not outcomes (descriptive)")
 
 
-def render(rows, bad=(), log=None, since=None, missing=False, t0=None, outs=None):
+HEALTH_N = 3                                        # --health: sections 1-3, PREREG §8.4's day-14 look
+
+
+def render(rows, bad=(), log=None, since=None, missing=False, t0=None, outs=None, health_only=False):
     """t0: T0 in epoch seconds when the rows were cut to the sample; outs: the join over the
-    WHOLE log (a sample row's t+h may sit after the sample), else the join over `rows`."""
+    WHOLE log (a sample row's t+h may sit after the sample), else the join over `rows`.
+    health_only: sections 1-3 only (PREREG §8.4); 4-7 are neither computed nor printed, so the
+    blind look cannot show an H1 or H2 number by accident."""
     outs = outcomes.join(rows) if outs is None else outs
-    secs = (health(rows, outs, bad), occupancy(rows), retest(rows), agreement(rows), table(rows, outs, t0),
-            calibration(rows, outs))
+    secs = (health(rows, outs, bad), occupancy(rows), retest(rows))
+    if not health_only:
+        secs += (agreement(rows), table(rows, outs, t0), h2(rows, outs, t0), calibration(rows, outs))
     lines = [f"jev-paper-loop report: {config.VENUE} {config.PRODUCT}, cadence {config.CADENCE_S} s, horizon {config.HORIZON_S} s"
              + (f", log {log}" if log else "") + (f", since {since}" if since else "")
              + (f", T0 {_iso_minute(t0)} (sample [T0, T0 + {SAMPLE_DAYS} d), replayed from flat at T0)" if t0 is not None else "")]
+    if health_only:
+        lines.append(f"health only (--health, PREREG §8.4's day-14 look): sections 1-{HEALTH_N};"
+                     f" sections {HEALTH_N + 1}-{len(TITLES)} are neither computed nor printed")
     if missing:
         lines.append(f"no log at {log}: nothing has run yet (health and occupancy print anyway)")
     elif not rows:
         lines.append("empty log" + (f" since {since}" if since else "") + (" in the sample window" if t0 is not None else "")
                      + ": no rows (health and occupancy print anyway)")
     elif not answered(rows):
-        lines.append(f"dry-only log: {len(rows)} rows and none answered; sections 3-6 need live rows")
+        lines.append(f"dry-only log: {len(rows)} rows and none answered; sections 3-7 need live rows")
     for title, sec in zip(TITLES, secs):
         lines.append("")
         lines.append(title)
@@ -443,6 +654,8 @@ def main(argv=None):
     ap.add_argument("--t0", metavar="YYYY-MM-DDTHH:MM",
                     help=f"PREREG T0 (UTC minute, or its tick_id): only [T0, T0 + {SAMPLE_DAYS} d), replayed from flat at T0")
     ap.add_argument("--log", default=config.DECISIONS, help=f"decision log (default {config.DECISIONS})")
+    ap.add_argument("--health", action="store_true",
+                    help=f"sections 1-{HEALTH_N} only (PREREG §8.4's day-14 look): no H1, H2 or confidence number")
     args = ap.parse_args(argv)
     try:
         since = _since(args.since)
@@ -461,7 +674,7 @@ def main(argv=None):
         rows = [r for r in rows if r["tick_id"][:8] >= since]         # tick_id is YYYYMMDDTHHMM00Z; the first 8 chars are the day
     if t0 is not None:
         rows = in_sample(rows, t0)                                   # cut BEFORE any replay: every arm starts flat at T0
-    sys.stdout.write(render(rows, bad, args.log, args.since, missing, t0, outs))
+    sys.stdout.write(render(rows, bad, args.log, args.since, missing, t0, outs, args.health))
     return 0
 
 

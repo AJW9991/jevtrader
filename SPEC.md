@@ -28,6 +28,15 @@ both are pre-registration changes (each dated where it lands):
   0.0`); the venue's 120 bps taker is `FEE_BPS_VENUE`, a descriptive
   realistic-cost column (§10, PREREG §4).
 
+One reading changed later the same day, after the first 181 live shakedown
+rows and before T0 was set or any sample row existed; no field of the row and
+no constant of the tick changed with it:
+
+- 2026-09-24, decided by Alex: H2 moves to the direction probabilities.
+  PREREG §5 reads lean = `up15.noul − down15.noul` against `ret_h_bps` (§8,
+  §11), not arm A's choice confidence, which with `v1`'s criteria restating
+  §6 measures rule-matching, not outcomes (CONTRACT §4.6–§4.7).
+
 ## 1. The loop in one paragraph
 
 Every 60 s (`CADENCE_S = 60`) on this Mac, one tick reads the Coinbase Advanced
@@ -244,6 +253,20 @@ canonical sha begins `7a85308fd126`. Its `action` criteria restate §6 on
 purpose: arm A measures how faithfully the model follows a rule it is given.
 Only `action` is ever rewritten; a promoted file that changed a noul's type
 is refused at load (`PromptError`).
+
+`up15` and `down15` are therefore the only questions in the request that ask
+Jev about the price rather than about the rule. 2026-09-24, decided by Alex:
+they are H2's predictor (PREREG §5). `make report` §6 (CONTRACT §4.6) prints
+lean = `up15.noul − down15.noul` (in [−1, 1], rounded to 12 decimals so equal
+decimal leans compare equal) against §11's `ret_h_bps`: Pearson r on the first
+live row of each 900 s block, Spearman ρ, r and ρ on every tick, the Brier
+score of `up15` vs `label = up` and of `down15` vs `label = down` beside the
+base-rate Brier, the counts in the measured tails (≥ `NOUL_TAIL` = 0.99,
+< 0.15), and the `trend` word (§5) beside it as a no-model comparator: the
+model sees only the four words, and on the first run lean tracked `trend` at
+r 0.99 (PREREG §5), so a supported H2 is about that word as Jev maps it.
+Arm A's choice confidence is printed beside `a.argmax == rule_c`
+and against the label in report §7, descriptive only.
 
 ## 9. The rule columns (`loop/rules.py::columns`)
 
@@ -473,6 +496,7 @@ person running `bin/promote`, is `prompt_b` / `prompt_b_sha` and what
 | `rules.py` | `COLUMNS` | argmax c50 c70 c85 c99 c50v c70v c85v c99v pbuy60 noultail |
 | `cycle.py` | `WATCHDOG_S` / `TAIL_BYTES` | 50 / 8 MiB (the spend guard reads the log's tail) |
 | `report.py` | `PRIMARY` cell / `VENUE_FEE` / `BLOCK_S` / `SAMPLE_DAYS` | (B, C, `argmax`, `FEE_BPS_PRIMARY` = 0) / `FEE_BPS_VENUE` / 900 (`HORIZON_S`, blocks from T0, `--t0`) / 28 |
+| `report.py` (H2, 2026-09-24) | `NOUL_HIGH` / `NOUL_LOW` / `LEAN_DP` | `NOUL_TAIL` = 0.99 / 0.15 (the measured tails, counted, never acted on) / 12 (lean's rounding) |
 | `nightly/digest.py` | `FEES` | (`FEE_BPS_PRIMARY`, "direction"), (`FEE_BPS_VENUE`, "venue fee") |
 | `nightly/digest.py` | `DISAGREE_CONF` / `DISAGREE_MAX` | 0.85 / 25 |
 | `nightly/policy_table.py` | `DEADLINE_S` / `MAX_CANDIDATES` / `MAX_TRANSIENT_RUN` | 900.0 / 3 / 3 |

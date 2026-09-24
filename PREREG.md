@@ -17,8 +17,13 @@ Three arms decide `buy | sell | hold` every minute on one state string (SPEC
 CURRENT action question (rewritten only by a person applying a nightly
 proposal), **C** = the no-model rule the thresholds already imply. The question
 is whether the nightly rewrite does anything: does B beat C, and does B beat A.
-Secondarily, whether the confidence Jev attaches to its choice is worth
-anything (H2).
+And, co-primary with H1, whether Jev's own direction probabilities — the `up15` and
+`down15` nouls, asked once per tick from the frozen `v1` and never rewritten —
+say anything about the next 15 minutes (H2; 2026-09-24, decided by Alex, §5).
+Jev sees only the four words, and on the shakedown its lean was close to a
+recoding of the `trend` word that the rule and the action arms already act on,
+so H2 asks whether that word, as Jev maps it, predicts the return; whether Jev
+adds anything beyond the word is not tested here (§5, §9).
 
 ## 2. Warm-up, sample, clock
 
@@ -106,39 +111,114 @@ with real direction but more turnover would lose on fees before direction
 could show. **Profitability at retail fees is not tested; it is settled by
 arithmetic.** H1 is therefore: mean S_k(B − C, `argmax`, 0 bps) > 0,
 one-sided, circular block bootstrap exactly as above, α = 0.025. H2 (§5) is
-unchanged at α = 0.025. Every net-of-fee cell (2, 10, 25, 60, 120 bps) is
+at α = 0.025 (its statistic moved to the direction probabilities later the
+same day, §5; its α did not). Every net-of-fee cell (2, 10, 25, 60, 120 bps) is
 DESCRIPTIVE: printed by `make report`, never tested (§6). Stop rules 1 and 2
 (§8) name the same 0 bps cell. This replaces the paragraph that set out three
 options for Alex before sealing; the other two, H1 at the venue fee (the
 2026-09-23 decision) and venue fee plus gross as co-primaries at α = 0.0125
 each, were not taken, so the MDE of §7 stays at 1.78 bps per block.
 
-## 5. H2 (co-primary): choice-confidence calibration on the frozen arm
+## 5. H2 (co-primary): Jev's direction probabilities against the 15-minute return
 
-- **Unit:** the first live row of each block k (`tick_id = T0 + 900k` when
-  present, else the first live row in the block; none → the block is dropped),
-  so consecutive decisions have non-overlapping horizons.
-- **x_k** = `answers.a_action.confidence`. **y_k** = 1 if `columns.a.argmax`
-  is correct, else 0, where correct = `buy & up`, `sell & down`, `hold & flat`
-  by the outcome label at t + 900 s (SPEC §11); a `gap` outcome drops the
-  block.
-- **Statistic:** the point-biserial correlation r_pb(x, y) = Pearson r between
-  x and the 0/1 y.
-- **Hypothesis:** H0: r ≤ 0; H1: r > 0. Supported iff the lower bound of the
-  95 % percentile block-bootstrap interval of r (same scheme as §4: block 4 =
-  1 h, 10,000 resamples, seed 20260923, resampling the (x, y) pairs) is > 0,
-  i.e. one-sided α = 0.025.
-- **Degenerate cases, decided now:** if every y_k is equal, or every x_k is
-  equal (the model reports one confidence for everything), r is undefined and
-  H2 is recorded as "not supported: no variance in {x|y}". A near-constant x
-  with a handful of tail values is not degenerate; it is what the 0.99 column
-  exists to catch, and the bins of CONTRACT §4.6 are printed beside r.
+**2026-09-24, decided by Alex: H2 moves to the direction probabilities.**
+Decided before sealing, before T0 was set and before any sample row existed;
+it replaces the H2 first written here entirely (H1, §4, is untouched). The
+evidence is the first live run: 181 ticks, 2026-09-24 16:47–19:48Z,
+shakedown rows that never enter the sample (§2). Arm A's `argmax` matched
+`rule_c` on 181/181: `v1`'s action criteria restate the rule (SPEC §8). Its
+choice confidence ranged 0.86–0.99 and was "correct" against the 15-minute
+label on 17 % of the [0.85, 0.99) bin (n 153) and 15 % of the ≥ 0.99 bin
+(n 13), because nearly every answer is `hold` and `hold` is correct only when
+|ret_h| < 5 bps. Choice confidence therefore measures how well Jev matched the
+stated rule, not the market, and the old H2 (the point-biserial r between arm
+A's choice confidence and whether `a.argmax` was correct) tested nothing
+useful. `up15` and `down15` ranged 0.26–0.63 over the run, never in a measured
+tail: they ARE Jev's price predictions, asked once per tick from `v1` and
+never rewritten (SPEC §7–§8), so H2 is about them. The old table stays in
+`make report` as a descriptive section, titled as what it measures (CONTRACT
+§4.7: confidence vs rule-matching, not outcomes), and is never claimed.
+
+**What a supported H2 would mean** (review, 2026-09-24, before T0; the
+statistic is unchanged). The model sees one of the 81 state strings and
+nothing else (SPEC §5), so lean is a function of the four words plus Jev's
+answer noise. On the same shakedown, lean was +0.28 to +0.32 on every
+`pumping` tick (6), −0.37 to −0.22 on every `dumping` tick (4) and 0.00 to
+0.05 on every `flat` tick (156): r(lean, trend sign) = 0.99 over the 12 units
+and 0.98 over the 166 ticks with an outcome. `rule_c` buys only on `pumping`
+and sells on `dumping` (or `violent`, SPEC §6), and `v1`'s action restates it
+(SPEC §8), so the action arms already act on that word. H2 therefore tests
+whether the `trend` word (the 15-minute return z-scored and cut at ±1), as
+Jev maps it into probabilities, predicts `ret_h_bps`. Whether Jev adds
+anything beyond the word is not tested here; the word is printed beside the
+statistic as a no-model comparator (below), descriptive only.
+
+- **Unit:** unchanged: the first live row (`mode: "live"`, `absence: null`)
+  of each block k of §3 (`tick_id = T0 + 900k` when present, else the first
+  live row in the block; none → the block is dropped), so consecutive units
+  have non-overlapping horizons. Only units with an outcome count: a `gap`
+  outcome on that row drops the block, and so does a missing `up15` or
+  `down15` noul. The block is never refilled from a later row.
+- **x_k = lean_k** = `answers.up15.noul − answers.down15.noul`, in [−1, 1],
+  rounded to 12 decimals (SPEC §8: the nouls arrive as short decimals, two
+  places in the first run, and unrounded 0.4 − 0.3 and 0.3 − 0.2 differ in the
+  last binary digit, which would rank equal leans apart; on the first run's 12
+  units that noise moved ρ from 0.086 to 0.116). A and B share it (one
+  request, one state, the `v1` nouls: SPEC §7).
+- **y_k** = `ret_h_bps` of that row from the outcome join (SPEC §11: the mid
+  nearest t + 900 s within ± 30 s), the one join `make report` computes over
+  the whole log, so a unit near the end of the sample finds its t + h after
+  it. (H1's book is marked to mid tick by tick and reads no label.)
+- **Statistic:** Pearson r(x, y) over the units. Spearman ρ (average ranks)
+  is printed beside it, descriptive.
+- **Hypothesis:** H0: r ≤ 0; H1: r > 0. One-sided, α = 0.025.
+- **Inference:** circular block bootstrap of the unit series in block order,
+  block length 4 units ≈ 1 h (as §4), 10,000 resamples, seed 20260923, each
+  resample the same length as the series, blocks drawn with replacement from
+  the circularly wrapped series of (x, y) pairs; r is recomputed on each
+  resample. Reject H0 iff the one-sided 97.5 % lower bound (the 2.5th
+  percentile of the resampled r) is > 0. A resample on which r is undefined
+  (every x or every y in it equal) counts as r = 0, which never rejects.
+  Pinned before sealing (review, 2026-09-24): unlike §4's series, n here is
+  generally not a multiple of 4 (dropped blocks and excluded days remove
+  units), so the draw is written out exactly, in CPython's standard library:
+  1. The series is the n units' (x, y) pairs in block order k, concatenated
+     across dropped blocks and excluded days (a dropped block leaves no
+     placeholder), indexed 0 … n − 1; index i ≥ n wraps to i − n.
+  2. One generator, `rng = random.Random(20260923)`, used for H2 alone. For
+     each of the 10,000 resamples in turn, draw ⌈n / 4⌉ start indices in
+     order, each `rng.randrange(n)`; from each start s take the 4 units s,
+     s + 1, s + 2, s + 3 (wrapped); concatenate in draw order and keep the
+     first n units.
+  3. r* = Pearson r of the resample (as `loop/report.py::pearson`; undefined
+     → 0, above). Sort the 10,000 r* ascending; the lower bound is
+     `sorted_r[249]`, the nearest-rank 2.5th percentile (the ⌈0.025 × 10,000⌉
+     = 250th value), with no interpolation. Reject H0 iff it is > 0.
+- **Degenerate cases, decided now:** if every lean_k is equal (the model
+  reports one lean for everything) or every y_k is equal, r is undefined and
+  H2 is recorded as "not supported: no variance in {lean|ret}". A lean that
+  never reaches a measured tail is not degenerate: r reads the whole band,
+  which is where the first run's nouls sat.
+- **Reported beside it, never claimed:** Spearman ρ; r and ρ on every live
+  tick (overlapping horizons, not independent); the Brier score of
+  `up15.noul` against 1[label = up] and of `down15.noul` against 1[label =
+  down], each beside the base-rate Brier p̄(1 − p̄) of predicting the sample's
+  own frequency p̄; the counts of `up15` and `down15` in each measured tail
+  (≥ 0.99 = `NOUL_TAIL`, < 0.15). The `noultail` column (SPEC §9) is those
+  tails as a rule; it is one of the §6 cells and takes that family's α.
+  The `trend` word as a no-model comparator, trend = +1 `pumping`, 0 `flat`,
+  −1 `dumping` (`adj.trend` of the same row), on the units and on every
+  tick: r(lean, trend), r(trend, `ret_h_bps`), and r(lean, `ret_h_bps`)
+  within `trend = flat`, where the word is constant and any r is lean's own.
 
 Both primaries must hold for the experiment to be reported as "the loop
 works as described": H1 that the nightly arm's direction beats the rule's,
-gross of fees and net of the spread, H2 that the number the fast model attaches to its choice
-carries information. Either alone is reported as exactly that. Neither says
-the loop earns anything at a retail fee: that is not tested (§4).
+gross of fees and net of the spread; H2 that Jev's own direction
+probabilities carry information about the next 15-minute return: information
+in the four words as Jev maps them, which on the shakedown was mostly the
+`trend` word (above), not shown to go beyond the words or to be a signal the
+action arms ignore. Either alone is reported as exactly that. Neither says the loop earns anything at a
+retail fee: that is not tested (§4).
 
 ## 6. Secondaries — descriptive, Bonferroni if ever claimed
 
@@ -164,6 +244,13 @@ the loop earns anything at a retail fee: that is not tested (§4).
 - Test-retest agreement (rows with `prompt_a_sha == prompt_b_sha`), agreement
   of `a.argmax` with `rule_c`, adjective occupancy, drift count: health
   numbers, no inference.
+- Arm A's choice-confidence table (P(`a.argmax` correct) per confidence bin,
+  with the share of each bin where `a.argmax == rule_c`; CONTRACT §4.7): what
+  the old H2 read until 2026-09-24 (§5). Descriptive, no inference, never
+  claimed: with `v1`'s criteria restating the rule it measures rule-matching,
+  not outcomes. H2's own beside-numbers (§5: ρ, every-tick r, Brier against
+  the base rate, tail counts, the `trend`-word comparator) are descriptive
+  likewise.
 
 ## 7. Power, honestly
 
@@ -207,6 +294,25 @@ cell, the block is under-powered for anything under ~8 bps per disagreement
 and the final write-up says so; that is a finding about the prompts, not a
 reason to change the test (§8.5).
 
+**H2 (§5, 2026-09-24).** One unit per block, so n ≤ 2,688 at 28 kept days
+(blocks whose first live row has a `gap` or a missing noul drop out). By the
+Fisher z approximation, the smallest r detected with power 0.80 at one-sided
+α = 0.025 is tanh((1.960 + 0.842) / √(n − 3)):
+
+| kept days | n units (all blocks kept) | MDE r | r² |
+|---|---|---|---|
+| 28 | 2,688 | **0.054** | 0.3 % |
+| 25 | 2,400 | 0.057 | 0.3 % |
+| 21 | 2,016 | 0.062 | 0.4 % |
+
+That assumes independent units. The horizons do not overlap, but lean and
+the 15-minute return can each be autocorrelated across blocks; the block
+bootstrap of §5 carries that into the interval, so the realised MDE is
+somewhat larger. An r of 0.054 explains 0.3 % of the variance of the return:
+a supported H2 says the nouls carry direction information, not that it is
+large nor that it goes beyond the `trend` word (§5), and the final write-up
+says so beside the Brier scores and the comparator.
+
 ## 8. Stop rules — fixed now
 
 1. **Day 28, neither A nor B beats C on H1** (§4 procedure, primary cell at
@@ -221,16 +327,22 @@ reason to change the test (§8.5).
    day is bad when its outcome fill (share of live rows with a non-`gap`
    outcome) is < 95 %, or its Jev error share (rows with `absence: "jev"` over
    rows that reached the ask) is > 5 %. The day is excluded whole from §4–§6
-   and one line (`day  fill%  jev-err%  reason`) is appended to
+   (H1's blocks and H2's units alike) and one line (`day  fill%  jev-err%  reason`) is appended to
    `data/exclusions.tsv`, which the final write-up reproduces verbatim. On the
    third bad day `data/HALT` is written by hand ("prereg: 3 bad days"), the
    cause is fixed, and sends resume; the calendar does not stop. If fewer than
    21 days are kept at day 28 the block is void, reported as void, and a
    second block is a new pre-registration.
-4. **The day-14 look is health only:** `make report` §1–§3 (rows, absences,
-   fill, errors, latency, spend, drift, occupancy, test-retest). No cell of
-   §4–§6 of the report is read, no bootstrap is run, and the nightly is
-   neither stopped nor promoted on the strength of it.
+4. **The day-14 look is health only:** `/opt/homebrew/bin/python3 -m
+   loop.report --health --t0 <T0>`, which prints report §1–§3 (rows,
+   absences, fill, errors, latency, spend, drift, occupancy, test-retest) and
+   neither computes nor prints §4–§7. No cell of §4–§7 of the report is read
+   — its §6 is H2 (r, ρ, Brier, tails, the `trend` comparator) and its §7 the
+   arm-A confidence table, and neither is looked at; a plain `make report`
+   prints H1's and H2's statistics on lines of their own, so it is not the
+   look, and the same `--health` command serves any routine health check
+   during the sample — no bootstrap is run, and the nightly is neither
+   stopped nor promoted on the strength of it.
 5. **No extension after looking.** The sample ends at T0 + 28 days whatever
    the numbers say; nothing is added to n. A second block is a new
    pre-registration (`prereg-v2`), sealed before its own T0.
@@ -243,9 +355,18 @@ reason to change the test (§8.5).
 - Neither: the model arms are no better than four words and three lines of
   `if`, in direction, gross of fees, on this product, over these 28 days
   (stop rule 1).
-- H2 not supported: the confidence is not a probability of being right on
-  this task; the `c*` columns are then noise around `argmax` and are reported
-  as such.
+- H2 not supported: Jev's `up15` / `down15` carry no linear information
+  about the next 15-minute return on this product over these 28 days; the
+  `noultail` column is then noise around `hold` and is reported as such.
+- H2 supported and H1 not: the `trend` word, as Jev maps it into direction
+  probabilities, predicts the next 15-minute return, and the rewritten
+  action did not beat the rule that already acts on that word. It does not
+  show that Jev has a signal the action question ignores: lean tracked the
+  word at r 0.99 on the shakedown (§5), and whether Jev adds anything beyond
+  it is read only from the descriptive comparator beside the statistic. That
+  is a finding for a second pre-registration, not a change to this one.
+- Arm A's choice confidence (report §7) falsifies nothing: it is descriptive
+  (§5, §6).
 
 ## 10. Sealing
 
@@ -270,6 +391,17 @@ thin` means and so what arm C is. Two review corrections the same day, also
 before any decision row, change neither primary's statistic nor its α: §4 says the 0 bps cell is
 direction net of the spread (a round trip still pays one spread), not free of
 turnover; §6 takes the H1 cell out of the Bonferroni family (H1 at 0.025, the
-other 32 gross cells at 0.025 / 32).
+other 32 gross cells at 0.025 / 32). Amended again 2026-09-24, after the first
+181 live shakedown rows and before T0 was set or any sample row existed, from
+a decision Alex made that day: H2 moves from arm A's choice confidence to the
+direction probabilities, Pearson r between `up15 − down15` and `ret_h_bps`
+(§5); its unit, α and bootstrap scheme are unchanged, H1 is untouched, and the
+old confidence table stays in the report as descriptive (§6). Review
+corrections the same day, also before T0, change neither H2's statistic nor
+its α: §5 pins the bootstrap's draw (generator, block count, truncation,
+percentile rank) and says what a supported H2 would mean given that lean
+tracked the `trend` word on the shakedown, with the word printed beside the
+statistic as a descriptive comparator; §1, §7 and §9 read H2 accordingly; §8.4
+names the health-only command for the day-14 look.
 
 T0 (first tick_id of day 1): `____________________`   Sealed by: `____________`   on: `____________`

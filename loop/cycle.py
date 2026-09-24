@@ -394,10 +394,16 @@ def _guarded_tick(dry):
 def _sleep_to_boundary():
     """Sleep to the next multiple of CADENCE_S on the wall clock, recomputed from
     time.time() every round: no accumulated drift, and a 1.3 s tick still fires the
-    next one at :00."""
-    now = time.time()
-    nxt = (int(now) // config.CADENCE_S + 1) * config.CADENCE_S
-    time.sleep(max(0.0, nxt - now))
+    next one at :00. Loops until the clock has actually crossed the boundary:
+    time.sleep can return early (measured 2026-09-24: woke at :59.910 twice in 181
+    ticks), and a tick started before :00 floors to the minute just done -- a
+    duplicate send, and the next minute never recorded."""
+    nxt = (int(time.time()) // config.CADENCE_S + 1) * config.CADENCE_S
+    while True:
+        left = nxt - time.time()
+        if left <= 0:
+            return
+        time.sleep(left)
 
 
 def main(argv=None):

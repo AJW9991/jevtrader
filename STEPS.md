@@ -228,7 +228,9 @@ Want `prereg-v1`. Only then `bin/promote proposals/<date>.json <k>` (it
 refuses while `git tag -l prereg-v1` is empty). From here on the sample's
 numbers are `/opt/homebrew/bin/python3 -m loop.report --t0 <T0>`: rows cut to
 `[T0, T0 + 28 d)`, every arm replayed from flat at T0, the 900 s block
-statistic S_k of PREREG §3–§4 beside the per-tick figures.
+statistic S_k of PREREG §3–§4 beside the per-tick figures. The day-14 look
+(PREREG §8.4) is `/opt/homebrew/bin/python3 -m loop.report --health --t0 <T0>`:
+report §1–§3 only, no H1 or H2 number.
 
 **What changes.** One commit, one tag. **What it does not change.** Any file
 after this: a later edit to `PREREG.md` is `prereg-v2` and applies only to a

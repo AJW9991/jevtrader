@@ -34,6 +34,11 @@ gross (`FEE_BPS_PRIMARY = 0.0`), not at the venue's own taker fee (was
 decided 2026-09-23); the venue's 120 bps taker is `FEE_BPS_VENUE`, a
 descriptive realistic-cost column: profitability at retail fees is settled by
 arithmetic (240 bps a round trip against a ~33 bps 15-min sd), not tested.
+2026-09-24, decided by Alex: H2 moves to the direction probabilities — Pearson
+r between `up15.noul − down15.noul` and `ret_h_bps` on one row per 900 s block
+(PREREG §5) — not arm A's choice confidence, which with `v1`'s criteria
+restating the rule measures rule-matching, not outcomes (report §4.7,
+descriptive).
 
 ## 1. Toolchain and layout
 
@@ -274,8 +279,38 @@ Print, plain text, in this order:
    on them. `--t0` cuts the rows to [T0, T0 + 28 d) before any replay, so every
    arm starts flat at T0. (This replaced an every-15th-tick d_t, which PREREG §3
    says is not the statistic.)
-6. Calibration (H2, frozen arm A): for confidence bins [0.5,0.7,0.85,0.99,1],
-   P(argmax correct) where correct = buy&up or sell&down or hold&flat.
+6. H2, the direction lean (PREREG §5; 2026-09-24, decided by Alex: H2 moves
+   to the direction probabilities): lean_t = `up15.noul − down15.noul` (the
+   `v1` nouls, shared by A and B) against `ret_h_bps` of the outcome join
+   (SPEC §11). Units: the first live row (`mode` live, `absence` null) of each
+   900 s block anchored as in §4.5 (`--t0`, else the log's first tick; `--t0`
+   cuts to the sample first); a unit whose outcome is a gap or whose noul is
+   missing drops its block, with the drops counted by reason. Printed: Pearson
+   r over the units (PREREG §5's statistic) with Spearman ρ (average ranks)
+   beside it; r and ρ over every live tick with a pair (overlapping horizons,
+   descriptive); Brier of `up15.noul` vs 1[label = up] and of `down15.noul` vs
+   1[label = down], each beside the base-rate Brier (predicting the sample
+   frequency p, = p(1 − p)), for units and every tick; counts of `up15` and
+   `down15` in each measured tail (≥ `NOUL_TAIL` 0.99, < 0.15); and the
+   `trend` word as a no-model comparator (review, 2026-09-24: Jev sees only
+   the four words and lean tracked this one at r 0.99 on the shakedown,
+   PREREG §5), trend = +1 `pumping`, 0 `flat`, −1 `dumping` from the row's
+   `adj.trend`, for units and every tick: r(lean, trend), r(trend,
+   `ret_h_bps`), and r(lean, `ret_h_bps`) within `trend = flat` with its n.
+   Any r or ρ with fewer than two pairs, or with no variance on either side,
+   prints `undefined (<reason>)`, never a number and never a crash. Pearson,
+   Spearman and Brier are written out in stdlib; no interval is computed.
+7. Arm A's choice confidence vs rule-matching, not outcomes (descriptive; the
+   old H2 table): for confidence bins [0.5,0.7,0.85,0.99,1], P(argmax correct)
+   where correct = buy&up or sell&down or hold&flat, and beside it the share of
+   the bin where `a.argmax == rule_c`, under one line saying why it is not H2
+   (`v1`'s action criteria restate the rule, so the confidence reads how well
+   the answer matched it; nearly every answer is hold, correct only when
+   |ret_h| < 5 bps).
+`--health` prints §1–§3 only and neither computes nor prints §4–§7: PREREG
+§8.4's day-14 look is `python3 -m loop.report --health --t0 <T0>`, because a
+plain `make report` puts H1's and H2's statistics on lines of their own
+(review, 2026-09-24).
 No p-values in `make report`. Inference lives in PREREG.md and is run once.
 
 ## 5. Nightly
@@ -328,6 +363,12 @@ why). Tests must pass offline.
 - jev: with a mocked `urlopen`, the ledger row exists BEFORE the request is
   made; an unwritable ledger raises and nothing is sent; 401 raises `http-4xx`.
 - prompts: sha is stable; `CURRENT` = v1 gives identical a/b questions.
+- report: every §4 section from a synthetic log, key numbers by hand. H2 (§4.6,
+  2026-09-24): Pearson r and Spearman ρ by hand on a small log (ties at mean
+  ranks); a perfectly informative lean gives r = 1; a constant lean gives
+  `undefined (no variance in lean)` and the whole report still renders; Brier
+  and base-rate Brier by hand; tail counts at their edges; `--t0` cuts the
+  units to the sample.
 
 ## 7. Style
 
