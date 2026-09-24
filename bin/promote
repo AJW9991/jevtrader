@@ -1,0 +1,115 @@
+#!/opt/homebrew/bin/python3
+"""bin/promote -- the human apply step, and the ONLY writer of prompts/ (CONTRACT §5).
+
+Usage:  bin/promote proposals/<date>.json <k>        k = candidate index, from 0
+
+A person runs this at a terminal. It never runs under launchd, from a plist, a cron,
+a hook or another script: nothing in this repo self-deploys, and a wording no one
+read before it went live would turn the measurement into the thing it measures. It
+refuses without a tty for that reason, and refuses on a dirty git tree because a
+promote must be its own commit: every row after it names prompt_b_sha, and that sha
+must point at one committed text, not at a working copy someone was still editing.
+
+May: read the proposal, copy candidate k into prompts/v<N+1>.json as the `action`
+question (with "type": "choice" added: proposals carry none), carry skip/up15/down15
+from v1 byte-for-byte, write the new name to prompts/CURRENT, and print the unified
+diff of the action question against the version that was CURRENT.
+May not: touch data/, send anything, read the key, edit any existing prompt file, or
+pick k itself. N is the highest vN.json present, not CURRENT+1: after a rollback
+(CURRENT set back to v1 by hand) the next promote must still get a fresh number.
+"""
+import argparse, datetime, difflib, json, os, re, subprocess, sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(HERE)
+sys.path.insert(0, REPO)
+from loop import prompts                                   # noqa: E402
+
+_VFILE = re.compile(r"^v(\d+)\.json$")
+
+
+def _attended():
+    """A person at a terminal. Patched in tests; nowhere else."""
+    return sys.stdin.isatty()
+
+
+def clean_tree(repo):
+    r = subprocess.run(["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"git status failed: {r.stderr.strip()}")
+    return r.stdout.strip() == ""
+
+
+def next_version(root):
+    ns = [int(m.group(1)) for f in os.listdir(root) if (m := _VFILE.match(f))]
+    if not ns:
+        raise RuntimeError(f"{root}: no vN.json to number from")
+    return f"v{max(ns) + 1}"
+
+
+def _lines(q):
+    return [f"instructions: {q['instructions']}"] + [f"{k}: {q['criteria'][k]}" for k in prompts.CRITERIA["choice"]]
+
+
+def diff(cur_name, cur_action, new_name, new_action):
+    return "\n".join(difflib.unified_diff(_lines(cur_action), _lines(new_action), fromfile=f"{cur_name}.action",
+                                          tofile=f"{new_name}.action", lineterm="", n=4))
+
+
+def build(v1, cand, version, source, k, today):
+    """The new version document, key order as v1.json. The action is the candidate
+    projected onto the wire keys (prompts.question refuses a wrong shape); the three
+    nouls are v1's own objects, so their serialisation cannot differ from v1's."""
+    action = prompts.question({**cand, "type": "choice"}, "choice", f"{source} candidate {k}")
+    if any(ch.isdigit() for ch in action["instructions"] + "".join(action["criteria"].values())):
+        raise ValueError(f"candidate {k} carries a digit; PROMPT.md forbids numbers")
+    why = str(cand.get("rationale", "")).strip()
+    return {"version": version, "frozen": today,
+            "note": f"Promoted by bin/promote from {source} candidate {k}."
+                    + (f" Rationale: {why}" if why else "") + " skip/up15/down15 carried from v1 unchanged.",
+            "action": action, **{q: v1[q] for q in prompts.CARRIED}}
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="promote", description="copy candidate k of a proposal into prompts/v<N+1>.json; "
+                                 "run by a person, never under launchd")
+    ap.add_argument("proposal", help="proposals/<date>.json")
+    ap.add_argument("k", type=int, help="candidate index, from 0")
+    ap.add_argument("--prompts", default=None, help="prompts root (tests)")
+    ap.add_argument("--repo", default=REPO, help="git tree to check (tests)")
+    a = ap.parse_args(argv)
+    root = a.prompts or prompts.config.PROMPTS
+    try:
+        if not _attended():
+            raise RuntimeError("no tty: promote is run by a person at a terminal, never by launchd or a script")
+        if not clean_tree(a.repo):
+            raise RuntimeError("git tree is dirty: commit or stash first, so the promote is its own commit")
+        with open(a.proposal, encoding="utf-8") as fh:
+            cands = json.load(fh).get("candidates")
+        if not isinstance(cands, list) or not 0 <= a.k < len(cands):
+            raise RuntimeError(f"{a.proposal}: no candidate {a.k} (has {len(cands) if isinstance(cands, list) else 0})")
+        v1 = prompts.load("v1", root)
+        cur_name = prompts.current(root)
+        cur_doc = prompts.load(cur_name, root)
+        version = next_version(root)
+        target = os.path.join(root, version + ".json")
+        if os.path.exists(target):
+            raise RuntimeError(f"{target} exists")
+        doc = build(v1, cands[a.k], version, os.path.relpath(a.proposal, REPO), a.k,
+                    datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d"))
+        prompts.build(v1, doc)                             # the five wire questions must build before anything is written
+    except (OSError, ValueError, RuntimeError) as e:       # PromptError is a ValueError
+        print(f"promote: {e}", file=sys.stderr)
+        return 1
+    with open(target, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
+    with open(os.path.join(root, "CURRENT"), "w", encoding="utf-8") as fh:
+        fh.write(version + "\n")
+    print(diff(cur_name, cur_doc["action"], version, doc["action"]) or "(action wording identical)")
+    print(f"\npromote: wrote {target}, CURRENT -> {version} (sha {prompts.sha_of(doc)[:12]}); "
+          f"commit prompts/ now, on its own")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

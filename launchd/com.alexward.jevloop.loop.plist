@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.alexward.jevloop.loop</string>
+
+  <!-- One tick a minute: three public Coinbase GETs, one Jev request
+       (~1.8 KB body, ~$0.04/day at $0.042/MTok), one row appended to
+       data/decisions.jsonl. `--once` exits every time; a launchd double-fire
+       meets the flock on data/loop.lock and writes an absence "lock" row
+       rather than a second send. Hand-installed only (PROTOCOL.md §3.10),
+       after step 0 of STEPS.md; never by a script. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/python3</string>
+    <string>-m</string>
+    <string>loop.cycle</string>
+    <string>--once</string>
+  </array>
+
+  <!-- `-m loop.cycle` resolves against the cwd; the path guard also
+       realpaths this directory and exits 3 under the crypto repo. -->
+  <key>WorkingDirectory</key>
+  <string>/Users/alexanderward/Projects/jev-paper-loop</string>
+
+  <!-- 60 s of elapsed time, not a calendar minute: StartInterval drifts and
+       is coalesced after sleep, which is why tick_id is ts_rx floored to the
+       minute and the outcome join accepts [t+900, t+990] (config.py,
+       outcomes.py). A tick is ~1 s of feed plus one 20 s-timeout request,
+       under the 50 s watchdog, so ticks never overlap on a healthy host. -->
+  <key>StartInterval</key>
+  <integer>60</integer>
+
+  <!-- The first tick fires at bootstrap and at every login: a live send.
+       That is intended (the heartbeat proves the install), and it is why
+       bootstrap waits for the signed PROTOCOL and the loop key. -->
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+
+  <!-- launchd appends; the tick prints nothing on a good row, so this file
+       holds tracebacks and the watchdog only. logs/ is gitignored. -->
+  <key>StandardOutPath</key>
+  <string>/Users/alexanderward/Projects/jev-paper-loop/logs/loop-launchd.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/alexanderward/Projects/jev-paper-loop/logs/loop-launchd.log</string>
+</dict>
+</plist>

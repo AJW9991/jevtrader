@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.alexward.jevloop.nightly</string>
+
+  <!-- The slow model, once a night: nightly/propose.sh builds the day's
+       digest, makes ONE `claude -p` call (subscription OAuth token from
+       ~/.secondbrain-secrets/oauth_token, exported by the script, never by
+       this file), writes proposals/<date>.json, then policy_table.py asks
+       Jev each candidate on the 81 synthetic states (~$0.005). It writes
+       proposals/ and nothing else: prompts/ changes only by a person
+       running bin/promote (PROTOCOL.md §3.7). Hand-installed only. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/alexanderward/Projects/jev-paper-loop/nightly/propose.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/alexanderward/Projects/jev-paper-loop</string>
+
+  <!-- 03:30 local: after the UTC day has closed for the digest and clear of
+       the brain's 07:00 canary and 07:30 digest. A missed slot (asleep,
+       logged out) runs once at the next login, which is fine: the digest is
+       dated and a second run the same day overwrites its own files. -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>3</integer>
+    <key>Minute</key>
+    <integer>30</integer>
+  </dict>
+
+  <!-- /opt/homebrew/bin first: `claude` and python3 live there. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/alexanderward/Projects/jev-paper-loop/logs/nightly-launchd.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/alexanderward/Projects/jev-paper-loop/logs/nightly-launchd.log</string>
+
+  <!-- Never at load: a bootstrap must not spend a Claude call. -->
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>

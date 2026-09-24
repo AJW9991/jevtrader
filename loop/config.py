@@ -58,14 +58,22 @@ WINDOW_MIN = 300                   # minutes of 1m candles required (Coinbase se
 DEAD_BAND_BPS = 5.0                # |ret_h| below this is "flat" for the outcome label
 
 # ---- paper execution --------------------------------------------------------------
-# The venue's own taker fee is the PRIMARY. It is UNVERIFIED as of this file: the
-# fixtures builder must fetch the Coinbase Advanced fee page, record the tier-0
-# taker rate and the URL here, and the value must be confirmed before PREREG.md
-# is sealed. 60 bps is the widely quoted retail tier-0 taker rate and is the
-# conservative placeholder.
-FEE_BPS_PRIMARY = 60.0
-FEE_BPS_PRIMARY_SOURCE = "UNVERIFIED — placeholder; see CONTRACT.md §2 Book"
-FEE_BPS_COLUMNS = (60.0, 25.0, 10.0, 2.0)   # same decision, different constant; 10 = the article's, 2 = Binance.US
+# The venue's own taker fee is the PRIMARY. Coinbase Advanced retail tier 0
+# ("Intro 1", < $1K 30-day volume) is 0.60% maker / 1.20% TAKER per two sources
+# updated April 2026 (tokenecho.io, cryptofeediscount.com; fetched 2026-09-24).
+# An earlier placeholder here said 60 bps was the taker rate — that is the maker
+# rate. The official table (coinbase.com/advanced-fees) is behind sign-in, so
+# this stays UNVERIFIED until Alex reads it in-account, before PREREG.md is sealed.
+#
+# Consequence worth knowing before sealing: a round trip at 120 bps is 240 bps
+# against a 15-minute sd of ~33 bps, so any NET comparison mostly ranks which
+# arm trades least. The 0 bps column is the only one that measures direction.
+FEE_BPS_PRIMARY = 120.0
+FEE_BPS_PRIMARY_SOURCE = ("UNVERIFIED — Coinbase Advanced Intro 1 taker per secondary sources "
+                          "(April 2026); confirm at https://www.coinbase.com/advanced-fees signed in")
+FEE_BPS_COLUMNS = (120.0, 60.0, 25.0, 10.0, 2.0, 0.0)   # same decision, different constant: venue taker,
+                                                        # venue maker, 10 = the article's, 2 = Binance.US,
+                                                        # 0 = gross, the direction-only control
 
 # ---- rule columns ----------------------------------------------------------------
 CONF_THRESHOLDS = (0.50, 0.70, 0.85, 0.99)  # 0.99 is the only measured tail (JEV PROTOCOL 2.2); the
