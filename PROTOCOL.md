@@ -92,7 +92,7 @@ Amended 2026-09-24, before signing, by Alex: H1 is at 0 bps gross (the venue's
 by arithmetic, not tested), and `liq` walks the book for a $1,000 order instead
 of reading the top level, which was noise on this venue.
 
-In force from: `____________`  Signed: `____________`
+In force from: `2026-09-24`  Signed: `Alex Ward — approved in chat 2026-09-24 ("approved 0-5"), fields filled by Claude`
 
 (The signature is the commit that fills these two fields in. The JEV §7 line
 is pasted in the same sitting.)
