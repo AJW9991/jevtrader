@@ -467,7 +467,7 @@ class CycleTest(unittest.TestCase):
         # the wall clock crosses the boundary, however early each wake is.
         clock = [1000.0]                                       # 16 min 40 s: boundary at 1020
         def fake_sleep(s):
-            clock[0] += max(0.0, s - 0.09)                     # every wake 90 ms early
+            clock[0] += s - min(0.09, s / 2)                   # every wake early: 90 ms, or half a short sleep
         with mock.patch("time.time", side_effect=lambda: clock[0]), \
              mock.patch("time.sleep", side_effect=fake_sleep):
             cycle._sleep_to_boundary()
@@ -631,11 +631,17 @@ class CycleTest(unittest.TestCase):
         self.assertEqual([r["tick_id"] for r in self.rows()], ["20260924T022900Z", "20260924T023000Z"])
 
     def test_sigterm_after_a_tick_in_forever_exits_0_after_that_tick(self):
+        # The fake sleep advances the clock, as a real one does: _sleep_to_boundary loops
+        # until the wall clock crosses :00 (the 2026-09-24 early-wake fix), so a frozen
+        # clock would never let the first tick run.
+        clock = [NOW]
         def sleep(s):
             self.sleeps.append(s)
+            clock[0] += s
             if len(self.sleeps) == 2:
                 signal.raise_signal(signal.SIGTERM)
-        with mock.patch("time.sleep", side_effect=sleep):
+        with mock.patch("time.time", side_effect=lambda: clock[0]), \
+             mock.patch("time.sleep", side_effect=sleep):
             self.assertEqual(cycle.main(["--dry", "--forever"]), 0)
         self.assertEqual(len(self.rows()), 1)
 
