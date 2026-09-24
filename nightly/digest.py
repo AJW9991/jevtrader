@@ -23,6 +23,9 @@ propose from and stops before the model is called.
 """
 import argparse, collections, datetime, json, os, sys
 
+if __package__ in (None, ""):      # run as a script (CONTRACT §5 names `nightly/<file>.py`), not -m: sys.path[0]
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # is nightly/, so add the repo
+
 from loop import book, config, outcomes, prompts, state
 
 DISAGREE_CONF = 0.85       # the c85 column's cut (config.CONF_THRESHOLDS[2]); a lower cut would list

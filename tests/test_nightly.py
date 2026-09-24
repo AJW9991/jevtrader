@@ -4,7 +4,7 @@ in --dry; promote refuses on a dirty tree and carries v1's three nouls byte for 
 propose.sh --dry turns the fixture reply into a proposals json. Offline: loop.jev.ask
 is mocked wherever the table is run, subprocess.run is mocked for git, and every
 write lands in a temp dir. Nothing here opens a socket."""
-import datetime, importlib.util, io, json, os, shutil, subprocess, tempfile, unittest
+import datetime, importlib.util, io, json, os, shutil, subprocess, sys, tempfile, unittest
 from contextlib import redirect_stdout
 from unittest import mock
 
@@ -117,24 +117,25 @@ class DigestTest(unittest.TestCase):
         self.assertIn("outcomes joined 25/40", line)      # minutes 0..24 resolve inside the 41-row log (6 is unpriced)
         self.assertIn("trend dumping 0% flat 0% pumping 100%", line)
         self.assertIn(f"fee {config.FEE_BPS_PRIMARY:g} bps, column argmax: A 0 trades +0.0 bps", line)
-        self.assertIn("B 2 trades", line)                 # buy at minute 0, sell at minute 1
+        # a trade is a FILL (book.replay "trades"), not a round trip: B opens at 0, closes at 1,
+        # opens again at 2 (buy 0.99), holds through 3-4 and closes at 5 (sell 0.86); the
+        # sell at 30 finds it flat and is a no-op. Four fills, two round trips.
+        self.assertIn("B 4 trades", line)
         self.assertIn("C 1 trades", line)                 # rule_c buy at minute 0, then held long
         self.assertIn("B disagreements 3", line)
 
     def test_cap_at_25(self):
-        rows = synthetic_log()
-        # forty buys at 0.9 whose t+15 all read 99.0: forty disagreements, 25 listed
-        for m in range(25, 40):
-            rows[m]["answers"]["b_action"] = _answer("buy", 0.9)
-        for m in range(15, 41):
-            if rows[m]["mid"] is not None:
-                rows[m]["mid"] = 99.0
-        rows += [_row(m, 99.0, ("hold", 0.6)) for m in range(41, 60)]
+        # forty buys at 0.9 on a mid that falls 0.1 a minute: every t+15 is ~-150 bps, so
+        # all forty are disagreements and exactly DISAGREE_MAX = 25 are listed. (The earlier
+        # form set the mid at t AND at t+15 to 99.0, so those buys were flat, not wrong,
+        # and only 2 rows could ever be listed: the fixture, not the cap, was under test.)
+        rows = [_row(m, 100.0 - 0.1 * m, ("buy", 0.9) if m < 40 else ("hold", 0.6)) for m in range(60)]
         _write_log(self.log, rows)
         text, _ = digest.build(DAY, self.log)
-        n_listed = len(_table_rows(text))
-        self.assertEqual(n_listed, 25)
-        self.assertIn("25 of ", text)
+        self.assertEqual(len(_table_rows(text)), digest.DISAGREE_MAX)
+        self.assertEqual(digest.DISAGREE_MAX, 25)
+        self.assertIn("25 of 40 shown", text)
+        self.assertIn("B disagreements 40", text)
 
     def test_other_days_are_excluded_but_join_across_midnight(self):
         rows = synthetic_log()
@@ -185,6 +186,8 @@ class PolicyTableTest(unittest.TestCase):
         self.tmp = self.enterContext(tempfile.TemporaryDirectory())
         self.ask = self.enterContext(mock.patch("loop.jev.ask"))
         self.urlopen = self.enterContext(mock.patch("urllib.request.urlopen"))
+        self.halt = os.path.join(self.tmp, "HALT")                  # never the repo's data/HALT
+        self.enterContext(mock.patch.object(config, "HALT", self.halt))
         self.prop = os.path.join(self.tmp, "2026-09-22.json")
         with open(self.prop, "w") as fh:
             json.dump({"candidates": [CAND]}, fh)
@@ -216,6 +219,18 @@ class PolicyTableTest(unittest.TestCase):
         self.ask.assert_not_called()
         self.urlopen.assert_not_called()
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "2026-09-22.md")))
+
+    def test_runs_by_path_as_the_contract_names_it(self):
+        # CONTRACT §5 says `policy_table.py proposals/<date>.json` and `nightly/digest.py`:
+        # run by path, sys.path[0] is nightly/ and `from loop import` must still resolve.
+        env = {**os.environ, "TYPESAFE_API_KEY_LOOP": "", "TYPESAFE_API_KEY": ""}
+        r = subprocess.run([sys.executable, os.path.join(REPO, "nightly", "policy_table.py"), "--dry", self.prop],
+                           cwd=self.tmp, capture_output=True, text=True, timeout=60, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.split("\n", 1)[0], "dry: 81 payloads, 0 sent")
+        r = subprocess.run([sys.executable, os.path.join(REPO, "nightly", "digest.py"), "--help"],
+                           cwd=self.tmp, capture_output=True, text=True, timeout=60, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
 
     def test_payloads_are_81_one_per_state_all_candidates_in_each(self):
         cands = policy_table.load_candidates(self.prop)
@@ -267,6 +282,40 @@ class PolicyTableTest(unittest.TestCase):
             text = fh.read()
         self.assertIn("INCOMPLETE", text)
         self.assertIn("errors: 81", text)
+        with open(self.halt) as fh:                                   # the caller writes HALT (CONTRACT §2)
+            reason = fh.read()
+        self.assertIn("key rejected", reason)
+        self.assertIn("401", reason)
+
+    def test_halt_present_sends_nothing(self):
+        # PROTOCOL §3.8: HALT stops sends. These never reach decisions.jsonl, so the spend
+        # guard cannot see them; without this check the nightly sent 81 after a HALT.
+        with open(self.halt, "w") as fh:
+            fh.write("spend: by hand\n")
+        out = os.path.join(self.tmp, "t.md")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = policy_table.main([self.prop, "--out", out])
+        self.assertEqual(rc, 0)
+        self.assertIn("HALT present", buf.getvalue())
+        self.ask.assert_not_called()
+        self.urlopen.assert_not_called()
+        self.assertFalse(os.path.exists(out))
+
+    def test_persistent_429_ends_the_night_after_one_ask(self):
+        self.ask.side_effect = jev.JevError("http-429", "429 Too Many Requests", 429, "env:X")
+        results = policy_table.run(policy_table.questions(policy_table.load_candidates(self.prop),
+                                                          policy_table.current_action()[1]))
+        self.assertEqual(self.ask.call_count, 1)                     # jev.ask's own retry is its only one
+        self.assertEqual({r["error"] for r in results}, {"http-429"})
+        self.assertFalse(os.path.exists(self.halt))                  # a limit is not a rejected key
+
+    def test_transient_failures_in_a_row_end_the_night(self):
+        self.ask.side_effect = jev.JevError("http-5xx", "503", 503, "env:X")
+        results = policy_table.run(policy_table.questions(policy_table.load_candidates(self.prop),
+                                                          policy_table.current_action()[1]))
+        self.assertEqual(self.ask.call_count, policy_table.MAX_TRANSIENT_RUN)
+        self.assertEqual(sum(1 for r in results if r["error"]), 81)
 
     def test_transient_error_continues(self):
         by = _by_state()
@@ -336,7 +385,14 @@ class PromoteTest(unittest.TestCase):
             json.dump({"candidates": [CAND, {**CAND, "instructions": "Second candidate."}]}, fh)
         self.promote = _load_promote()
         self.git = self.enterContext(mock.patch.object(self.promote.subprocess, "run"))
-        self.git.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        self.status, self.tags = "", "prereg-v1\n"                   # a clean tree, PREREG sealed
+
+        def git(argv, **kw):
+            out = self.status if argv[:2] == ["git", "status"] else self.tags if argv[:2] == ["git", "tag"] else None
+            if out is None:
+                raise AssertionError(f"unexpected command {argv}")
+            return subprocess.CompletedProcess(argv, 0, stdout=out, stderr="")
+        self.git.side_effect = git
         self.enterContext(mock.patch.object(self.promote, "_attended", return_value=True))
 
     def _run(self, *argv):
@@ -346,7 +402,7 @@ class PromoteTest(unittest.TestCase):
         return rc, buf.getvalue(), err.getvalue()
 
     def test_dirty_tree_refuses_and_writes_nothing(self):
-        self.git.return_value = subprocess.CompletedProcess([], 0, stdout=" M loop/x.py\n", stderr="")
+        self.status = " M loop/x.py\n"
         rc, _, err = self._run(self.prop, "0", "--prompts", self.root)
         self.assertEqual(rc, 1)
         self.assertIn("dirty", err)
@@ -354,6 +410,21 @@ class PromoteTest(unittest.TestCase):
         self.assertEqual(prompts.current(self.root), "v1")
         self.git.assert_called_once()
         self.assertEqual(self.git.call_args.args[0], ["git", "status", "--porcelain"])
+
+    def test_unsealed_prereg_refuses_and_writes_nothing(self):
+        # PREREG §10: the tag must exist before the first row whose prompt_b is not v1.
+        for tags in ("", "prereg-v1-draft\n", "other\n"):
+            self.tags = tags
+            rc, _, err = self._run(self.prop, "0", "--prompts", self.root)
+            self.assertEqual(rc, 1, tags)
+            self.assertIn("prereg-v1", err)
+            self.assertEqual(sorted(os.listdir(self.root)), ["CURRENT", "v1.json"])
+            self.assertEqual(prompts.current(self.root), "v1")
+        self.assertEqual(self.git.call_args.args[0], ["git", "tag", "-l", "prereg-v1"])
+
+    def test_promote_is_executable_as_the_contract_runs_it(self):
+        # CONTRACT §5 and STEPS.md run `bin/promote proposals/<date>.json <k>` by path
+        self.assertTrue(os.access(os.path.join(REPO, "bin", "promote"), os.X_OK))
 
     def test_no_tty_refuses(self):
         with mock.patch.object(self.promote, "_attended", return_value=False):
@@ -384,6 +455,22 @@ class PromoteTest(unittest.TestCase):
         self.assertIn("+++ v2.action", out)
         self.assertIn("-instructions: " + v1["action"]["instructions"], out)
         self.assertIn("+instructions: Second candidate.", out)
+
+    def test_promoted_action_has_type_choice_so_the_next_tick_builds(self):
+        # nightly candidates carry only instructions + criteria (+ rationale); prompts.build()
+        # refuses a question without "type", so a promote that copied the candidate verbatim
+        # would make the first tick after it raise PromptError. Replayed with exactly the
+        # calls cycle._run makes: load v1, current(), load(current), build.
+        self.assertNotIn("type", CAND)
+        rc, _, _ = self._run(self.prop, "0", "--prompts", self.root)
+        self.assertEqual(rc, 0)
+        cur = prompts.current(self.root)
+        doc = prompts.load(cur, self.root)
+        self.assertEqual(doc["action"]["type"], "choice")
+        qs = prompts.build(prompts.load("v1", self.root), doc)
+        self.assertEqual(list(qs), ["a_action", "b_action", "skip", "up15", "down15"])
+        self.assertEqual(qs["b_action"], {"type": "choice", "instructions": CAND["instructions"],
+                                          "criteria": CAND["criteria"]})
 
     def test_numbers_from_highest_file_not_current(self):
         self._run(self.prop, "0", "--prompts", self.root)                     # v2
@@ -437,6 +524,23 @@ class ProposeDryTest(unittest.TestCase):
         self.assertEqual(sends_before, sends_after)
         self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", log + r.stdout + r.stderr)
 
+    def test_halt_present_skips_the_table(self):
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        _write_log(os.path.join(tmp, "data", "decisions.jsonl"), synthetic_log())
+        with open(os.path.join(tmp, "data", "HALT"), "w") as fh:
+            fh.write("by hand\n")
+        r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry",
+                            "--date", "2026-09-22", "--root", tmp],
+                           cwd=tmp, capture_output=True, text=True, timeout=120,
+                           env={**os.environ, "TYPESAFE_API_KEY_LOOP": "", "TYPESAFE_API_KEY": ""})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(os.path.join(tmp, "logs", "propose.log")) as fh:
+            log = fh.read()
+        self.assertIn("HALT present", log)
+        self.assertNotIn("dry: 81 payloads", log)                    # policy_table.py never ran
+        self.assertNotIn("OK proposals/", log)
+        self.assertTrue(os.path.exists(os.path.join(tmp, "proposals", "2026-09-22.json")))
+
     def test_usage_error_is_2_and_dry_needs_no_claude(self):
         r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--bogus"],
                            capture_output=True, text=True, timeout=30)
@@ -445,7 +549,12 @@ class ProposeDryTest(unittest.TestCase):
             src = fh.read()
         self.assertIn('--tools ""', src)
         self.assertNotIn("echo $CLAUDE_CODE_OAUTH_TOKEN", src)
-        self.assertNotIn("prompts/", src.split("# May not")[1].split("\n")[0])   # the header says it never writes there
+        # The header's "May not" line NAMES prompts/ -- it is the promise never to write there
+        # (CONTRACT §5) -- so the promise is asserted as present, and kept by checking that no
+        # line of code (comments excluded) mentions prompts/ at all.
+        self.assertIn("write under prompts/", src.split("# May not")[1].split("\n")[0])
+        code = [l for l in src.splitlines() if not l.lstrip().startswith("#")]
+        self.assertEqual([l for l in code if "prompts/" in l or "/prompts" in l], [])
 
 
 if __name__ == "__main__":

@@ -25,6 +25,7 @@ HEARTBEAT = os.path.join(DATA, "heartbeat")
 PROMPTS = os.path.join(REPO, "prompts")
 PROPOSALS = os.path.join(REPO, "proposals")
 SPEC = os.path.join(REPO, "SPEC.md")
+PROTOCOL = os.path.join(REPO, "PROTOCOL.md")   # jev.ask refuses to send until its signature line is filled
 
 # The two trees this project must never run under. Resolved with realpath at
 # startup; a match is exit 3 before anything else happens.
@@ -40,6 +41,12 @@ MODEL = "jev-1.13.0"               # pinned: every JEV threshold was calibrated 
 JEV_TIMEOUT_S = 20
 USD_PER_MTOK = 0.042               # $0.042 per million INPUT tokens; output is free (docs, 2026-09-23)
 DAILY_SPEND_HALT_USD = 0.25        # ~5x the estimate; a runaway writes data/HALT and stops SENDING only
+JEV_TOKENS_IF_UNKNOWN = 2000       # the spend guard's charge for a send whose row carries input_tokens 0 or
+                                   # null (a reply with no `usage`, or a send that failed after it left):
+                                   # counting it as 0 would blind the tripwire. The body is ~1.8 KB (~450
+                                   # tokens at 4 chars/token; ~600 billed is the estimate), so 2000 is a
+                                   # ceiling, >3x. At 2000 the guard trips at ~2,976 such sends in a UTC
+                                   # day, 2x the cadence: a runaway (double-firing, a loop bug), not a day
 KEY_PATHS = (                      # first hit wins; the loop's own key is preferred so a loop-triggered
     ("env", "TYPESAFE_API_KEY_LOOP"),                                   # limit never touches the
     ("file", os.path.expanduser("~/.secondbrain-secrets/typesafe-api-key-loop")),  # brain's live screen

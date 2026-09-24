@@ -29,7 +29,7 @@ _ENVLINE = re.compile(r"^[A-Z][A-Z0-9_]*=")   # a key file may hold NAME=value, 
 
 
 class JevError(Exception):
-    """kind in {no-key, ledger, http-4xx, http-429, http-5xx, timeout, parse}. A transport
+    """kind in {unsigned, no-key, ledger, http-4xx, http-429, http-5xx, timeout, parse}. A transport
     failure that is not literally a timeout (refused, reset, DNS) is reported as `timeout`
     with the real class in detail: the contract's kind set has no other transient slot.
     status is the HTTP code when there was one -- 401/403 mean the caller writes HALT.
@@ -44,10 +44,20 @@ def _name(kind, path):
     return f"{kind}:{path.replace(_HOME, '~', 1)}"
 
 
+def _usable(v):
+    """A key is printable ASCII with no whitespace. Anything else is refused BEFORE it
+    reaches a header: http.client rejects a value with an embedded newline by raising
+    ValueError('Invalid header value %r'), whose message carries 'Bearer <key>' -- a key
+    in an env var with an internal newline would otherwise be printed to stderr (the
+    launchd log). File keys read one line, so only the env forms can carry one."""
+    return v.isascii() and v.isprintable() and not any(ch.isspace() for ch in v)
+
+
 def key():
     """(value, path_name); first hit in config.KEY_PATHS wins, so a loop-triggered rate
     limit lands on the loop's own key before the brain's. The name is safe to log; the
-    value goes into one Authorization header and nowhere else."""
+    value goes into one Authorization header and nowhere else. A first hit that is not
+    usable raises no-key naming its PATH; it does not fall through to a shared key."""
     for kind, path in config.KEY_PATHS:
         if kind == "env":
             v = os.environ.get(path, "").strip()
@@ -61,6 +71,9 @@ def key():
             if _ENVLINE.match(v):
                 v = v.split("=", 1)[1].strip().strip("\"'")
         if v:
+            if not _usable(v):
+                raise JevError("no-key", f"{_name(kind, path)} holds an unusable value "
+                                         "(whitespace, a control or a non-ASCII character)")
             return v, _name(kind, path)
     raise JevError("no-key", "looked in " + ", ".join(_name(k, p) for k, p in config.KEY_PATHS))
 
@@ -133,10 +146,31 @@ def _parse(raw, questions, ms, kpath):
                 if f not in a:
                     raise KeyError(f"{qid}.{f}")
         tokens = int((d.get("usage") or {}).get("input_tokens", 0))   # output is free (config): input is the spend
-    except (ValueError, TypeError, KeyError, AttributeError) as e:
+    except (ValueError, TypeError, KeyError, AttributeError, ArithmeticError, RecursionError) as e:
+        # ArithmeticError: "input_tokens": Infinity parses to inf and int(inf) is OverflowError;
+        # RecursionError: a pathologically nested body. Either would otherwise escape as an
+        # unexpected exception from a server that has stopped behaving.
         raise JevError("parse", f"{type(e).__name__}: {e}", key_path=kpath) from None
     return {"answers": answers, "model": d.get("model"), "input_tokens": tokens,
             "latency_ms": ms, "key_path": kpath}
+
+
+_SIG = re.compile(r"^In force from: `([^`]*)`\s+Signed: `([^`]*)`", re.M)
+
+
+def signed():
+    """True only when PROTOCOL.md's last line carries both fields. PROTOCOL.md says
+    nothing here sends before Alex signs it; until 2026-09-24 that rested on nobody
+    running a non-dry tick while a key file existed -- and the shared key does exist.
+    The check sits in ask(), which every send in cycle and policy_table goes through,
+    the same choke-point pattern as JEV's read() guard. A field of underscores or
+    blanks is unsigned; an unreadable file is unsigned."""
+    try:
+        with open(config.PROTOCOL, encoding="utf-8") as fh:
+            m = _SIG.search(fh.read())
+    except OSError:
+        return False
+    return bool(m) and all(f.strip().strip("_").strip() for f in m.groups())
 
 
 def ask(state, questions):
@@ -146,6 +180,8 @@ def ask(state, questions):
     401/403 mean the key is rejected and a resend would only repeat the refusal. A
     retried attempt gets its own ledger row: the ledger counts sends, not decisions.
     latency_ms is the answering request alone; the wait between attempts is ours."""
+    if not signed():                                     # before the key is even read
+        raise JevError("unsigned", f"{os.path.basename(config.PROTOCOL)} is not signed; nothing sent")
     k, kpath = key()                                     # no key: nothing to ledger, nothing to send
     req = urllib.request.Request(config.JEV_URL, data=_body(dry_payload(state, questions)), headers={
         "Authorization": "Bearer " + k, "Content-Type": "application/json"})
@@ -166,6 +202,11 @@ def ask(state, questions):
                 raise JevError("http-4xx", f"{e.code} {e.reason}", e.code, kpath) from None
         except TRANSIENT as e:
             err, wait = JevError("timeout", _why(e), None, kpath), RETRY_S
+        except ValueError:
+            # Raised locally before a byte leaves (http.client refusing a header or URL). Its
+            # message can quote the Authorization header, so it is dropped, never chained.
+            raise JevError("parse", "request refused locally (ValueError; message withheld)",
+                           key_path=kpath) from None
         else:
             return _parse(raw, questions, int((time.monotonic() - t0) * 1000), kpath)
         if attempt == 1:

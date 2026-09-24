@@ -175,8 +175,11 @@ still writes a row with `absence` set and everything else null it can't fill.
 { "mid_h": float|null, "ret_h_bps": float|null, "label": "up"|"down"|"flat"|null,
   "absence": null|"gap" }
 ```
-mid_h from the first row whose `ts_rx` ∈ [t+h, t+h+90 s]; `ret_h_bps = 1e4*ln(mid_h/mid_t)`;
-label with a ±5 bps dead band. Anything else is `gap`, never the wrong row.
+mid_h from the priced row whose `ts_rx` is NEAREST t+h within ±30 s (half a cadence;
+ties → the earlier row); `ret_h_bps = 1e4*ln(mid_h/mid_t)`; label with a ±5 bps dead
+band. Anything else is `gap`, never the wrong row. (Was "first row in [t+h, t+h+90 s]"
+until 2026-09-24: ts_rx jitter made that pick the t+16 row whenever the t+15 row
+landed a millisecond earlier in its minute than t did.)
 
 **Book** — `loop/book.py`, pure functions:
 ```
@@ -196,18 +199,26 @@ Fee constants come from `config.FEE_BPS_COLUMNS`; the primary is
 
 Order, every time:
 1. **Guards.** Resolved repo path must not start with either prefix in
-   `config.FORBIDDEN_PREFIXES` → exit 3. `data/HALT` exists → write a row with
-   `absence: "halt"`, exit 0. Today's spend (sum of `jev.input_tokens` over today's
-   rows × `config.USD_PER_MTOK` / 1e6) ≥ `config.DAILY_SPEND_HALT_USD` → write
-   `data/HALT` with the reason and exit 0. `fcntl.flock` on `data/loop.lock`
-   non-blocking; if held → `absence: "lock"`, exit 0.
+   `config.FORBIDDEN_PREFIXES` → exit 3. `data/HALT` exists → this tick is
+   HALTED. Today's spend (sum of `jev.input_tokens` over today's rows ×
+   `config.USD_PER_MTOK` / 1e6) ≥ `config.DAILY_SPEND_HALT_USD` → write
+   `data/HALT` with the reason; this tick is HALTED. `fcntl.flock` on
+   `data/loop.lock` non-blocking; if held → `absence: "lock"`, exit 0.
+   **HALT stops sends only** (PROTOCOL §3.8, SPEC §13.2): a HALTED tick runs
+   steps 2–4 as usual and then writes its row with `absence: "halt"` in place
+   of steps 5–7 — no ledger row, no send, no body printed — and exits 0. The
+   feed, `rule_c`, the marks and the t+h join therefore survive a HALT. A
+   failure in steps 2–4 keeps its own absence: `absence` names the first step
+   that did not happen.
 2. **Feed.** `snapshot()`. On `FeedError` → row with `absence: "feed"`, exit 0.
 3. **State.** features → adjectives → state string → rule_c.
 4. **Prompts.** load v1 and CURRENT; shas; questions.
 5. **Dry?** `--dry` → write the row with `answers: null`, `columns: {a:null,b:null}`,
    `mode: "dry"`. No ledger row, no send. This is the free thing, run first.
 6. **Ask.** `jev.ask()`. On `JevError` → row with `absence: "jev"`, `jev.error` set.
-   On 401/403 also write `data/HALT` ("key rejected").
+   On 401/403 also write `data/HALT` ("key rejected"). Any other exception once
+   the send has begun → `absence: "jev"`, `jev.error: "unexpected"` (the request
+   may have left, so the spend guard must charge it; `guard` rows cost $0).
 7. **Columns.** `rules.columns()` for a and b.
 8. **Write** the row (atomic append: build the line, one `write`, `flush`, `fsync`).
 9. **Heartbeat.** touch `data/heartbeat` with `ts_rx`.
@@ -231,10 +242,16 @@ Print, plain text, in this order:
    `a_action.choice` vs `b_action.choice`, and mean |Δconfidence|. This is Jev's
    determinism, measured for free.
 4. Agreement of column `a.argmax` with `rule_c` (does the model follow the rule it was given).
-5. For each pair (B−C, A−C, B−A) × each column × each fee: n ticks, n ticks with
-   differing positions ("disagreement ticks"), mean d_t, mean d_t on disagreement
-   ticks, hit rate on disagreement ticks, trades/day each side. Primary cell is
-   marked. Every-15th-tick subsample reported beside the all-ticks figure.
+5. For each pair (B−C, A−C, B−A) × each column × each fee: n ticks, n ticks where
+   the arms are on different SIDES (long vs flat) into or out of the tick
+   ("disagreement ticks"; a quantity difference between two longs is not one),
+   mean d_t, mean d_t on disagreement ticks, hit rate on disagreement ticks,
+   trades/day each side. Primary cell is marked. Beside the all-ticks figure,
+   PREREG §3's statistic: 900 s blocks anchored at T0 (`--t0`; else at the log's
+   first tick), n blocks, mean S_k, disagreement blocks and their share, mean S_k
+   on them. `--t0` cuts the rows to [T0, T0 + 28 d) before any replay, so every
+   arm starts flat at T0. (This replaced an every-15th-tick d_t, which PREREG §3
+   says is not the statistic.)
 6. Calibration (H2, frozen arm A): for confidence bins [0.5,0.7,0.85,0.99,1],
    P(argmax correct) where correct = buy&up or sell&down or hold&flat.
 No p-values in `make report`. Inference lives in PREREG.md and is run once.
@@ -259,12 +276,15 @@ each candidate AND the CURRENT action question on the 81 synthetic state strings
 candidate, the 81-row table of choice/confidence, the diff of its wording vs
 CURRENT, and the count of states where it differs from CURRENT and from rule_c.
 **It scores nothing against any logged outcome.** The nightly never touches
-`prompts/`.
+`prompts/`. While `data/HALT` exists it sends nothing (propose.sh skips the
+table, and `policy_table.py` refuses again); a 429, or three transient failures
+in a row, end its night; a 401/403 writes `data/HALT`.
 
 `bin/promote proposals/<date>.json <k>`: copies candidate k to `prompts/v<N+1>.json`
 (with the other three questions carried from v1 unchanged), writes the new
 version name to `prompts/CURRENT`, prints the diff, and refuses if `git status`
-is dirty. A person runs it. Nothing else writes `prompts/`.
+is dirty or the `prereg-v1` tag does not exist (PREREG §10: sealed before the
+first row with `prompt_b != "v1"`). A person runs it. Nothing else writes `prompts/`.
 
 ## 6. Tests (`tests/`, `python3 -m unittest`)
 

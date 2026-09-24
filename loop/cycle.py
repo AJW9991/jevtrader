@@ -11,14 +11,21 @@ key (jev.py names its path in the row, never its value), or open any file when
 the resolved repo path sits under a forbidden prefix -- that check runs first
 and exits 3, the one exit besides a usage error (2) that is not 0.
 
-Every path past the path guard writes exactly one row; `absence` says which step
-did not happen:
-  halt   data/HALT was present, or this tick tripped the spend guard and wrote it
+Every path past the path guard writes exactly one row; `absence` names the FIRST
+step that did not happen:
+  halt   the send, and only the send: data/HALT was present, or this tick tripped
+         the spend guard and wrote it. HALT stops SENDS (PROTOCOL §3.8, SPEC §13.2):
+         the lock, the feed, the state, rule_c and the prompt shas all still run and
+         are logged, so the marks, arm C's rule and the t+h outcomes of the 15
+         minutes before a HALT survive it. No ledger row, no request, no body printed.
+         A feed or prompts failure under HALT keeps its own absence (it came first).
   lock   another process holds data/loop.lock (launchd double-fire)
   feed   FeedError, or state.py refusing the window (ValueError)
   jev    JevError (its kind in jev.error; 401/403 also write HALT), an answer the
-         rules refuse (jev.error "parse", the raw answer still logged), or the
-         watchdog firing inside the send (jev.error "watchdog")
+         rules refuse (jev.error "parse", the raw answer still logged), the watchdog
+         firing inside the send (jev.error "watchdog"), or any other exception once
+         the send had begun (jev.error "unexpected"): the request may have left, so
+         the spend guard must charge the row, and "guard" rows are charged nothing
   guard  anything else that stopped the tick before the send: prompts that do
          not load, the watchdog before the feed answered, an unexpected exception
 The path guard writes nothing: a row under a forbidden tree is what it prevents.
@@ -128,11 +135,33 @@ def _rows(buf):
     return out
 
 
+UNSENT_KINDS = ("unsigned", "no-key", "ledger")   # JevError kinds raised before any request left: nothing billed
+
+
+def billed_tokens(r):
+    """Input tokens the spend guard charges one row. Logged tokens when positive. Otherwise,
+    a live row that reached the model -- absence null, or absence "jev" with any kind but
+    the two raised before a request -- is charged config.JEV_TOKENS_IF_UNKNOWN: jev.ask
+    logs 0 when the reply has no `usage` and null when the send failed, and reading either
+    as free would blind the tripwire exactly when the server stops reporting. Dry rows and
+    the halt/lock/feed/guard absences never sent and cost 0."""
+    j = r.get("jev") if isinstance(r.get("jev"), dict) else {}
+    t = j.get("input_tokens")
+    if isinstance(t, (int, float)) and not isinstance(t, bool) and t > 0:
+        return t
+    if r.get("mode") != "live":
+        return 0
+    ab = r.get("absence")
+    if ab is None or (ab == "jev" and j.get("error") not in UNSENT_KINDS):
+        return config.JEV_TOKENS_IF_UNKNOWN
+    return 0
+
+
 def spend_today(now, path=None):
-    """USD of input tokens over today's rows (UTC date of `now`, matched on tick_id).
-    Reads the tail (TAIL_BYTES) and widens to the whole file only when the tail's first
-    row is already today's, i.e. today did not fit. Dry and absence rows carry null
-    tokens and count nothing; a missing log is $0."""
+    """USD of input tokens over today's rows (UTC date of `now`, matched on tick_id), each
+    row charged billed_tokens(). Reads the tail (TAIL_BYTES) and widens to the whole file
+    only when the tail's first row is already today's, i.e. today did not fit. A missing
+    log is $0."""
     path = path or config.DECISIONS
     day = time.strftime("%Y%m%d", time.gmtime(now))
     try:
@@ -142,12 +171,7 @@ def spend_today(now, path=None):
             rows = _rows(_tail(path, 0)[0])
     except OSError:
         return 0.0
-    tokens = 0
-    for r in rows:
-        if str(r.get("tick_id", ""))[:8] == day:
-            t = (r.get("jev") or {}).get("input_tokens")
-            if isinstance(t, (int, float)) and not isinstance(t, bool):
-                tokens += t
+    tokens = sum(billed_tokens(r) for r in rows if str(r.get("tick_id", ""))[:8] == day)
     return tokens * config.USD_PER_MTOK / 1e6
 
 
@@ -231,9 +255,11 @@ def write_row(row):
 
 
 # ---- the tick ------------------------------------------------------------------------------
-def _run(row, dry):
+def _run(row, dry, halt=False):
     """Steps 2-7 of CONTRACT §3 into `row`. Every failure lands in row["absence"]; the
-    caller writes the row whatever happened here."""
+    caller writes the row whatever happened here. `halt`: steps 2-4 run as usual and the
+    row is closed with absence "halt" where step 5/6 would begin -- nothing is printed,
+    ledgered or sent."""
     stage = "feed"
     try:
         snap = feed.snapshot()
@@ -252,6 +278,9 @@ def _run(row, dry):
         qs = prompts.build(v1, curdoc)
         row.update(prompt_a="v1", prompt_a_sha=prompts.sha_of(v1),
                    prompt_b=cur, prompt_b_sha=prompts.sha_of(curdoc))
+        if halt:                             # HALT stops SENDS only: everything above is the observation
+            row["absence"] = "halt"
+            return
         if dry:                              # the free thing: the exact body, on stdout, unsent
             print(json.dumps(jev.dry_payload(s, qs)))
             return
@@ -278,6 +307,8 @@ def _run(row, dry):
     except ValueError as e:
         if stage == "columns":               # a choice outside buy/sell/hold: the answer is logged,
             row["absence"], row["jev"]["error"] = "jev", "parse"   # the columns are not
+        elif stage == "ask":                 # past the ledger row: the request may have left
+            row["absence"], row["jev"]["error"] = "jev", "unexpected"
         else:
             row["absence"] = "feed" if stage == "state" else "guard"
         _err(f"{stage}: {e}")
@@ -288,7 +319,10 @@ def _run(row, dry):
             row["absence"] = "feed" if stage == "feed" else "guard"
         _err(f"watchdog: {WATCHDOG_S} s passed during {stage}")
     except Exception:
-        row["absence"] = "guard"
+        if stage in ("ask", "columns"):      # the send had begun: "guard" would bill it $0 (billed_tokens)
+            row["absence"], row["jev"]["error"] = "jev", "unexpected"
+        else:
+            row["absence"] = "guard"
         _err(f"unexpected during {stage}:\n" + traceback.format_exc())
 
 
@@ -326,21 +360,19 @@ def tick(dry=False, now=None):
     except OSError as e:
         _err(f"cannot create {config.DATA}: {e}")
         return 0
-    if os.path.exists(config.HALT):
-        row["absence"] = "halt"
-        return _finish(row)
-    usd = spend_today(t0)
-    if usd >= config.DAILY_SPEND_HALT_USD:
-        _halt(f"{HALT_SPEND}: ${usd:.4f} of input tokens today >= "
-              f"${config.DAILY_SPEND_HALT_USD} (config.DAILY_SPEND_HALT_USD) at {row['ts_rx']}")
-        row["absence"] = "halt"
-        return _finish(row)
+    halt = os.path.exists(config.HALT)      # HALT stops SENDS; the observation below still runs
+    if not halt:
+        usd = spend_today(t0)
+        if usd >= config.DAILY_SPEND_HALT_USD:
+            _halt(f"{HALT_SPEND}: ${usd:.4f} of input tokens today >= "
+                  f"${config.DAILY_SPEND_HALT_USD} (config.DAILY_SPEND_HALT_USD) at {row['ts_rx']}")
+            halt = True
     lk = _lock()
     if lk is None:
         row["absence"] = "lock"
         return _finish(row)
     try:
-        _run(row, dry)
+        _run(row, dry, halt)
         return _finish(row)
     finally:
         _unlock(lk)

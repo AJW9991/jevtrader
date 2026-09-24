@@ -15,18 +15,29 @@ write proposals/<date>.md: per wording the 81-row table (state, choice, confiden
 the unified diff of its instructions+criteria against CURRENT, and the counts of
 states where it differs from CURRENT and from rule_c.
 May not: read the log, the key (jev.py holds it), or anything under the crypto
-repo; write under prompts/ or data/ (jev.py appends its own ledger row per send);
-retry beyond jev.py's one; run a candidate whose criteria are not exactly
-buy/sell/hold (prompts.question refuses it, so a malformed proposal sends nothing).
+repo; write under prompts/ or data/ (jev.py appends its own ledger row per send;
+the one exception is data/HALT on a rejected key, CONTRACT §2 "the caller writes
+HALT", the same rule as cycle.py); send anything while data/HALT exists (PROTOCOL
+§3.8: HALT stops sends, and these sends never reach decisions.jsonl, so the spend
+guard cannot see them); retry beyond jev.py's one, or keep sending into a limiter
+(a 429 ends the night; so do MAX_TRANSIENT_RUN transient failures in a row: 81
+states x jev.py's two attempts would be 162 requests on the loop's own key, the
+key PROTOCOL §3.6 isolates because a limit or a suspension is the risk); run a
+candidate whose criteria are not exactly buy/sell/hold (prompts.question refuses
+it, so a malformed proposal sends nothing).
 --dry prints the number of would-be payloads and the first one, and sends nothing.
 
 Cost: 81 states x (K+1) questions of ~50 words + a 10-word state; at K=3 that is
 ~30k input tokens = ~$0.0013 at config.USD_PER_MTOK, under CONTRACT §5's ~$0.005.
 Sends are sequential: typical 81 x ~0.5 s = 40 s, and DEADLINE_S bounds the night
 when the API is slow -- nothing new is sent after it and the table says INCOMPLETE.
-Exit 0 complete, 4 INCOMPLETE (written, some states unanswered), 1 bad input, 2 usage.
+Exit 0 complete or HALT present (nothing sent, no table), 4 INCOMPLETE (written, some
+states unanswered), 1 bad input, 2 usage.
 """
 import argparse, difflib, json, os, re, sys, time
+
+if __package__ in (None, ""):      # run as a script (CONTRACT §5 names `nightly/<file>.py`), not -m: sys.path[0]
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # is nightly/, so add the repo
 
 from loop import config, jev, prompts, state
 
@@ -34,7 +45,11 @@ DEADLINE_S = 900.0         # 81 x jev.py's worst case (45 s) is an hour; 15 min 
                            # a working API and short enough that a dead one costs one launchd slot
 MAX_CANDIDATES = 3         # CONTRACT §5: 1-3 entries
 CURRENT = "current"
-FATAL_KINDS = ("no-key", "ledger")        # 80 more sends would repeat the same refusal
+FATAL_KINDS = ("unsigned", "no-key", "ledger", "http-429")   # 80 more sends would repeat the refusal; a 429 is the
+                                                 # limiter saying stop, and jev.py already retried it once
+TRANSIENT_KINDS = ("timeout", "http-5xx")
+MAX_TRANSIENT_RUN = 3                     # this many transient failures in a row end the night: one is
+                                          # noise and the table goes on; three is an outage, not a blip
 HALT_STATUS = (401, 403)                  # the key is rejected: same rule as cycle.py's HALT
 EXIT_INCOMPLETE = 4
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -85,13 +100,23 @@ def payloads(qs):
     return [jev.dry_payload(s, qs) for s, _ in states()]
 
 
+def _halt(reason):
+    """data/HALT, as cycle._halt writes it: a person reads the reason and deletes it."""
+    try:
+        with open(config.HALT, "w") as fh:
+            fh.write(reason + "\n")
+    except OSError as e:
+        print(f"policy_table: cannot write {config.HALT}: {e}", file=sys.stderr)
+
+
 def run(qs, ask=None, deadline_s=DEADLINE_S, clock=time.monotonic):
     """One row per state: {"state", "rule_c", "answers": {qid: (choice, confidence)}|None,
-    "error": kind|None, "model": str|None}. A fatal kind (no key, no ledger, key rejected)
-    stops the sending; the remaining rows carry that kind as their error. The deadline
+    "error": kind|None, "model": str|None}. A fatal kind (no key, no ledger, a 429, key
+    rejected -- which also writes data/HALT) or MAX_TRANSIENT_RUN transient failures in a
+    row stop the sending; the remaining rows carry that kind as their error. The deadline
     is checked before each send, never mid-send: jev.py's own timeout bounds a send."""
     ask = ask or jev.ask                 # resolved at call time so tests can patch loop.jev.ask
-    t0, stop, out = clock(), None, []
+    t0, stop, out, streak = clock(), None, [], 0
     for s, rc in states():
         row = {"state": s, "rule_c": rc, "answers": None, "error": None, "model": None}
         if stop:
@@ -104,9 +129,13 @@ def run(qs, ask=None, deadline_s=DEADLINE_S, clock=time.monotonic):
                 row["answers"] = {qid: (r["answers"][qid].get("choice"), r["answers"][qid].get("confidence"))
                                   for qid in qs}
                 row["model"] = r.get("model")
+                streak = 0
             except jev.JevError as e:
                 row["error"] = e.kind
-                if e.kind in FATAL_KINDS or e.status in HALT_STATUS:
+                streak = streak + 1 if e.kind in TRANSIENT_KINDS else 0
+                if e.status in HALT_STATUS:
+                    _halt(f"key rejected: {e.kind} {e.status} via {e.key_path} (nightly policy table)")
+                if e.kind in FATAL_KINDS or e.status in HALT_STATUS or streak >= MAX_TRANSIENT_RUN:
                     stop = e.kind
         out.append(row)
     return out
@@ -201,6 +230,9 @@ def main(argv=None):
         ps = payloads(qs)
         print(f"dry: {len(ps)} payloads, 0 sent")
         print(json.dumps(ps[0], indent=2))
+        return 0
+    if os.path.exists(config.HALT):                 # PROTOCOL §3.8: HALT stops sends, the nightly's too
+        print(f"policy_table: HALT present at {config.HALT}; no sends, no table")
         return 0
     results = run(qs)
     date = _date_of(a.proposal)

@@ -1,6 +1,7 @@
 """outcomes: the t+h join never returns the wrong row (a 20-minute gap is a
-gap), the window's edges, the dead band, and a log reader that survives one
-truncated line. Offline; temp files only."""
+gap, a jittered t+15 row is never swapped for t+16), the window's edges, the
+dead band, and a log reader that survives one truncated line. Offline; temp
+files only."""
 import datetime, json, math, os, tempfile, unittest
 
 from loop import config, outcomes
@@ -46,14 +47,39 @@ class Join(unittest.TestCase):
         self.assertEqual(out[rows[6]["tick_id"]]["label"], "flat")
         self.assertEqual(sum(o["absence"] == "gap" for o in out.values()), 6 + 15)   # and minutes 45..59
 
-    def test_window_edges_inclusive_and_first_wins(self):
+    def test_window_is_half_a_cadence_either_side_and_nearest_wins(self):
+        # The earlier form took the FIRST row in [t+h, t+h+90] and asserted that a row at
+        # H - 0.001 was a gap: that pinned the defect (a t+15 row 1 ms "early" was skipped
+        # and the t+16 row taken). The window is now +-JOIN_TOL_S around t+h, nearest row.
+        tol = outcomes.JOIN_TOL_S
+        self.assertEqual(tol, config.CADENCE_S / 2)
         base = _row(0, 100.0)
-        self.assertEqual(outcomes.join([base, _row(H + 90, 101.0)], H)[base["tick_id"]]["mid_h"], 101.0)
-        self.assertEqual(outcomes.join([base, _row(H + 90.001, 101.0)], H)[base["tick_id"]], outcomes.GAP)
-        self.assertEqual(outcomes.join([base, _row(H - 0.001, 101.0)], H)[base["tick_id"]], outcomes.GAP)
-        self.assertEqual(outcomes.join([base, _row(H, 101.0)], H)[base["tick_id"]]["mid_h"], 101.0)
-        both = outcomes.join([base, _row(H + 60, 103.0), _row(H + 1, 102.0)], H)   # file order != time order
-        self.assertEqual(both[base["tick_id"]]["mid_h"], 102.0)
+        mid_h = lambda *rows: outcomes.join([base, *rows], H)[base["tick_id"]].get("mid_h")
+        self.assertEqual(mid_h(_row(H, 101.0)), 101.0)
+        self.assertEqual(mid_h(_row(H - 0.001, 101.0)), 101.0)
+        self.assertEqual(mid_h(_row(H + tol, 101.0)), 101.0)                 # both edges inclusive
+        self.assertEqual(mid_h(_row(H - tol, 101.0)), 101.0)
+        self.assertEqual(outcomes.join([base, _row(H + tol + 0.001, 101.0)], H)[base["tick_id"]], outcomes.GAP)
+        self.assertEqual(outcomes.join([base, _row(H - tol - 0.001, 101.0)], H)[base["tick_id"]], outcomes.GAP)
+        self.assertEqual(outcomes.join([base, _row(H + 60, 101.0)], H)[base["tick_id"]], outcomes.GAP)   # t+16 alone
+        self.assertEqual(mid_h(_row(H + 20, 103.0), _row(H - 10, 102.0)), 102.0)   # nearest, file order != time order
+        self.assertEqual(mid_h(_row(H + 10, 103.0), _row(H - 10, 102.0)), 102.0)   # a tie goes to the earlier row
+        self.assertEqual(mid_h(_row(H + 60, 103.0), _row(H + 1, 102.0)), 102.0)
+
+    def test_jitter_never_picks_the_t_plus_16_row(self):
+        # t at :00.050, t+15 at :00.030 (20 ms "early"), t+16 at :00.040: the t+15 mid.
+        rows = [_row(0.050, 100.0), _row(H + 0.030, 101.0), _row(H + 60.040, 150.0)]
+        self.assertEqual(outcomes.join(rows, H)[rows[0]["tick_id"]]["mid_h"], 101.0)
+
+    def test_a_phase_shift_still_joins_within_half_a_cadence(self):
+        # launchd's StartInterval phase can jump (a wake from sleep): t at :10, later rows
+        # at :50. The row 20 s before t+h is taken over the one 40 s after it.
+        rows = [_row(10, 100.0), _row(H - 20, 101.0), _row(H + 40, 150.0)]
+        self.assertEqual(outcomes.join(rows, H)[rows[0]["tick_id"]]["mid_h"], 101.0)
+
+    def test_two_rows_sharing_a_ts_rx_do_not_break_the_sort(self):
+        rows = [_row(0, 100.0), _row(H, None, absence="lock"), _row(H, 101.0)]
+        self.assertEqual(outcomes.join(rows, H)[rows[0]["tick_id"]]["mid_h"], 101.0)
 
     def test_absence_row_in_window_does_not_hide_the_priced_one(self):
         base = _row(0, 100.0)

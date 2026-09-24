@@ -27,6 +27,11 @@ TRADES_WINDOW_S = 300   # CONTRACT: trades with time >= ts_rx - 300
 TRADES_LIMIT = 1000     # the ticker caps at 100 rows WITHOUT start/end and at `limit` WITH them;
                         # a quiet 5 min held 532 trades, so 1000 censors only a bot war, and a
                         # censored window keeps the NEWEST rows (verified 2026-09-24): 1000 = ">= 1000"
+MAX_FEED_AGE_S = 120    # feed_age_s is 0-60 when the venue is current and 60-120 with the ONE omitted
+                        # quiet newest minute SPEC §3 allows. Past that the window describes
+                        # [t-k-15, t-k] while the fill and the mid are at t: a candle set lagging
+                        # 8 minutes (feed_age_s 529) still assembled and flipped the fixture's
+                        # adjectives (vol normal -> violent, rule_c buy -> sell). Refused, not used.
 
 
 class FeedError(Exception):
@@ -110,6 +115,22 @@ def parse_candles(j, now):
     return rows
 
 
+def check_contiguous(rows):
+    """The last WINDOW_MIN closed rows must be one per minute, exactly 60 s apart, or
+    FeedError. Coinbase OMITS a minute with no trades instead of sending a zero-volume
+    candle, and state.py indexes by position ("15 candles ago" IS "15 minutes ago", the
+    blocks are 5 and 15 rows): one missing minute inside the window would make ret15 a
+    16-minute return and shift every block, silently. Refused, not filled: a forward-
+    filled candle is a number the venue never sent. Only the window is checked -- a gap
+    in the 49 spare rows before it is never read. An omitted NEWEST minute is not a gap
+    (the window is contiguous and ends a minute earlier); feed_age_s shows it (60-120 s)."""
+    w = rows[-config.WINDOW_MIN:]
+    for a, b in zip(w, w[1:]):
+        if b["start"] - a["start"] != 60:
+            raise FeedError(f"candles: not contiguous inside the last {config.WINDOW_MIN}: "
+                            f"start {a['start']} -> {b['start']} ({b['start'] - a['start']} s)")
+
+
 def parse_trades(j, now):
     """Count of trades with time >= now - 300. -1 when there is no trades list."""
     raw = j.get("trades") if isinstance(j, dict) else None
@@ -130,6 +151,10 @@ def assemble(product, now, book_j, candles_j, trades_j, http):
     trades_j None (call failed) or unparseable -> trades_5m = -1, never a raise."""
     bid, bid_size, ask, ask_size, book_time = parse_book(book_j, product)
     candles = parse_candles(candles_j, now)
+    check_contiguous(candles)
+    age = now - (candles[-1]["start"] + 60)
+    if age > MAX_FEED_AGE_S:
+        raise FeedError(f"candles: newest closed minute is {age:.0f} s old > MAX_FEED_AGE_S {MAX_FEED_AGE_S}")
     try:
         trades_5m = -1 if trades_j is None else parse_trades(trades_j, now)
     except FeedError:
@@ -141,7 +166,7 @@ def assemble(product, now, book_j, candles_j, trades_j, http):
         "book_time": book_time,
         "candles": candles,
         "trades_5m": trades_5m,
-        "feed_age_s": round(now - (candles[-1]["start"] + 60), 3),
+        "feed_age_s": round(age, 3),
         "http": {"calls": int(http["calls"]), "ms": int(round(http["ms"]))},
     }
 

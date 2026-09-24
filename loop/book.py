@@ -1,6 +1,7 @@
 """Paper execution, replayed from the decision log. Pure: no I/O, no clock, no
 network, no randomness. The same rows and the same fee constant give the same
-numbers, which is what lets `make report` re-run one log at four fees.
+numbers, which is what lets `make report` re-run one log at every fee in
+config.FEE_BPS_COLUMNS.
 
 May: map one logged intent onto the current position at that row's bid/ask,
 mark the position to that row's mid, and difference two arms tick by tick.
@@ -53,7 +54,7 @@ def apply(pos, intent, bid, ask, fee_bps):
         qty = pos["qty"]
         # The venue charges on the filled value qty*bid, not on the 1000 USD
         # opened: at a 1c spread on ~$200 SOL the two differ by 0.5 bps of the
-        # fee, ~0.003 bps at 60 bps. Immaterial, but the exact one is free.
+        # fee, ~0.006 bps at the 120 bps primary. Immaterial, but the exact one is free.
         fee = qty * bid * fee_bps / 1e4
         return None, {"side": "sell", "price": bid, "qty": qty, "fee": fee}
     return pos, None
@@ -61,8 +62,12 @@ def apply(pos, intent, bid, ask, fee_bps):
 
 def _intent(row, arm, column):
     """The logged intent for this arm on this row, or None when the row
-    carries no decision for it (absence set, columns null)."""
-    if row.get("absence") is not None:
+    carries no decision for it (absence set, not a live row, columns null).
+    A dry row is a forced hold for EVERY arm, C included: it carries rule_c but
+    no model columns, so letting C act on it would hand C a trade A and B could
+    never make (a `make dry` between two live ticks would manufacture a B-C
+    disagreement). Same rule as an outage."""
+    if row.get("absence") is not None or row.get("mode") != "live":
         return None
     if arm == "c":
         return row.get("rule_c")
@@ -84,8 +89,9 @@ def replay(rows, outcomes, arm, column, fee_bps):
       {"equity": [(tick_id, equity_bps)], "trades": [{"tick_id","side","price","qty","fee"}],
        "pnl_bps_per_tick": {tick_id: bps}, "position": {tick_id: qty after the tick},
        "forced_hold": n}
-    A row with absence set, null columns, or an unpriced book is a "hold" for
-    every arm (so an outage never manufactures a disagreement) and is counted
+    A row with absence set, a dry row, null columns, or an unpriced book is a
+    "hold" for every arm (so neither an outage nor a dry run ever manufactures a
+    disagreement) and is counted
     in forced_hold; its pnl is 0.0 and the position is carried, so the move
     across a gap lands on the first priced tick after it.
     `outcomes` is accepted for the contract's signature; a mark-to-mid book

@@ -6,7 +6,9 @@ import unittest
 from loop import book, config
 
 N = config.NOTIONAL_USD
-FEES = (config.FEE_BPS_COLUMNS[0], config.FEE_BPS_COLUMNS[-1])   # 60 and 2: the primary and the cheapest
+# the primary by NAME and the cheapest non-zero column: two real constants for the fee arithmetic
+# (the last column is 0, gross, where the arithmetic would be trivially 0)
+FEES = (config.FEE_BPS_PRIMARY, min(f for f in config.FEE_BPS_COLUMNS if f > 0))
 COLS = ("argmax", "c50", "c70", "c85", "c99", "c50v", "c70v", "c85v", "c99v", "pbuy60", "noultail")
 
 
@@ -123,8 +125,22 @@ class Replay(unittest.TestCase):
         self.assertEqual(r["position"]["20260923T100500Z"], 0.0)
         c = book.replay(rows, None, "c", "argmax", 60.0)
         self.assertEqual(c["trades"], [])                                        # c's sell on the jev-absence row is held
-        self.assertEqual(c["forced_hold"], 2)                                    # the dry row has rule_c: a real hold for c
+        self.assertEqual(c["forced_hold"], 3)                                    # the dry row is forced for c too
         self.assertEqual(sum(c["pnl_bps_per_tick"].values()), 0.0)
+
+    def test_dry_row_is_a_forced_hold_for_c_too(self):
+        # A dry row carries rule_c and no model columns. If C acted on it, B-C would carry a
+        # C trade B could never make: a `make dry` between two live ticks would manufacture
+        # a disagreement. Here rule_c says buy on the dry row and hold everywhere else.
+        rows = [_row(1, 99.0, 101.0, a="hold", b="hold", c="hold"),
+                _row(2, 104.0, 106.0, c="buy", dry=True),
+                _row(3, 109.0, 111.0, a="hold", b="hold", c="hold"),
+                _row(4, 114.0, 116.0, a="hold", b="hold", c="hold")]
+        for fee in FEES:
+            c = book.replay(rows, None, "c", "argmax", fee)
+            self.assertEqual(c["trades"], [])
+            self.assertEqual(c["forced_hold"], 1)
+            self.assertEqual(book.paired(rows, None, "b", "c", "argmax", fee), [(r["tick_id"], 0.0) for r in rows])
 
     def test_arm_c_reads_rule_c_and_ignores_column(self):
         rows = [_row(1, 99.0, 101.0, a="hold", c="buy"), _row(2, 99.0, 101.0, a="hold", c="sell")]

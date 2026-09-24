@@ -7,7 +7,7 @@ to the fixture's ts_rx so tick_id is known. main() installs and restores its own
 SIGTERM/SIGALRM handlers; the two signal tests raise the signal in-process."""
 import email.message, io, fcntl, hashlib, json, os, re, signal, tempfile, time, unittest, urllib.error
 from unittest import mock
-from loop import config, cycle, feed, jev, outcomes, prompts, rules
+from loop import book, config, cycle, feed, jev, outcomes, prompts, rules
 
 _SLEEP = time.sleep                                  # the real one: time.sleep is mocked in setUp
 FIX = os.path.join(config.REPO, "fixtures")
@@ -78,6 +78,10 @@ class CycleTest(unittest.TestCase):
         self.enterContext(mock.patch.object(config, "SPEC", self.spec))
         self.enterContext(mock.patch.object(config, "JEV_URL", URL))
         self.enterContext(mock.patch.dict(os.environ, {"TYPESAFE_API_KEY_LOOP": KEY}))
+        self.protocol = os.path.join(self.tmp, "PROTOCOL.md")    # signed; the unsigned test rewrites it
+        with open(self.protocol, "w") as fh:
+            fh.write("In force from: `2026-09-24`  Signed: `test`\n")
+        self.enterContext(mock.patch.object(config, "PROTOCOL", self.protocol))
         self.urlopen = self.enterContext(mock.patch("urllib.request.urlopen",
                                                     side_effect=AssertionError("urlopen was reached")))
         self.snapshot = self.enterContext(mock.patch.object(feed, "snapshot", return_value=SNAP))
@@ -158,7 +162,10 @@ class CycleTest(unittest.TestCase):
         self.assertFalse(os.path.exists(self.data))
 
     # ---- CONTRACT §6: HALT present -> absence halt, no send --------------------------------
-    def test_halt_present_writes_halt_row_and_sends_nothing(self):
+    # PROTOCOL §3.8 / SPEC §13.2: HALT stops SENDS only; the feed, arm C's rule_c and the
+    # outcome join keep running. (The first form of this test asserted the feed was NOT
+    # called and rule_c was null: it pinned a HALT that stopped observation too.)
+    def test_halt_present_observes_and_sends_nothing(self):
         os.makedirs(self.data)
         with open(config.HALT, "w") as fh:
             fh.write("by hand\n")
@@ -166,25 +173,52 @@ class CycleTest(unittest.TestCase):
         row = self.only_row()
         self.assert_shape(row)
         self.assertEqual((row["absence"], row["mode"], row["tick_id"], row["ts_rx"]), ("halt", "live", TICK, TS_RX))
-        self.assertIsNone(row["bid"])
-        self.assertIsNone(row["state"])
-        self.assertIsNone(row["rule_c"])
+        self.snapshot.assert_called_once()                    # the feed ran
+        self.assertEqual((row["bid"], row["ask"], row["mid"]), (SNAP["bid"], SNAP["ask"], 114.81))
+        self.assertEqual((row["state"], row["rule_c"]), (STATE, "buy"))
+        self.assertEqual(row["prompt_a_sha"], prompts.sha("v1"))
         self.assertIsNone(row["answers"])
         self.assertEqual(row["columns"], {"a": None, "b": None})
+        self.assertEqual(row["jev"], {"latency_ms": None, "input_tokens": None, "error": None, "key_path": None})
+        self.assertEqual(cycle.billed_tokens(row), 0)
         self.assertEqual(row["spec_sha"], "unsealed")
-        self.snapshot.assert_not_called()                     # halt is a guard: before the feed
-        self.assert_nothing_sent()
+        self.assert_nothing_sent()                             # no ledger row, no request
+        self.assertEqual(self.out.getvalue(), "")              # and no body printed
         self.assertEqual(self.heartbeat(), TS_RX)
         with open(config.HALT) as fh:                          # HALT is never removed by code
             self.assertEqual(fh.read(), "by hand\n")
+
+    def test_halt_keeps_marks_and_outcomes_but_every_arm_holds(self):
+        os.makedirs(self.data)
+        open(config.HALT, "w").close()
+        for dt in (0, 900):                                    # two halted ticks one horizon apart
+            with mock.patch("time.time", return_value=NOW + dt):
+                self.snapshot.side_effect = lambda: dict(SNAP, ts_rx=cycle.iso_ms(NOW + dt))
+                self.assertEqual(cycle.main(["--once"]), 0)
+        rows = self.rows()
+        self.assertEqual([r["absence"] for r in rows], ["halt", "halt"])
+        self.assertIsNone(outcomes.join(rows)[TICK]["absence"])            # t+h still resolves
+        c = book.replay(rows, None, "c", "argmax", config.FEE_BPS_PRIMARY)
+        self.assertEqual((c["trades"], c["forced_hold"]), ([], 2))       # rule_c buy is logged, not traded
+        self.assert_nothing_sent()
+
+    def test_halt_under_a_held_lock_is_a_lock_row(self):
+        os.makedirs(self.data)
+        open(config.HALT, "w").close()
+        holder = open(config.LOCK, "a")
+        self.addCleanup(holder.close)
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        self.assertEqual(cycle.main(["--once"]), 0)
+        self.assertEqual(self.only_row()["absence"], "lock")
+        self.snapshot.assert_not_called()                     # the other holder fetches this minute
 
     def test_halt_in_dry_mode_is_a_dry_halt_row(self):
         os.makedirs(self.data)
         open(config.HALT, "w").close()
         self.assertEqual(cycle.main(["--dry", "--once"]), 0)
         row = self.only_row()
-        self.assertEqual((row["absence"], row["mode"]), ("halt", "dry"))
-        self.assertEqual(self.out.getvalue(), "")              # nothing to print: no body was built
+        self.assertEqual((row["absence"], row["mode"], row["state"]), ("halt", "dry", STATE))
+        self.assertEqual(self.out.getvalue(), "")              # under HALT no body is built for sending
 
     # ---- CONTRACT §6: spend over the limit writes HALT -------------------------------------
     def test_spend_over_limit_writes_halt_and_a_halt_row(self):
@@ -203,8 +237,8 @@ class CycleTest(unittest.TestCase):
         self.assertIn(str(config.DAILY_SPEND_HALT_USD), reason)
         rows = self.rows()
         self.assertEqual(len(rows), 5)
-        self.assertEqual((rows[-1]["absence"], rows[-1]["tick_id"]), ("halt", TICK))
-        self.snapshot.assert_not_called()
+        self.assertEqual((rows[-1]["absence"], rows[-1]["tick_id"], rows[-1]["state"]), ("halt", TICK, STATE))
+        self.snapshot.assert_called_once()                    # the trip stops the send, not the feed
         self.assert_nothing_sent()
         # the next tick sees HALT and halts again, still without a send
         self.assertEqual(cycle.main(["--once"]), 0)
@@ -234,6 +268,36 @@ class CycleTest(unittest.TestCase):
             self.assertAlmostEqual(cycle.spend_today(NOW), 20_000 * config.USD_PER_MTOK / 1e6)
         self.assertAlmostEqual(cycle.spend_today(NOW), 20_000 * config.USD_PER_MTOK / 1e6)
         self.assertEqual(cycle.spend_today(NOW, os.path.join(self.tmp, "missing")), 0.0)
+
+    def test_spend_charges_a_send_with_unknown_tokens_at_the_ceiling(self):
+        # jev.ask logs input_tokens 0 when the reply has no `usage` (null when the send failed);
+        # read as free, the tripwire would never fire. A live row that reached the model with 0
+        # or null tokens is charged config.JEV_TOKENS_IF_UNKNOWN; rows that never sent cost 0.
+        U = config.JEV_TOKENS_IF_UNKNOWN
+
+        def r(i, tokens, mode="live", absence=None, error=None):
+            row = _row(DAY + "T02%02d00Z" % i, tokens, mode)
+            row["absence"], row["jev"]["error"] = absence, error
+            return row
+        rows = [r(0, 0), r(1, None, absence="jev", error="timeout"), r(2, None, absence="jev", error="http-4xx"),
+                r(3, None, absence="jev", error="no-key"), r(4, None, absence="jev", error="ledger"),
+                r(5, None, absence="feed"), r(6, None, absence="halt"), r(7, None, absence="lock"),
+                r(8, None, mode="dry"), r(9, 480)]
+        self.assertEqual([cycle.billed_tokens(x) for x in rows], [U, U, U, 0, 0, 0, 0, 0, 0, 480])
+        os.makedirs(self.data)
+        with open(config.DECISIONS, "w") as fh:
+            fh.writelines(json.dumps(x) + "\n" for x in rows)
+        self.assertAlmostEqual(cycle.spend_today(NOW), (3 * U + 480) * config.USD_PER_MTOK / 1e6)
+        # enough of them trip it: a runaway whose replies carry no usage still writes HALT
+        n = int(config.DAILY_SPEND_HALT_USD / (U * config.USD_PER_MTOK / 1e6)) + 1
+        with open(config.DECISIONS, "w") as fh:
+            fh.writelines(json.dumps(r(i % 60, 0)) + "\n" for i in range(n))
+        self.assertGreaterEqual(cycle.spend_today(NOW), config.DAILY_SPEND_HALT_USD)
+        self.assertEqual(cycle.main(["--once"]), 0)
+        self.assertTrue(os.path.exists(config.HALT))
+        self.assertEqual(self.rows()[-1]["absence"], "halt")
+        self.snapshot.assert_called_once()
+        self.assert_nothing_sent()
 
     # ---- CONTRACT §6: --dry writes a row with answers null and no sends.tsv line ---------------
     def test_dry_writes_row_answers_null_and_no_ledger_line(self):
@@ -392,6 +456,20 @@ class CycleTest(unittest.TestCase):
         self.assertEqual((row["absence"], row["jev"]["error"], row["jev"]["key_path"]), ("jev", "no-key", None))
         self.assert_nothing_sent()
 
+    def test_unsigned_protocol_observes_but_never_sends_or_bills(self):
+        # The repo as committed: PROTOCOL.md unsigned. A live tick still records the feed,
+        # the state and arm C -- observation is free and outlives sending -- but jev.ask
+        # refuses before the key, the ledger or a socket, and the row bills nothing.
+        with open(self.protocol, "w") as fh:
+            fh.write("In force from: `____________`  Signed: `____________`\n")
+        self.assertEqual(cycle.main(["--once"]), 0)
+        row = self.only_row()
+        self.assertEqual((row["mode"], row["absence"], row["jev"]["error"]), ("live", "jev", "unsigned"))
+        self.assertIsNotNone(row["state"]); self.assertIn(row["rule_c"], ("buy", "sell", "hold"))
+        self.assertEqual(cycle.billed_tokens(row), 0)
+        self.assertFalse(os.path.exists(config.HALT))        # unsigned is a state, not an incident
+        self.assert_nothing_sent()
+
     def test_choice_outside_the_alphabet_is_parse_with_the_answer_logged(self):
         bad = json.loads(json.dumps(GOOD))
         bad["answers"]["b_action"]["choice"] = "maybe"
@@ -403,6 +481,28 @@ class CycleTest(unittest.TestCase):
         self.assertEqual(row["answers"]["b_action"]["choice"], "maybe")   # paid for: kept
         self.assertEqual(row["columns"], {"a": None, "b": None})
         self.assertEqual(row["jev"]["input_tokens"], 480)
+
+    def test_an_unexpected_failure_after_the_send_began_is_billed(self):
+        # "guard" rows are charged $0 by the spend guard; an exception once the request may
+        # have left must not be one. usage.input_tokens = Infinity is jev's own `parse`.
+        inf = json.loads(json.dumps(GOOD)); inf["usage"]["input_tokens"] = float("inf")
+        self.urlopen.side_effect = None
+        self.urlopen.return_value = _Resp(inf)
+        self.assertEqual(cycle.main(["--once"]), 0)
+        row = self.rows()[-1]
+        self.assertEqual((row["absence"], row["jev"]["error"]), ("jev", "parse"))
+        self.assertEqual(cycle.billed_tokens(row), config.JEV_TOKENS_IF_UNKNOWN)
+        for exc in (RuntimeError("boom"), ValueError("odd")):
+            with mock.patch.object(jev, "ask", side_effect=exc):
+                self.assertEqual(cycle.main(["--once"]), 0)
+            row = self.rows()[-1]
+            self.assertEqual((row["absence"], row["jev"]["error"]), ("jev", "unexpected"), exc)
+            self.assertEqual(cycle.billed_tokens(row), config.JEV_TOKENS_IF_UNKNOWN)
+        with mock.patch.object(rules, "for_arm", side_effect=RuntimeError("columns")):
+            self.urlopen.return_value = _Resp(GOOD)
+            self.assertEqual(cycle.main(["--once"]), 0)
+        row = self.rows()[-1]
+        self.assertEqual((row["absence"], row["jev"]["error"], row["jev"]["input_tokens"]), ("jev", "unexpected", 480))
 
     # ---- the lock ----------------------------------------------------------------------------------
     def test_lock_held_elsewhere_is_absence_lock(self):

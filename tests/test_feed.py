@@ -86,9 +86,12 @@ class TestSnapshot(unittest.TestCase):
         self.assertEqual(s2["ts_rx"], "2026-09-24T02:28:49.123Z")
 
     def test_ts_rx_defaults_to_this_clock(self):
-        # now=None is the live path: ts_rx is the wall clock at ENTRY (the decision timestamp)
+        # now=None is the live path: ts_rx is the wall clock at ENTRY (the decision timestamp).
+        # Against the live clock the recorded fixture is stale by construction, so the
+        # staleness bound is lifted HERE only; test_a_lagging_candle_set_is_refused pins it.
         t0 = time.time()
-        s, _ = snap(now=None)
+        with mock.patch.object(feed, "MAX_FEED_AGE_S", float("inf")):
+            s, _ = snap(now=None)
         got = dt.datetime.strptime(s["ts_rx"], "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=dt.timezone.utc)
         self.assertLess(abs(got.timestamp() - t0), 5.0)
         self.assertEqual(len(s["candles"]), EXP["candles_raw"])       # all 350 are closed by now
@@ -136,6 +139,33 @@ class TestSnapshot(unittest.TestCase):
         s, _ = snap(Fake(candles={"candles": CANDLES["candles"][:config.WINDOW_MIN + 1]}))
         self.assertEqual(len(s["candles"]), config.WINDOW_MIN)
 
+    def test_gap_inside_the_window_is_a_feed_error(self):
+        # Coinbase omits a minute with no trades. One missing minute inside the last
+        # WINDOW_MIN closed rows would make "15 candles ago" 16 minutes ago: refused, not
+        # computed. raw[0] is the open minute, so raw[1..300] are the window.
+        raw = CANDLES["candles"]
+        for i in (1, 2, 150, config.WINDOW_MIN - 1):                   # the newest closed row is not a gap
+            gapped = {"candles": raw[:i] + raw[i + 1:]}
+            if i == 1:                                                  # a contiguous window ending a minute early
+                s = feed.assemble("SOL-USD", NOW, BOOK, gapped, TRADES, {"calls": 3, "ms": 0})
+                self.assertEqual(s["feed_age_s"], EXP["feed_age_s"] + 60)
+                continue
+            with self.assertRaises(feed.FeedError) as cm:
+                feed.assemble("SOL-USD", NOW, BOOK, gapped, TRADES, {"calls": 3, "ms": 0})
+            self.assertIn("not contiguous", str(cm.exception))
+        # a gap in the spare rows before the window is never read, so it costs nothing
+        s = feed.assemble("SOL-USD", NOW, BOOK, {"candles": raw[:340] + raw[341:]}, TRADES, {"calls": 3, "ms": 0})
+        self.assertEqual(len(s["candles"]), EXP["candles_closed"] - 1)
+        # a duplicated minute is not contiguous either (0 s apart)
+        dup = {"candles": raw[:10] + [raw[10]] + raw[10:]}
+        with self.assertRaises(feed.FeedError):
+            feed.assemble("SOL-USD", NOW, BOOK, dup, TRADES, {"calls": 3, "ms": 0})
+        # and through snapshot() it is the same FeedError, which cycle.py logs as absence "feed"
+        f = Fake(candles={"candles": raw[:150] + raw[151:]})
+        with mock.patch("urllib.request.urlopen", f):
+            with self.assertRaises(feed.FeedError):
+                feed.snapshot(config.PRODUCT, now=NOW)
+
     def test_trades_5m_matches_hand_count(self):
         s, _ = snap()
         hand = sum(1 for t in TRADES["trades"]
@@ -166,6 +196,19 @@ class TestSnapshot(unittest.TestCase):
         self.assertAlmostEqual(s["feed_age_s"], NOW - (s["candles"][-1]["start"] + 60), places=3)
         s2, _ = snap(now=NOW + 7.5)
         self.assertEqual(s2["feed_age_s"], EXP["feed_age_s"] + 7.5)
+
+    def test_a_lagging_candle_set_is_refused(self):
+        # The venue lagging the newest k closed minutes would leave a contiguous window that
+        # describes [t-k-15, t-k] while the mid is at t. One omitted minute (60-120 s) is
+        # allowed (SPEC §3); two or more is a FeedError, which the tick logs as absence feed.
+        raw = CANDLES["candles"]                                        # raw[0] is the open minute
+        s = feed.assemble("SOL-USD", NOW, BOOK, {"candles": raw[:1] + raw[2:]}, TRADES, {"calls": 3, "ms": 0})
+        self.assertLessEqual(s["feed_age_s"], feed.MAX_FEED_AGE_S)
+        for k in (2, 3, 8):
+            with self.subTest(k=k), self.assertRaises(feed.FeedError) as cm:
+                feed.assemble("SOL-USD", NOW, BOOK, {"candles": raw[:1] + raw[1 + k:]}, TRADES, {"calls": 3, "ms": 0})
+            self.assertIn("MAX_FEED_AGE_S", str(cm.exception))
+        self.assertEqual(feed.MAX_FEED_AGE_S, 120)
 
     def test_urls_three_calls_no_retry(self):
         _, f = snap()

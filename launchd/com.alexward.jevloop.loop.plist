@@ -27,7 +27,7 @@
 
   <!-- 60 s of elapsed time, not a calendar minute: StartInterval drifts and
        is coalesced after sleep, which is why tick_id is ts_rx floored to the
-       minute and the outcome join accepts [t+900, t+990] (config.py,
+       minute and the outcome join takes the row nearest t+900 within +-30 s (config.py,
        outcomes.py). A tick is ~1 s of feed plus one 20 s-timeout request,
        under the 50 s watchdog, so ticks never overlap on a healthy host. -->
   <key>StartInterval</key>
@@ -45,8 +45,11 @@
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
   </dict>
 
-  <!-- launchd appends; the tick prints nothing on a good row, so this file
-       holds tracebacks and the watchdog only. logs/ is gitignored. -->
+  <!-- launchd appends. Every tick writes ONE summary line to stderr
+       (tick_id, mode, absence, state, rule_c, a/b argmax, latency, tokens,
+       error, key PATH -- never a value; ~200 B, ~0.3 MB/day), plus any
+       traceback or watchdog line. stdout stays empty: only --dry prints the
+       body. logs/ is gitignored. -->
   <key>StandardOutPath</key>
   <string>/Users/alexanderward/Projects/jev-paper-loop/logs/loop-launchd.log</string>
 

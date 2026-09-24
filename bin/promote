@@ -9,6 +9,10 @@ read before it went live would turn the measurement into the thing it measures. 
 refuses without a tty for that reason, and refuses on a dirty git tree because a
 promote must be its own commit: every row after it names prompt_b_sha, and that sha
 must point at one committed text, not at a working copy someone was still editing.
+It also refuses while the git tag PREREG_TAG (prereg-v1) is missing: PREREG §10
+requires the tag to exist before the first row whose prompt_b is not v1, and that
+ordering is the only thing that makes it a PRE-registration. There is no override
+flag; the tests replace subprocess.run, as they do for `git status`.
 
 May: read the proposal, copy candidate k into prompts/v<N+1>.json as the `action`
 question (with "type": "choice" added: proposals carry none), carry skip/up15/down15
@@ -26,6 +30,7 @@ sys.path.insert(0, REPO)
 from loop import prompts                                   # noqa: E402
 
 _VFILE = re.compile(r"^v(\d+)\.json$")
+PREREG_TAG = "prereg-v1"
 
 
 def _attended():
@@ -38,6 +43,14 @@ def clean_tree(repo):
     if r.returncode != 0:
         raise RuntimeError(f"git status failed: {r.stderr.strip()}")
     return r.stdout.strip() == ""
+
+
+def sealed(repo):
+    """True when PREREG_TAG exists in `repo` (`git tag -l <tag>` prints its name)."""
+    r = subprocess.run(["git", "tag", "-l", PREREG_TAG], cwd=repo, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"git tag failed: {r.stderr.strip()}")
+    return PREREG_TAG in r.stdout.split()
 
 
 def next_version(root):
@@ -84,6 +97,9 @@ def main(argv=None):
             raise RuntimeError("no tty: promote is run by a person at a terminal, never by launchd or a script")
         if not clean_tree(a.repo):
             raise RuntimeError("git tree is dirty: commit or stash first, so the promote is its own commit")
+        if not sealed(a.repo):
+            raise RuntimeError(f"no git tag {PREREG_TAG}: PREREG.md §10 must be sealed before the first "
+                               "promote (the first row with prompt_b != v1)")
         with open(a.proposal, encoding="utf-8") as fh:
             cands = json.load(fh).get("candidates")
         if not isinstance(cands, list) or not 0 <= a.k < len(cands):

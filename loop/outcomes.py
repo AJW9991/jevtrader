@@ -2,21 +2,28 @@
 reader for the log itself.
 
 May: read data/decisions.jsonl line by line, and pair each row at t with the
-first row whose ts_rx falls in [t+h, t+h+90 s].
+priced row whose ts_rx is NEAREST t+h, within +-JOIN_TOL_S (half a cadence).
 May not: fetch anything, back-fill anything, or ever hand back a row outside
-that window. A missing row is `gap`, never the nearest one: a wrong row would
-score a decision against a price it was not made about.
+that window. A missing row is `gap`, never the nearest one outside it: a wrong
+row would score a decision against a price it was not made about.
 
-The 90 s slack is one cadence (60 s) plus half a cadence. The tick's own
-watchdog is 50 s, so a late tick lands under 50 s after its minute; 90 admits
-the next tick even when both t and t+h slipped, and a 20-minute outage can
-never match. Everything here is forward-only: t sees t+h, never the reverse.
+Why nearest-within-half-a-cadence and not "first row in [t+h, t+h+90 s]" (the
+first form, replaced 2026-09-24 before any sample row): ts_rx is the feed-entry
+clock, i.e. the minute boundary plus timing noise (sleep overshoot and the
+guards under --forever; the StartInterval phase and interpreter start under
+launchd). A one-sided window starting AT t+h drops the t+15 row whenever its
+noise is 1 ms smaller than t's, and then takes the t+16 row: a 15- or 16-minute
+horizon on a coin flip. A +-30 s window around t+h holds exactly one on-cadence
+row whatever the phase (rows 60 s apart always leave one within 30 s of any
+instant), so |horizon - 900| <= 30 s, and a missing t+15 row is a gap because
+its neighbours are 60 s away. Ties (two rows exactly 30 s either side) go to the
+earlier row. Everything here is forward-only: t sees t+h, never the reverse.
 """
 import bisect, datetime, json, math
 
 from loop import config
 
-JOIN_SLACK_S = 90.0
+JOIN_TOL_S = config.CADENCE_S / 2   # 30.0: half a cadence either side of t+h (docstring)
 DEAD_BAND_BPS = config.DEAD_BAND_BPS   # |ret| below this is "flat"; at the band it is a move
 GAP = {"mid_h": None, "ret_h_bps": None, "label": None, "absence": "gap"}
 
@@ -61,25 +68,28 @@ def outcome(mid_t, mid_h):
 
 
 def join(rows, horizon_s=config.HORIZON_S):
-    """{tick_id: outcome}. For each row at t with a mid, the FIRST row (by
-    ts_rx) with a mid whose ts_rx is in [t+h, t+h+JOIN_SLACK_S] gives mid_h;
-    anything else is the GAP outcome. A row without a mid (absence before the
-    feed) is a gap itself and is skipped as a candidate, so an absence row at
-    t+h does not hide the priced row one second behind it."""
-    pts = sorted((t, r.get("mid")) for r in rows if (t := ts_epoch(r.get("ts_rx"))) is not None)
+    """{tick_id: outcome}. For each row at t with a mid, the priced row whose ts_rx is
+    nearest t+h, within [t+h-JOIN_TOL_S, t+h+JOIN_TOL_S] (ties: the earlier), gives
+    mid_h; anything else is the GAP outcome. A row without a mid (absence before the
+    feed) is a gap itself and never a candidate, so an absence row at t+h does not
+    hide the priced row one second behind it."""
+    pts = sorted(((t, r["mid"]) for r in rows
+                  if _num(r.get("mid")) and (t := ts_epoch(r.get("ts_rx"))) is not None),
+                 key=lambda p: p[0])                 # by time only: two rows can share a ts_rx
     times = [p[0] for p in pts]
     out = {}
     for r in rows:
         tid, t, mid_t = r.get("tick_id"), ts_epoch(r.get("ts_rx")), r.get("mid")
         o = dict(GAP)
         if t is not None and _num(mid_t):
-            lo, hi = t + horizon_s, t + horizon_s + JOIN_SLACK_S
-            i = bisect.bisect_left(times, lo)
-            while i < len(times) and times[i] <= hi:
-                if _num(pts[i][1]):
-                    o = outcome(mid_t, pts[i][1])
-                    break
+            target = t + horizon_s
+            i, best = bisect.bisect_left(times, target - JOIN_TOL_S), None
+            while i < len(times) and times[i] <= target + JOIN_TOL_S:
+                if times[i] > t and (best is None or abs(times[i] - target) < abs(times[best] - target)):
+                    best = i                         # strict <: a tie keeps the earlier row
                 i += 1
+            if best is not None:
+                o = outcome(mid_t, pts[best][1])
         if tid not in out or out[tid]["absence"] is not None:   # two rows one minute: keep the priced one
             out[tid] = o
     return out

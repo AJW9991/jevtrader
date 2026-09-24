@@ -50,6 +50,10 @@ class JevTest(unittest.TestCase):
         self.enterContext(mock.patch.object(config, "SENDS", self.sends))
         self.enterContext(mock.patch.object(config, "JEV_URL", URL))
         self.enterContext(mock.patch.dict(os.environ, {"TYPESAFE_API_KEY_LOOP": KEY}))
+        self.protocol = os.path.join(self.tmp, "PROTOCOL.md")    # signed: these tests are about sending
+        with open(self.protocol, "w") as fh:
+            fh.write("# PROTOCOL\n\nIn force from: `2026-09-24`  Signed: `test`\n")
+        self.enterContext(mock.patch.object(config, "PROTOCOL", self.protocol))
         self.sleeps = []
         self.enterContext(mock.patch("time.sleep", side_effect=self.sleeps.append))
         self.urlopen = self.enterContext(mock.patch("urllib.request.urlopen"))
@@ -208,6 +212,7 @@ class JevTest(unittest.TestCase):
         d = json.loads(json.dumps(GOOD)); d["usage"] = {"input_tokens": "lots"}; cases.append(_Resp(d))
         cases.append(_Resp(None, raw=b"<html>502</html>"))
         cases.append(_Resp([1, 2, 3]))
+        d = json.loads(json.dumps(GOOD)); d["usage"] = {"input_tokens": float("inf")}; cases.append(_Resp(d))   # Infinity: OverflowError
         for resp in cases:
             self.urlopen.reset_mock(); self.sleeps.clear()
             self.urlopen.return_value = resp
@@ -282,6 +287,32 @@ class JevTest(unittest.TestCase):
         self.assertIsNone(self.rows())
         self.urlopen.assert_not_called()
 
+    def test_key_with_whitespace_or_control_chars_is_refused_by_path_not_value(self):
+        # http.client refuses a header with an embedded newline with a ValueError whose
+        # message quotes 'Bearer <key>': the value must never get that far.
+        for bad in ("FAKEKEY-abc123\nsecond-line", "FAKEKEY abc123", "FAKEKEY\x1babc", "FAKEKEY-\u00e9"):
+            with self.subTest(bad=bad), mock.patch.dict(os.environ, {"TYPESAFE_API_KEY_LOOP": bad}):
+                with self.assertRaises(jev.JevError) as cm:
+                    jev.ask(STATE, Q)
+                self.assertEqual(cm.exception.kind, "no-key")
+                self.assertIn("env:TYPESAFE_API_KEY_LOOP", cm.exception.detail)
+                self.assertNotIn("FAKEKEY", str(cm.exception) + repr(vars(cm.exception)))
+        self.assertIsNone(self.rows())                                 # nothing ledgered, nothing sent
+        self.urlopen.assert_not_called()
+
+    def test_a_local_valueerror_in_the_send_never_carries_its_message(self):
+        # the second belt: whatever http.client raises locally is withheld, not chained
+        self.urlopen.side_effect = ValueError("Invalid header value b'Bearer %s\\nx'" % KEY)
+        with self.assertRaises(jev.JevError) as cm:
+            jev.ask(STATE, Q)
+        e = cm.exception
+        self.assertEqual(e.kind, "parse")
+        self.assertIsNone(e.__cause__)
+        self.assertTrue(e.__suppress_context__)
+        self.assertNotIn(KEY, str(e) + repr(vars(e)))
+        self.assertEqual(self.urlopen.call_count, 1)                   # no retry
+        self.assertEqual(len(self.rows()), 2)                          # header + the attempt's ledger row
+
     def test_nothing_on_disk_or_in_errors_carries_the_key(self):
         self.urlopen.side_effect = [_http(401)]
         with self.assertRaises(jev.JevError) as cm:
@@ -289,3 +320,49 @@ class JevTest(unittest.TestCase):
         self.assertNotIn(KEY, str(cm.exception) + repr(vars(cm.exception)))
         with open(self.sends) as fh:
             self.assertNotIn(KEY, fh.read())
+
+
+class SignatureGateTest(unittest.TestCase):
+    """PROTOCOL.md says nothing sends before Alex signs it. jev.ask enforces that before
+    the key is read, the ledger is written or a socket is opened."""
+    def setUp(self):
+        self.tmp = self.enterContext(tempfile.TemporaryDirectory())
+        self.sends = os.path.join(self.tmp, "sends.tsv")
+        self.protocol = os.path.join(self.tmp, "PROTOCOL.md")
+        self.enterContext(mock.patch.object(config, "SENDS", self.sends))
+        self.enterContext(mock.patch.object(config, "PROTOCOL", self.protocol))
+        self.enterContext(mock.patch.dict(os.environ, {"TYPESAFE_API_KEY_LOOP": KEY}))
+        self.urlopen = self.enterContext(mock.patch("urllib.request.urlopen",
+                                                    side_effect=AssertionError("urlopen was reached")))
+        self.key = self.enterContext(mock.patch.object(jev, "key", wraps=jev.key))
+
+    def _write(self, line):
+        with open(self.protocol, "w") as fh:
+            fh.write("# PROTOCOL\n\n## 5. Signature\n\n" + line + "\n")
+
+    def test_the_repo_as_committed_is_unsigned(self):
+        with mock.patch.object(config, "PROTOCOL", os.path.join(config.REPO, "PROTOCOL.md")):
+            self.assertFalse(jev.signed())
+
+    def test_unsigned_forms_refuse_before_key_ledger_or_socket(self):
+        for line in ("In force from: `____________`  Signed: `____________`",
+                     "In force from: ``  Signed: ``",
+                     "In force from: `  `  Signed: `alex`",
+                     "In force from: `2026-09-24`  Signed: `___`",
+                     "no signature line at all"):
+            with self.subTest(line=line):
+                self._write(line)
+                self.assertFalse(jev.signed())
+                with self.assertRaises(jev.JevError) as cm:
+                    jev.ask(STATE, Q)
+                self.assertEqual(cm.exception.kind, "unsigned")
+                self.key.assert_not_called()
+                self.urlopen.assert_not_called()
+                self.assertFalse(os.path.exists(self.sends))
+
+    def test_missing_protocol_is_unsigned(self):
+        self.assertFalse(jev.signed())
+
+    def test_both_fields_filled_is_signed(self):
+        self._write("In force from: `2026-09-24`  Signed: `Alex Ward`")
+        self.assertTrue(jev.signed())

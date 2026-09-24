@@ -8,12 +8,14 @@ the sample, the stop rules) and not the carve-out (`PROTOCOL.md` — why this
 may run at all). Nothing here decides anything; the tick logs, the report
 compares.
 
-Checked 2026-09-23 against the modules on disk: `loop/feed.py`, `state.py`,
-`rules.py`, `prompts.py`, `jev.py`, `book.py`, `outcomes.py`, `prompts/v1.json`.
-`loop/cycle.py` (the writer of the row) was not yet on disk when this file was
-frozen; the row in §2 is what `CONTRACT.md` §2 says it writes and what every
-reader module indexes. A divergence found when `cycle.py` lands is a defect in
-`cycle.py`, not a reason to edit this file.
+Checked 2026-09-23 against the leaf modules (`loop/feed.py`, `state.py`,
+`rules.py`, `prompts.py`, `jev.py`, `book.py`, `outcomes.py`, `prompts/v1.json`)
+and re-checked 2026-09-24 at integration against `loop/cycle.py` (the writer of
+the row, including a real `--dry` row read field by field), `loop/report.py`,
+`nightly/` and `bin/promote`, after `config.py` moved the primary fee to 120
+bps. Where this file and the code disagreed and the code followed
+`CONTRACT.md`, this file was corrected. No row of the sample exists yet, so
+the sha change is pre-registration, not a new experiment.
 
 ## 1. The loop in one paragraph
 
@@ -45,8 +47,9 @@ back-filled.
 ```
 
 - `ts_rx` is this machine's clock at the ENTRY of the feed call (before the
-  three GETs), ISO 8601 UTC with milliseconds and a `Z`. `tick_id` is `ts_rx`
-  floored to the minute. A fetch that straddles :00 therefore cannot move the
+  three GETs), ISO 8601 UTC with milliseconds and a `Z` (on a row that stopped
+  before the feed, the tick's own start). `tick_id` is `ts_rx` floored to the
+  minute. A fetch that straddles :00 therefore cannot move the
   tick (`feed.py::snapshot`).
 - `mid = (bid + ask) / 2`. Prices are floats parsed from the venue's strings.
 - `features` are the 13 numbers of §4, logged and never sent. `adj` is the four
@@ -63,11 +66,21 @@ back-filled.
   `file:~/.secondbrain-secrets/typesafe-api-key`; first hit wins). No value is
   ever logged. `jev.error` is a `JevError` kind: `no-key`, `ledger`,
   `http-4xx`, `http-429`, `http-5xx`, `timeout` (which also covers connection
-  refused/reset/DNS: the kind set has no other transient slot), `parse`.
-- `answers` is `null` in dry mode and on any absence; then `columns.a` and
-  `columns.b` are `null` too (every key present, every value `null`:
-  `rules.null_columns()`). `rule_c` is present whenever the state was computed,
-  absence or not.
+  refused/reset/DNS: the kind set has no other transient slot), `parse`
+  (which also covers a request `http.client` refused locally, its message
+  withheld because it can quote the header), or one of two the tick writes
+  itself: `watchdog` (the 50 s alarm fired inside the send) and `unexpected`
+  (any other exception once the send had begun). All but `no-key` and
+  `ledger` are billed by the spend guard (§13.3). A key value that is not
+  printable ASCII without whitespace is refused as `no-key`, naming its path.
+- `answers` is `null` in dry mode and on every absence but one: an answer the
+  rules refuse (a `choice` outside `buy/sell/hold`) is logged as received with
+  `absence: "jev"`, `jev.error: "parse"`. `columns` is `{"a": null, "b": null}`
+  — each arm's value is `null` itself, not a dict of nulls (CONTRACT §3 step 5)
+  — whenever the tick did not reach step 7 (dry, every absence, a refused
+  answer); otherwise both are the full dict of §9. `rule_c` is present whenever
+  the state was computed, absence or not, dry or live; `null` only when the
+  tick stopped before the state was computed.
 - A tick that fails before the feed still writes a row: `absence` set,
   `tick_id` and `ts_rx` always strings (`outcomes.load` drops a line without
   them), everything it could not fill `null`.
@@ -87,8 +100,22 @@ documented 10 req/s per IP:
 | `products/SOL-USD/ticker?limit=1000&start=ts_rx-300&end=ts_rx` | `trades_5m` = count of trades with `time >= ts_rx - 300` (`TRADES_WINDOW_S = 300`); `1000` means "≥ 1000" (the venue keeps the newest `TRADES_LIMIT = 1000`); a failed or unparseable ticker call yields `-1` and the tick goes on, because nothing in §5 reads it |
 
 `feed_age_s = ts_rx − (newest closed candle start + 60)`: 0–60 s when the
-venue is current. A book or candles failure raises `FeedError` → row with
-`absence: "feed"`. The recorded fixture set (2026-09-24T02:28:49Z, `fixtures/`)
+venue is current. **Contiguity** (`feed.py::check_contiguous`): the last
+`WINDOW_MIN` closed candles must be exactly 60 s apart. Coinbase OMITS a
+minute with no trades rather than sending a zero-volume candle, and §4
+indexes by position ("16 closes back" is 15 minutes only if no minute is
+missing), so a missing or duplicated minute inside the window raises
+`FeedError` — refused, never forward-filled. A gap in the 49 spare rows
+before the window is never read and costs nothing; an omitted NEWEST minute is
+not a gap (the window ends a minute earlier and `feed_age_s` reads 60–120).
+**Staleness:** `feed_age_s > MAX_FEED_AGE_S = 120` raises `FeedError`: two or
+more missing newest minutes, or a lagging venue, would leave a contiguous
+window describing `[t−k−15, t−k]` while the mid and the fill are at t (the
+fixture with its newest 8 closed candles removed read `feed_age_s` 529 and
+flipped `vol` normal → violent, `rule_c` buy → sell). A
+book or candles failure raises `FeedError` → row with `absence: "feed"`; so
+does a window `state.py` refuses (`ValueError`, e.g. fewer than 300 rows):
+`cycle.py` logs both as `absence: "feed"`. The recorded fixture set (2026-09-24T02:28:49Z, `fixtures/`)
 pins the parsers; live and fixture go through the same `assemble()`.
 
 ## 4. Features (`loop/state.py::features`) — logged, never sent
@@ -210,7 +237,7 @@ them.
   - `buy` when flat → open: `qty = NOTIONAL / ask`, `fee = NOTIONAL · fee_bps / 1e4`;
   - `sell` when long → close at `bid`: `fee = qty · bid · fee_bps / 1e4` (the
     filled value, what the venue charges; at a 1c spread on ~$200 SOL this
-    differs from "fee on notional" by ~0.003 bps at 60 bps);
+    differs from "fee on notional" by ~0.006 bps at the 120 bps primary);
   - `buy` when long, `sell` when flat, `hold` → no-op.
 - Mark to `mid` every tick. Per-tick pnl, in bps of `NOTIONAL`, computed
   DIRECTLY (not as an equity difference, so two arms with the same position
@@ -222,28 +249,46 @@ them.
   order; arm `a`/`b` reads `columns[arm][column]`, arm `c` reads `rule_c`.
   Returns `equity` (cumulative bps), `trades`, `pnl_bps_per_tick`, and —
   additive to the contract — `position` (qty after each tick, `0.0` flat) and
-  `forced_hold`. A row with `absence` set, `null` columns, or an unpriced
-  book is a forced `hold` for EVERY arm (an outage never manufactures a
-  disagreement), pnl `0.0`, position carried; the move across a gap lands on
-  the first priced tick after it. A dry row is a real hold for C and a forced
-  one for A/B. Two rows with one `tick_id` fold (`+=`). The `outcomes`
+  `forced_hold`. A row with `absence` set (including `halt`, §13), a row
+  whose `mode` is not `live`, `null` columns, or an unpriced book is a forced
+  `hold` for EVERY arm, C included (neither an outage, a HALT nor a `--dry`
+  run ever manufactures a disagreement: a dry row carries `rule_c` but no
+  model columns, so letting C act on it would give C a trade A and B could
+  never make); the position is carried and marked to the row's mid when it
+  has one, so the move lands on the tick it happened on, and across an
+  unpriced gap on the first priced tick after it. Two rows with one `tick_id`
+  fold (`+=`). The `outcomes`
   argument is accepted and unused: a mark-to-mid book needs no t+h join, and
   using one would let t see t+h.
 - `paired(rows, outcomes, x, y, column, fee_bps) → [(tick_id, d_t)]`,
   `d_t = pnl_x − pnl_y`; exactly `0.0` on any tick both arms carry the same
-  position into and out of.
+  position (the same `qty`) into and out of, which includes every tick both are
+  flat. Two arms long on entries opened at DIFFERENT ticks hold different
+  quantities (`NOTIONAL / ask` at each arm's own entry), so a tick both carry
+  long gives `d_t = (q_x − q_y) · (mid_t − mid_prev)`: entry-price noise, a
+  small fraction of a bp at ordinary price differences, and NOT a
+  disagreement. A disagreement tick (the report, PREREG §4) is a tick where
+  the two arms are on different SIDES, long vs flat, into or out of it.
 
-**Fees.** `FEE_BPS_COLUMNS = (60.0, 25.0, 10.0, 2.0)`: the same decisions
-replayed at four constants (10 = the article's, 2 = Binance.US). The PRIMARY is
-`FEE_BPS_PRIMARY = 60.0`, meant to be the venue's own taker fee, and it is
-**UNVERIFIED**: `FEE_BPS_PRIMARY_SOURCE = "UNVERIFIED — placeholder"`. What was
-gathered 2026-09-24 (feed builder): two third-party fee tables dated April 2026
-put the retail Coinbase Advanced tier "Intro 1" (< $1K 30-day volume) at 0.60 %
-MAKER / **1.20 % TAKER**; the institutional Coinbase Exchange page shows "Up to
-$10k: taker 0.60 %". 60 bps therefore matches the Advanced maker or the
-Exchange taker, not the retail Advanced taker. The official retail page
-(`https://www.coinbase.com/advanced-fees`) is behind sign-in and must be read
-in-account. A round trip costs 2 × fee: 120 bps at 60, 240 bps at 120.
+**Fees.** `FEE_BPS_COLUMNS = (120.0, 60.0, 25.0, 10.0, 2.0, 0.0)`: the same
+decisions replayed at six constants — 120 = the venue's retail taker (the
+primary), 60 = the venue's retail maker, 25, 10 = the article's, 2 =
+Binance.US, and **0 = gross**. The PRIMARY is `FEE_BPS_PRIMARY = 120.0`, the
+venue's own taker fee, and it is **UNVERIFIED**: `FEE_BPS_PRIMARY_SOURCE =
+"UNVERIFIED — Coinbase Advanced Intro 1 taker per secondary sources (April
+2026); confirm at https://www.coinbase.com/advanced-fees signed in"`. Two
+third-party fee tables dated April 2026 put the retail Coinbase Advanced tier
+"Intro 1" (< $1K 30-day volume) at 0.60 % MAKER / **1.20 % TAKER**; an earlier
+placeholder of 60 bps was the maker rate. The official retail page is behind
+sign-in and must be read in-account. A round trip costs 2 × fee: **240 bps at
+the 120 bps primary** against a 15-minute return sd of ~26–33 bps
+(`ret15_sd_bps`: 28.9 in the fixture window, 26.6 in the first `--dry` row),
+so any NET cell mostly ranks which arm trades less. **The 0 bps column is why
+the table exists at every fee:** it is the only column in which a difference
+between arms is a difference in DIRECTION (position × return) and not in
+turnover; it is a control, never the primary. The report labels the primary
+cell from `config.FEE_BPS_PRIMARY` and prints `FEE_BPS_PRIMARY_SOURCE` beside
+it; nothing hard-codes a fee.
 
 ```
 Verified tier-0 taker fee: ________ bps   URL: ______________________________   read (UTC): ____________
@@ -251,19 +296,26 @@ Verified tier-0 taker fee: ________ bps   URL: ______________________________   
 
 Rows carry no fee, so the log is unaffected by the value; but this file's sha
 and `PREREG.md`'s primary cell name it, so the verified value (and, if it is
-not 60, a matching `config.FEE_BPS_PRIMARY` / `FEE_BPS_COLUMNS`) must be in
+not 120, a matching `config.FEE_BPS_PRIMARY` / `FEE_BPS_COLUMNS`) must be in
 place before `PREREG.md` is sealed and before the sample's first row.
 
 ## 11. The outcome join (`loop/outcomes.py::join`)
 
-For each row at t with a mid, `mid_h` is the mid of the FIRST row (by
-`ts_rx`) that HAS a mid and whose `ts_rx ∈ [t + 900, t + 900 + 90]`
-(`JOIN_SLACK_S = 90`: one cadence plus half, admitting the next tick when both
-t and t+h slipped under the 50 s watchdog, never a 20-minute outage).
+For each row at t with a mid, `mid_h` is the mid of the row that HAS a mid
+and whose `ts_rx` is NEAREST `t + 900`, within `[t + 900 − 30, t + 900 + 30]`
+(`JOIN_TOL_S = CADENCE_S / 2 = 30.0`; both edges inclusive; a tie goes to the
+earlier row). `ts_rx` is the feed-entry clock, the minute boundary plus timing
+noise (sleep overshoot and the guards under `--forever`, the StartInterval
+phase under launchd); rows 60 s apart always leave exactly one within 30 s of
+any instant, so the realised horizon is 900 ± 30 s whatever the phase, and a
+missing t+15 row is a gap because its neighbours are 60 s away. (The first
+form, "the FIRST row in `[t + 900, t + 990]`", picked the t+16 row whenever the
+t+15 row's noise was smaller than t's: a 15- or 16-minute label on a coin flip.
+Replaced before any sample row.)
 `ret_h_bps = 1e4 · ln(mid_h / mid_t)`; `label` is `up` if `ret_h_bps >=
 DEAD_BAND_BPS = 5.0`, `down` if `<= −5.0`, `flat` between (exactly ±5 is a
 move: config says |ret| BELOW the band is flat). Anything else — no row in the
-window, no mid at t — is `{"absence": "gap"}`, never the nearest row. A
+window, no mid at t — is `{"absence": "gap"}`, never a row outside it. A
 null-mid absence row landing in the window is skipped as a candidate, not
 taken as a gap. Two rows with one `tick_id`: the priced one wins. Forward only:
 t sees t+h, never the reverse.
@@ -288,21 +340,45 @@ t sees t+h, never the reverse.
   must not become a wrong column). `input_tokens` from `usage.input_tokens`,
   `0` when absent. A `model` other than `MODEL` is returned and logged as drift.
 - Spend: `USD_PER_MTOK = 0.042` on input tokens, output free. The
-  ~1.8 KB body is ~$0.04/day at 1,440 ticks.
+  ~1.8 KB body is ~$0.04/day at 1,440 ticks. Because a reply without `usage`
+  logs `0` and a failed send logs `null`, the spend guard (§13) charges such a
+  send `JEV_TOKENS_IF_UNKNOWN = 2000` tokens rather than nothing.
 
 ## 13. Guards and absences (`loop/cycle.py`, in order, every tick)
 
 1. Path guard: the resolved repo path under either `FORBIDDEN_PREFIXES`
    (`~/Projects/crypto-trading-system`, its iCloud mirror) → exit 3, nothing
    written.
-2. `data/HALT` exists → row `absence: "halt"`, exit 0. HALT stops SENDS only;
-   the feed, arm C and the report keep running.
-3. Today's spend (Σ `jev.input_tokens` over today's rows × `USD_PER_MTOK` /
-   1e6) ≥ `DAILY_SPEND_HALT_USD = 0.25` → write `data/HALT`, exit 0.
+2. `data/HALT` exists → the tick is HALTED: it takes the lock and runs the
+   feed, the state, `rule_c` and the prompts as usual (§3–§8), then writes the
+   row with `absence: "halt"` where the send would begin: no ledger row, no
+   request, no body printed (dry or live). HALT stops SENDS only; the feed,
+   arm C's `rule_c`, the outcome join and the report keep running, so the 15
+   minutes before a HALT keep their t+h outcomes and the day's outcome fill
+   (PREREG §8.3) is not spent by it. A feed or prompts failure under HALT
+   keeps its own absence (`absence` names the first step that did not
+   happen). In the book a halt row is a forced hold for EVERY arm, like any
+   absence (§10): `rule_c` is logged but not traded, so a HALT never
+   manufactures a B−C or A−C disagreement; its mid carries the marks.
+3. Today's spend (Σ billed tokens over today's rows, by `tick_id` UTC date,
+   × `USD_PER_MTOK` / 1e6) ≥ `DAILY_SPEND_HALT_USD = 0.25` → write `data/HALT`
+   with the reason; the tick is then HALTED exactly as in 2. Billed tokens
+   (`cycle.py::billed_tokens`): the logged `jev.input_tokens` when positive;
+   else `JEV_TOKENS_IF_UNKNOWN = 2000` for a live row that reached the model
+   (`absence` null, or `"jev"` with any kind but `no-key`/`ledger`, which are
+   raised before a request leaves); else 0 (dry rows, halt/lock/feed/guard).
+   At 2000 per unknown send the guard trips at ~2,976 such sends in a day, 2×
+   the cadence: a runaway, never a normal day.
 4. `flock` on `data/loop.lock`, non-blocking; held → `absence: "lock"`.
-5. Feed (§3) → `absence: "feed"` on `FeedError`; features/state (§4–6);
-   prompts (§8); `--dry` writes the row with `mode: "dry"`, no ledger row, no
-   send; else `jev.ask` → `absence: "jev"` with `jev.error` on `JevError`.
+5. Feed (§3) → `absence: "feed"` on `FeedError` or a window `state.py`
+   refuses; features/state (§4–6); prompts (§8; a prompt that does not load is
+   `absence: "guard"`); `--dry` writes the row with `mode: "dry"`, `answers`
+   and both columns `null`, no ledger row, no send, and prints the exact body
+   to stdout; else `jev.ask` → `absence: "jev"` with `jev.error` on `JevError`
+   (401/403 also write `data/HALT`, "key rejected"). Every path after the path
+   guard writes exactly one row with string `tick_id` and `ts_rx`, including
+   the lock row written before the feed. A post-send exception that is not a
+   `JevError` is `absence: "jev"`, `jev.error: "unexpected"` (§2), billed.
 6. Columns (§9), atomic append (one `write`, `flush`, `fsync`), heartbeat
    `data/heartbeat` = `ts_rx`. 50 s `signal.alarm` watchdog per tick; SIGTERM
    finishes the write and releases the lock. Every exit is 0 except the path
@@ -310,7 +386,10 @@ t sees t+h, never the reverse.
 
 The nightly (`nightly/`) reads a digest of the log and scores candidate
 wordings on the 81 synthetic states only, never on a logged outcome; it writes
-`proposals/` and nothing else. The only thing it can change in a row, via a
+`proposals/`, its ledger rows, and `data/HALT` on a rejected key (the caller
+writes HALT, as in §12), and nothing else. It sends nothing while `data/HALT`
+exists, and a 429 or `MAX_TRANSIENT_RUN = 3` transient failures in a row end
+its night. The only thing it can change in a row, via a
 person running `bin/promote`, is `prompt_b` / `prompt_b_sha` and what
 `answers.b_action` is an answer to.
 
@@ -329,16 +408,21 @@ person running `bin/promote`, is `prompt_b` / `prompt_b_sha` and what
 | | `VOL_RATIO_LO` / `VOL_RATIO_HI` | 0.5 / 2.0 |
 | | `WINDOW_MIN` | 300 |
 | | `DEAD_BAND_BPS` | 5.0 |
-| | `FEE_BPS_PRIMARY` (UNVERIFIED, §10) | 60.0 |
-| | `FEE_BPS_COLUMNS` | (60.0, 25.0, 10.0, 2.0) |
+| | `JEV_TOKENS_IF_UNKNOWN` | 2000 |
+| | `FEE_BPS_PRIMARY` (UNVERIFIED, §10) | 120.0 |
+| | `FEE_BPS_COLUMNS` | (120.0, 60.0, 25.0, 10.0, 2.0, 0.0) |
 | | `CONF_THRESHOLDS` | (0.50, 0.70, 0.85, 0.99) |
 | | `VETO_NOUL` / `PBUY` / `NOUL_TAIL` | 0.5 / 0.60 / 0.99 |
 | `state.py` | `LIQ` / `FLOW` / `TREND` / `VOL` | thin normal deep / quiet organic bot_war / dumping flat pumping / calm normal violent |
 | | `FLOW_BLOCK_MIN` / `RET_BLOCK_MIN` | 5 / 15 |
-| `feed.py` | `CANDLES_REQ` / `TRADES_WINDOW_S` / `TRADES_LIMIT` / `TIMEOUT_S` | 350 / 300 / 1000 / 10 |
-| `outcomes.py` | `JOIN_SLACK_S` | 90.0 |
+| `feed.py` | `CANDLES_REQ` / `TRADES_WINDOW_S` / `TRADES_LIMIT` / `TIMEOUT_S` / `MAX_FEED_AGE_S` | 350 / 300 / 1000 / 10 / 120 |
+| `outcomes.py` | `JOIN_TOL_S` | 30.0 (`CADENCE_S / 2`, either side of t+h) |
 | `jev.py` | `RETRY_S` / `RETRY_AFTER_CAP_S` | 1.0 / 5.0 |
 | `rules.py` | `COLUMNS` | argmax c50 c70 c85 c99 c50v c70v c85v c99v pbuy60 noultail |
+| `cycle.py` | `WATCHDOG_S` / `TAIL_BYTES` | 50 / 8 MiB (the spend guard reads the log's tail) |
+| `report.py` | `PRIMARY` cell / `BLOCK_S` / `SAMPLE_DAYS` | (B, C, `argmax`, `FEE_BPS_PRIMARY`) / 900 (`HORIZON_S`, blocks from T0, `--t0`) / 28 |
+| `nightly/digest.py` | `DISAGREE_CONF` / `DISAGREE_MAX` | 0.85 / 25 |
+| `nightly/policy_table.py` | `DEADLINE_S` / `MAX_CANDIDATES` / `MAX_TRANSIENT_RUN` | 900.0 / 3 / 3 |
 
 ---
 

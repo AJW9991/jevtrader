@@ -8,11 +8,22 @@ once; this prints the numbers PREREG names, and nothing here decides anything.
 
 Every section is one function returning its numbers and its rendered lines from a single
 computation, so a test asserts the number and the text together. The pair table (§4.5) is
-3 pairs x 11 columns x 4 fees = 132 cells; book.paired per cell is 264 replays and the
-positions need 132 more, at 0.065 s per replay of 40,320 rows (28 days, measured) that is
-~26 s. One replay per (arm, column, fee) is kept instead: 2 arms x 11 x 4 + 4 for arm C,
-which reads no column = 92, ~6 s. d_t is book.paired's own expression, px[t] - py[t], on
-the cached pnl dicts, and tests/test_report.py pins the primary cell to book.paired itself.
+3 pairs x 11 columns x len(config.FEE_BPS_COLUMNS) fees (6 today: 198 cells, the primary
+config.FEE_BPS_PRIMARY among them and the 0 bps gross control last); book.paired per cell
+is two replays, ~396 at 0.065 s per replay of 40,320 rows (28 days, measured), ~26 s. One
+replay per (arm, column, fee) is kept instead: 2 arms x 11 x 6 + 6 for arm C, which reads
+no column = 138, ~9 s. d_t is book.paired's own expression, px[t] - py[t], on the cached
+pnl dicts, and tests/test_report.py pins the primary cell to book.paired itself.
+
+The pre-registered unit is the 900 s block (PREREG §3): S_k = the sum of d_t over the ticks
+with T0 + 900k <= tick_id < T0 + 900(k+1). --t0 names T0 (PREREG §11): rows are cut to the
+sample [T0, T0 + 28 days) BEFORE anything is replayed, so every arm starts flat at T0 and no
+shakedown, attended or dry row before it carries a position in. Without --t0 the blocks are
+anchored at the log's first tick and the figures are descriptive only. Disagreement is on the
+SIDE (long vs flat), never on the quantity: two arms long on entries opened at different ticks
+hold different qty (NOTIONAL/ask at each entry), so their d_t is (qx - qy) * dmid, entry-price
+noise, not a disagreement. The t+h join runs over the whole log, so a sample row near the end
+still finds its outcome in the row after the sample.
 
 An empty, missing or dry-only log is said so at the top; health and occupancy still print
 (a dry log has adjectives), the other sections say what they lack.
@@ -27,7 +38,8 @@ PAIRS = (("b", "c"), ("a", "c"), ("b", "a"))       # §4.5 order: the night shif
 # threshold in it (every other column carries an unmeasured cut this project exists to
 # measure), so it is the reading here until PREREG.md freezes one; flagged in the build report.
 PRIMARY = ("b", "c", "argmax", config.FEE_BPS_PRIMARY)
-SUBSAMPLE = config.HORIZON_S // config.CADENCE_S   # 15: ticks 15 apart share no horizon, so their outcomes do not overlap
+BLOCK_S = config.HORIZON_S                          # 900: PREREG §3's block, one horizon, anchored at T0
+SAMPLE_DAYS = 28                                    # PREREG §2: the sample is [T0, T0 + 28 days)
 TICKS_PER_DAY = 86400 // config.CADENCE_S          # 1440: trades/day is per 1440 TICKS, so a day of outage does not dilute it
 OCCUPANCY_FLAG = 0.95                               # §4.2: a word above this share is a constant, and arms cannot disagree on one
 CAL_EDGES = tuple(config.CONF_THRESHOLDS) + (1.0,)  # §4.6: [0.5,0.7) [0.7,0.85) [0.85,0.99) [0.99,1.0]; the last edge is closed
@@ -197,30 +209,57 @@ def agreement(rows):
 
 
 # ---- §4.5 the pair table -------------------------------------------------------------------
+def tick_epoch(tid):
+    """tick_id 'YYYYMMDDTHHMM00Z' -> epoch seconds (UTC)."""
+    return datetime.datetime.strptime(tid, "%Y%m%dT%H%M%SZ").replace(tzinfo=datetime.timezone.utc).timestamp()
+
+
 def _disagreement(px, py):
-    """Ticks where the two arms' positions differ going INTO or OUT OF the tick: exactly the
-    ticks on which d_t can be non-zero (book.py: d_t is 0.0 wherever both arms carry the same
-    position through a tick). The out-only reading would miss a close that leaves both flat."""
-    out, prev_x, prev_y = set(), 0.0, 0.0
+    """Ticks where the two arms are on different SIDES (one long, one flat) going INTO or OUT
+    OF the tick. A quantity difference alone is not a disagreement: two longs opened on
+    different ticks hold different qty and give d_t = (qx - qy) * dmid, entry-price noise
+    (SPEC §10). The out-only reading would miss a close that leaves both flat."""
+    out, prev_x, prev_y = set(), False, False
     for t, _ in px["equity"]:                                        # equity is in tick order, duplicates folded
-        qx, qy = px["position"][t], py["position"][t]
-        if qx != qy or prev_x != prev_y:
+        lx, ly = px["position"][t] > 0, py["position"][t] > 0
+        if lx != ly or prev_x != prev_y:
             out.add(t)
-        prev_x, prev_y = qx, qy
+        prev_x, prev_y = lx, ly
     return out
 
 
-def _cell(px, py, dis, stride=1):
-    """One cell over every stride-th tick in tick order (stride 1 = all ticks). d_t is
-    book.paired's expression on the two cached pnl dicts."""
-    ticks = [t for t, _ in px["equity"]][::stride]
+def _blocks(d, dis, anchor):
+    """PREREG §3: S_k = sum of d_t over the ticks with anchor + 900k <= tick < anchor + 900(k+1),
+    k = 0 .. the block of the last tick. A block with no row is kept with S_k = 0 (PREREG: the
+    arms agree on nothing). A disagreement block holds at least one disagreement tick."""
+    if not d:
+        return {"n": 0, "dis": 0, "share": None, "mean": None, "mean_dis": None, "S": []}
+    S, hot = collections.defaultdict(float), set()
+    for t, v in d:
+        k = int((tick_epoch(t) - anchor) // BLOCK_S)
+        S[k] += v
+        if t in dis:
+            hot.add(k)
+    ks = range(max(S) + 1)
+    s = [(k, S.get(k, 0.0)) for k in ks]
+    sd = [v for k, v in s if k in hot]
+    return {"n": len(s), "dis": len(sd), "share": _rate(len(sd), len(s)), "mean": _mean([v for _, v in s]),
+            "mean_dis": _mean(sd), "S": s}
+
+
+def _cell(px, py, dis):
+    """One cell over every tick in tick order. d_t is book.paired's expression on the two
+    cached pnl dicts."""
+    ticks = [t for t, _ in px["equity"]]
     d = [(t, px["pnl_bps_per_tick"][t] - py["pnl_bps_per_tick"][t]) for t in ticks]
     dd = [v for t, v in d if t in dis]
     return {"n": len(ticks), "dis": len(dd), "mean": _mean([v for _, v in d]), "mean_dis": _mean(dd),
             "hit": _rate(sum(1 for v in dd if v > 0), len(dd)), "d": d}
 
 
-def table(rows, outs):
+def table(rows, outs, t0=None):
+    """t0: T0 as epoch seconds (the rows are already cut to the sample), or None: blocks are
+    then anchored at the first tick of the log."""
     fees = tuple(config.FEE_BPS_COLUMNS)
     if PRIMARY[3] not in fees:
         fees = (PRIMARY[3],) + fees                                  # the primary fee is always a column of the table
@@ -238,6 +277,8 @@ def table(rows, outs):
         r = rep(arm, PRIMARY[2], PRIMARY[3])
         per_arm[arm] = {"equity": r["equity"][-1][1] if r["equity"] else 0.0, "trades": len(r["trades"]),
                         "forced_hold": r["forced_hold"]}
+    lines.append(f"  primary fee {PRIMARY[3]:g} bps (config.FEE_BPS_PRIMARY): {config.FEE_BPS_PRIMARY_SOURCE}"
+                 + ("; the 0 bps column is gross, the direction-only control" if 0.0 in fees else ""))
     lines.append(f"  per arm at the primary (column {PRIMARY[2]}, fee {PRIMARY[3]:g} bps): "
                  + " | ".join(f"{a.upper()} equity {per_arm[a]['equity']:.2f} bps, trades {per_arm[a]['trades']},"
                               f" forced holds {per_arm[a]['forced_hold']}" for a in ARMS))
@@ -245,11 +286,18 @@ def table(rows, outs):
     if not answered(rows):
         lines.append("  no answered rows: arms A and B replay as forced holds, so the pair table is omitted")
         return {"lines": lines, "cells": cells, "per_arm": per_arm, "fees": fees}
-    lines.append("  d_t = pnl_x - pnl_y in bps of NOTIONAL per tick; dis = ticks where the positions differ into or out of"
-                 " the tick; hit = share of dis ticks with d_t > 0 (a zero is not a hit);"
-                 f" tr/d = trades per {TICKS_PER_DAY} ticks; 1/{SUBSAMPLE} = every {SUBSAMPLE}th tick in tick order")
+    first = min(r["tick_id"] for r in rows)
+    anchor = t0 if t0 is not None else tick_epoch(first)
+    where = (f"T0 {_iso_minute(t0)} (--t0), replayed from flat at T0" if t0 is not None
+             else f"the log's first tick {first}; no --t0, so descriptive only")
+    lines.append("  d_t = pnl_x - pnl_y in bps of NOTIONAL per tick; dis = ticks where the SIDES (long vs flat) differ"
+                 " into or out of the tick; hit = share of dis ticks with d_t > 0 (a zero is not a hit);"
+                 f" tr/d = trades per {TICKS_PER_DAY} ticks")
+    lines.append(f"  blocks: S_k = sum of d_t over {BLOCK_S} s block k (PREREG §3), anchored at {where}; n = blocks"
+                 " (an empty block is S_k = 0 and kept); dis = blocks holding a dis tick; mean_S at the * cell is"
+                 " PREREG §4's H1 statistic; days excluded by stop rule 3 are NOT removed here")
     head = (f"  {'':1} {'column':<9}{'n':>6}{'dis':>6}{'mean_d':>10}{'mean_d|dis':>12}{'hit':>8}{'tr/d x':>8}{'tr/d y':>8}"
-            f"  | 1/{SUBSAMPLE}:{'n':>5}{'dis':>6}{'mean_d':>10}{'mean_d|dis':>12}{'hit':>8}")
+            f"  | blocks:{'n':>6}{'dis':>6}{'dis%':>7}{'mean_S':>10}{'mean_S|dis':>12}")
     for x, y in PAIRS:
         for fee in fees:
             lines.append("")
@@ -258,14 +306,18 @@ def table(rows, outs):
             for col in rules.COLUMNS:
                 px, py = rep(x, col, fee), rep(y, col, fee)
                 dis = _disagreement(px, py)
-                a, s = _cell(px, py, dis), _cell(px, py, dis, SUBSAMPLE)
+                a = _cell(px, py, dis)
+                b = _blocks(a["d"], dis, anchor)
                 tpd = (_rate(len(px["trades"]) * TICKS_PER_DAY, n_ticks), _rate(len(py["trades"]) * TICKS_PER_DAY, n_ticks))
-                cells[(x, y, col, fee)] = {"all": a, "sub": s, "trades_per_day": tpd}
+                cells[(x, y, col, fee)] = {"all": a, "blocks": b, "trades_per_day": tpd}
                 mark = "*" if (x, y, col, fee) == PRIMARY else " "
                 lines.append(f"  {mark} {col:<9}{a['n']:>6}{a['dis']:>6}{_f(a['mean']):>10}{_f(a['mean_dis']):>12}"
                              f"{_r(a['hit']):>8}{_f(tpd[0], 1):>8}{_f(tpd[1], 1):>8}"
-                             f"  |     {s['n']:>5}{s['dis']:>6}{_f(s['mean']):>10}{_f(s['mean_dis']):>12}{_r(s['hit']):>8}")
-    return {"lines": lines, "cells": cells, "per_arm": per_arm, "fees": fees}
+                             f"  |        {b['n']:>6}{b['dis']:>6}{_r(b['share']):>7}{_f(b['mean']):>10}{_f(b['mean_dis']):>12}")
+    pb = cells[PRIMARY]["blocks"]
+    lines.insert(2, f"  H1 statistic (PREREG §4), mean S_k at the primary cell: {_f(pb['mean'])} bps over {pb['n']} blocks;"
+                    f" disagreement blocks {pb['dis']} ({_r(pb['share'])}), mean S_k on them {_f(pb['mean_dis'])}")
+    return {"lines": lines, "cells": cells, "per_arm": per_arm, "fees": fees, "anchor": anchor}
 
 
 # ---- §4.6 calibration, arm A ---------------------------------------------------------------
@@ -310,15 +362,20 @@ TITLES = ("1. health", "2. adjective occupancy", "3. test-retest (a_action vs b_
           "4. a.argmax vs rule_c", "5. paired book: pair x column x fee", "6. calibration, arm A")
 
 
-def render(rows, bad=(), log=None, since=None, missing=False):
-    outs = outcomes.join(rows)
-    secs = (health(rows, outs, bad), occupancy(rows), retest(rows), agreement(rows), table(rows, outs), calibration(rows, outs))
+def render(rows, bad=(), log=None, since=None, missing=False, t0=None, outs=None):
+    """t0: T0 in epoch seconds when the rows were cut to the sample; outs: the join over the
+    WHOLE log (a sample row's t+h may sit after the sample), else the join over `rows`."""
+    outs = outcomes.join(rows) if outs is None else outs
+    secs = (health(rows, outs, bad), occupancy(rows), retest(rows), agreement(rows), table(rows, outs, t0),
+            calibration(rows, outs))
     lines = [f"jev-paper-loop report: {config.VENUE} {config.PRODUCT}, cadence {config.CADENCE_S} s, horizon {config.HORIZON_S} s"
-             + (f", log {log}" if log else "") + (f", since {since}" if since else "")]
+             + (f", log {log}" if log else "") + (f", since {since}" if since else "")
+             + (f", T0 {_iso_minute(t0)} (sample [T0, T0 + {SAMPLE_DAYS} d), replayed from flat at T0)" if t0 is not None else "")]
     if missing:
         lines.append(f"no log at {log}: nothing has run yet (health and occupancy print anyway)")
     elif not rows:
-        lines.append("empty log" + (f" since {since}" if since else "") + ": no rows (health and occupancy print anyway)")
+        lines.append("empty log" + (f" since {since}" if since else "") + (" in the sample window" if t0 is not None else "")
+                     + ": no rows (health and occupancy print anyway)")
     elif not answered(rows):
         lines.append(f"dry-only log: {len(rows)} rows and none answered; sections 3-6 need live rows")
     for title, sec in zip(TITLES, secs):
@@ -333,22 +390,54 @@ def _since(s):
     return None if s is None else datetime.date.fromisoformat(s).strftime("%Y%m%d")
 
 
+def _t0(s):
+    """--t0 as an ISO minute 'YYYY-MM-DDTHH:MM' (UTC) or a tick_id 'YYYYMMDDTHHMM00Z' (what
+    PREREG §11 records) -> epoch seconds, or None; ValueError on anything else."""
+    if s is None:
+        return None
+    for fmt in ("%Y-%m-%dT%H:%M", "%Y%m%dT%H%M00Z"):
+        try:
+            return datetime.datetime.strptime(s, fmt).replace(tzinfo=datetime.timezone.utc).timestamp()
+        except ValueError:
+            pass
+    raise ValueError(s)
+
+
+def _iso_minute(epoch):
+    return datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+
+
+def in_sample(rows, t0):
+    """PREREG §2: the rows with T0 <= tick_id < T0 + SAMPLE_DAYS days, nothing else."""
+    end = t0 + SAMPLE_DAYS * 86400
+    return [r for r in rows if t0 <= tick_epoch(r["tick_id"]) < end]
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="python3 -m loop.report", description="CONTRACT §4 report, plain text, no p-values.")
     ap.add_argument("--since", metavar="YYYY-MM-DD", help="rows whose tick_id date is on or after this day")
+    ap.add_argument("--t0", metavar="YYYY-MM-DDTHH:MM",
+                    help=f"PREREG T0 (UTC minute, or its tick_id): only [T0, T0 + {SAMPLE_DAYS} d), replayed from flat at T0")
     ap.add_argument("--log", default=config.DECISIONS, help=f"decision log (default {config.DECISIONS})")
     args = ap.parse_args(argv)
     try:
         since = _since(args.since)
     except ValueError:
         ap.error(f"--since wants YYYY-MM-DD, got {args.since!r}")     # exit 2: the contract's usage-error code
+    try:
+        t0 = _t0(args.t0)
+    except ValueError:
+        ap.error(f"--t0 wants YYYY-MM-DDTHH:MM (UTC) or a tick_id, got {args.t0!r}")
     rows, bad = [], []
     missing = not os.path.exists(args.log)                           # load() raises on a missing file: day zero is not an error
     if not missing:
         rows = outcomes.load(args.log, bad)
+    outs = outcomes.join(rows)                                       # over the whole log: forward only, t+h may follow the cut
     if since:
         rows = [r for r in rows if r["tick_id"][:8] >= since]         # tick_id is YYYYMMDDTHHMM00Z; the first 8 chars are the day
-    sys.stdout.write(render(rows, bad, args.log, args.since, missing))
+    if t0 is not None:
+        rows = in_sample(rows, t0)                                   # cut BEFORE any replay: every arm starts flat at T0
+    sys.stdout.write(render(rows, bad, args.log, args.since, missing, t0, outs))
     return 0
 
 

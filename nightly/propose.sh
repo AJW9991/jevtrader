@@ -8,7 +8,7 @@
 # deny list on the secrets and the sibling repos even if a tool ever appeared), keep
 # its stdout under logs/, extract exactly ONE fenced json block, validate it, write
 # proposals/<date>.json, then run nightly/policy_table.py on it (81 Jev sends,
-# ~$0.005; the table goes to proposals/<date>.md).
+# ~$0.005; the table goes to proposals/<date>.md) unless data/HALT exists.
 # May not: write under prompts/ (only bin/promote, run by a person); echo, log or
 # pass on argv the OAuth token (it is read into the environment for the one call and
 # unset after); exit non-zero on a failure -- launchd throttles a failing job and
@@ -129,6 +129,13 @@ with open(sys.argv[2], "w", encoding="utf-8") as fh:
 log "wrote proposals/$DATE.json"
 
 # 4. the 81-state table. --dry prints the first payload into the log and sends nothing.
+#    data/HALT stops every Jev send (PROTOCOL §3.8), this one included; the spend guard
+#    cannot see these sends (they never reach decisions.jsonl), so the check is here and
+#    again in policy_table.py. Checked in --dry too, so the suite can exercise it.
+if [ -e "$ROOT/data/HALT" ]; then
+  log "HALT present ($ROOT/data/HALT): no Jev send; proposals/$DATE.json written, no table"
+  exit 0
+fi
 if [ $DRY -eq 1 ]; then DRYFLAG="--dry"; else DRYFLAG=""; fi
 "$PY" -m nightly.policy_table $DRYFLAG --out "$ROOT/proposals/$DATE.md" "$ROOT/proposals/$DATE.json" >>"$LOG" 2>&1
 rc=$?

@@ -128,8 +128,7 @@ writes no ledger row. The tests mock `urllib.request.urlopen`; nothing under
 cd ~/Projects/jev-paper-loop && make test
 ```
 
-Until the `Makefile` lands, the same thing by hand (119 tests across the seven
-leaf modules at the time of writing; cycle and report add theirs):
+The same thing by hand (191 tests at integration, 2026-09-24):
 
 ```bash
 cd ~/Projects/jev-paper-loop && /opt/homebrew/bin/python3 -m unittest discover -s tests -v 2>&1 | tail -3
@@ -150,10 +149,12 @@ end to end is the only way to know the row is what `SPEC.md` §2 says.
 cd ~/Projects/jev-paper-loop && make dry && tail -1 data/decisions.jsonl | /opt/homebrew/bin/python3 -m json.tool
 ```
 
-By hand until the `Makefile` lands: `/opt/homebrew/bin/python3 -m loop.cycle --dry`.
+By hand: `/opt/homebrew/bin/python3 -m loop.cycle --dry --once` (`--once` or
+`--forever` is required; alone, `--dry` is a usage error, exit 2).
 
 Read it against SPEC §2: `mode` is `dry`; `absence` is `null`; `answers`
-`null`; `columns.a` and `columns.b` all `null` with the eleven keys present;
+`null`; `columns` is `{"a": null, "b": null}` (each arm `null` itself, CONTRACT
+§3 step 5);
 `state` is `SOL: liquidity …, flow …, trend …, vol …` with no digit; `rule_c`
 is one of the three; `prompt_a_sha == prompt_b_sha` and both start
 `7a85308fd126`; `spec_sha` equals `shasum -a 256 SPEC.md | cut -c1-64`;
@@ -212,14 +213,19 @@ nothing to seal — but the fee (SPEC §10) must be verified first, because the
 primary cell names it.
 
 Fill `T0` (the first minute boundary ≥ 24 h after the first live launchd row;
-`head -1`-style: `grep -m1 '"mode": "live"' data/decisions.jsonl | cut -c1-80`
+`head -1`-style: `grep -m1 '"mode":"live"' data/decisions.jsonl | cut -c1-80` —
+rows are compact JSON, no space after the colon —
 shows the first live tick) and the two signature fields, then:
 
 ```bash
 cd ~/Projects/jev-paper-loop && git add PREREG.md && git commit -m "PREREG: T0 and signature" && git tag prereg-v1 "$(git rev-parse HEAD)" && git tag --points-at HEAD
 ```
 
-Want `prereg-v1`. Only then `bin/promote proposals/<date>.json <k>`.
+Want `prereg-v1`. Only then `bin/promote proposals/<date>.json <k>` (it
+refuses while `git tag -l prereg-v1` is empty). From here on the sample's
+numbers are `/opt/homebrew/bin/python3 -m loop.report --t0 <T0>`: rows cut to
+`[T0, T0 + 28 d)`, every arm replayed from flat at T0, the 900 s block
+statistic S_k of PREREG §3–§4 beside the per-tick figures.
 
 **What changes.** One commit, one tag. **What it does not change.** Any file
 after this: a later edit to `PREREG.md` is `prereg-v2` and applies only to a

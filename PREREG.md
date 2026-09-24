@@ -54,17 +54,27 @@ are not independent samples. The pre-registered unit is the horizon:
   block with no live row has S_k = 0 and is kept (the arms agree on nothing).
 - n = 96 blocks/day × 28 days = **2,688** blocks when every day is kept.
 
-This is the "every-15th-tick non-overlapping subsample" of CONTRACT §4.5 made
-exact: the block boundaries are the 15th ticks, and the block sum is the
-paired 15-minute pnl difference, equal to `position × 15-min return − fees`
-whenever no trade falls inside the block. A literal `d_t` at every 15th tick
-is a one-minute quantity with 1/15 of the variance and is NOT the statistic
-below.
+This is the "every-15th-tick non-overlapping subsample" first written into
+CONTRACT §4.5, made exact: the block boundaries are T0 + 900k (by `tick_id`
+time, never by row index, so a missing minute does not shift a block), and
+the block sum is the paired 15-minute pnl difference, equal to `position ×
+15-min return − fees` whenever no trade falls inside the block. A literal
+`d_t` at every 15th tick is a one-minute quantity with 1/15 of the variance
+and is NOT the statistic below. `make report` prints S_k this way (`python3
+-m loop.report --t0 <T0>`).
+- **The replay starts flat at T0, on the sample rows only.** The rows are cut
+  to `[T0, T0 + 28 · 86,400 s)` before `book.replay` sees them, so no
+  shakedown, attended or `--dry` row before T0 carries a position into the
+  sample. (A dry row inside the sample is a forced hold for every arm, SPEC
+  §10.)
 
 ## 4. H1 (co-primary): the nightly's arm beats the rule
 
 - **Statistic:** mean over the sample blocks of `S_k(B − C, "argmax",
-  FEE_BPS_PRIMARY)`.
+  FEE_BPS_PRIMARY)`, where `FEE_BPS_PRIMARY = 120.0` bps — the Coinbase
+  Advanced retail "Intro 1" TAKER fee per two secondary sources (April 2026),
+  **UNVERIFIED** until read in-account (SPEC §10). A round trip is 2 × 120 =
+  **240 bps**.
 - **Hypothesis:** H0: mean ≤ 0; H1: mean > 0. One-sided, α = 0.025.
 - **Inference:** circular block bootstrap of the block series, block length
   = 4 samples = 1 h (the autocorrelation of a 15-min mark decays inside an
@@ -74,11 +84,29 @@ below.
   resampled means is > 0. Ties (S_k = 0, the agreement blocks) stay in.
 - **Reported beside it, no inference:** the same cell on every tick
   (`d_t`, n ≈ 40,320), the count and share of disagreement blocks (a block
-  where `replay(...)["position"]` differs between B and C on any tick), the
-  mean on disagreement blocks only, trades/day each side. These are
-  descriptive.
+  holding a tick where B and C are on different SIDES, long vs flat, going
+  into or out of it; two longs opened on different ticks differ in quantity
+  and are not a disagreement, SPEC §10), the mean on disagreement blocks
+  only, trades/day each side. These are descriptive.
 - The same procedure is run for **A − C** at the primary cell (needed by stop
   rule 1) and reported as secondary.
+
+> **FOR ALEX TO DECIDE BEFORE SEALING.** At 240 bps per round trip against a
+> 15-minute return sd of ~33 bps (§7; 28.9 bps in the fixture window), one
+> extra round trip costs about seven standard deviations of the move it trades
+> on, so H1 at the primary fee mostly ranks which arm trades less: an arm that
+> never trades cannot lose at 120 bps, and an arm with real direction but more
+> turnover loses on fees before direction can show. Three options, none chosen
+> here: **(i)** keep H1 at the venue fee as decided on 2026-09-23 — the test
+> then asks "does the loop earn net of what this venue charges a retail taker",
+> and a null is expected to be mostly about turnover; **(ii)** move H1 to the
+> 0 bps gross column (`FEE_BPS_COLUMNS[-1]`), so it measures direction
+> (position × return) and the venue-fee cell becomes a reported secondary;
+> **(iii)** keep both, venue fee and gross, as co-primary H1 with α split
+> (0.0125 one-sided each, which moves the 28-day MDE per block from 1.78 to
+> 1.96 bps). Stop rules 1 and 2 (§8) name the same cell and follow whichever
+> is chosen. The choice replaces this paragraph in its own commit BEFORE the
+> sealing commit, which still changes only the two fields of §11 (§10).
 
 ## 5. H2 (co-primary): choice-confidence calibration on the frozen arm
 
@@ -111,10 +139,10 @@ information. Either alone is reported as exactly that.
 - **A − C** and **B − A** at the primary cell (B − A is what the nightly adds
   over the frozen prompt; B − A ≤ 0 is stop rule 2).
 - Every pair × every column × every fee: 3 pairs (B−C, A−C, B−A) × 11 columns
-  (`rules.COLUMNS`) × 4 fees (`FEE_BPS_COLUMNS`) = **132 cells**, printed by
-  `make report` with no p-values. If any secondary cell is ever claimed as
-  significant it is tested with the §4 procedure at α = 0.025 / 132 ≈
-  1.9 × 10⁻⁴, and the claim says so.
+  (`rules.COLUMNS`) × 6 fees (`FEE_BPS_COLUMNS` = 120, 60, 25, 10, 2, 0 bps) =
+  **198 cells**, printed by `make report` with no p-values. If any secondary
+  cell is ever claimed as significant it is tested with the §4 procedure at
+  α = 0.025 / 198 ≈ 1.26 × 10⁻⁴, and the claim says so.
 - Test-retest agreement (rows with `prompt_a_sha == prompt_b_sha`), agreement
   of `a.argmax` with `rule_c`, adjective occupancy, drift count: health
   numbers, no inference.
@@ -134,9 +162,11 @@ MDE = (1.960 + 0.842) · sd / √n:
 | 25 | 2,400 | 1.89 bps | 181 bps |
 
 **The effective-n caveat.** `d_t` — and so S_k — is exactly `0.0` wherever
-the two arms carry the same position through the block. The zeros are real
-samples of the difference (they are what "the arms agree" costs and earns),
-but the information sits in the disagreement blocks alone. If the arms agree
+the two arms are flat through the block, and is only entry-price noise,
+`(q_x − q_y) · Δmid` (SPEC §10), where both are long through it on entries
+opened at different ticks. The zeros are real samples of the difference
+(they are what "the arms agree" costs and earns), but the information sits
+in the disagreement blocks (a difference of SIDE) alone. If the arms agree
 on a share a of blocks, n_eff = (1 − a) · 2,688 for any effect that lives on
 the disagreement blocks:
 
@@ -149,9 +179,10 @@ the disagreement blocks:
 | 98 % | 54 | 12.6 bps | 0.25 bps |
 
 Two things follow and are accepted now. First, 1.78 bps per block is 171
-bps/day: a big edge, and one extra round trip per day costs 2 × fee = 120 bps
-at the placeholder fee and 240 bps if the verified taker fee is 120 bps (SPEC
-§10), so a B that trades more than C must earn back a lot before it shows.
+bps/day: a big edge, and one extra round trip per day costs 2 ×
+`FEE_BPS_PRIMARY` = 240 bps at the 120 bps primary (UNVERIFIED, SPEC §10) —
+more than the whole daily MDE — so a B that trades more than C must earn back
+a lot before it shows (see the paragraph for Alex in §4).
 Second, if `make report` on day 14 shows agreement above 95 % on the primary
 cell, the block is under-powered for anything under ~8 bps per disagreement
 and the final write-up says so; that is a finding about the prompts, not a
