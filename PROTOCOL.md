@@ -60,6 +60,11 @@ is enforced in code and checked by `make test`:
    logged; a mismatch is `drift: true` in the row and counted in the report.
 10. **Hand-installed.** The two plists are installed by Alex per `STEPS.md`,
     never by a script. Same as the canary.
+11. **Enforced in code, not by habit.** `loop/jev.py::ask` refuses with kind
+    `unsigned` until the signature line in §5 carries both fields — before the
+    key is read, the ledger is written or a socket is opened. Every send in
+    the tick and the nightly passes through it. An unsigned tick still records
+    the feed, the state and arm C, and bills nothing.
 
 Not exempted, and unchanged: the brain (`~/Projects/Claude`), the JEV CLI and
 its protocol, the crypto repo, and every other §5 line ("retry loops": this
@@ -74,7 +79,7 @@ failure": a ledger failure is a non-send).
    a paper-only, forward-only MEASUREMENT of the 0.15–0.99 band (every rule is
    a column; nothing acts on a confidence). Own repo, own store, own ledger,
    own key, human-applied prompts, hand-installed plists. Its PROTOCOL.md has
-   the ten conditions. Nothing here re-opens the crypto-repo exclusion.
+   the eleven conditions. Nothing here re-opens the crypto-repo exclusion.
 ```
 
 ## 5. Signature
@@ -82,6 +87,10 @@ failure": a ledger failure is a non-send).
 Written by Claude on 2026-09-23 from decisions Alex made the same day
 (carve-out both repos; MVP-first; Coinbase SOL-USD; second key; Mac launchd;
 60 s / 15 min; H1+H2 over 28 days at the venue's fee; policy tables only).
+Amended 2026-09-24, before signing, by Alex: H1 is at 0 bps gross (the venue's
+120 bps taker is a descriptive column; profitability at retail fees is settled
+by arithmetic, not tested), and `liq` walks the book for a $1,000 order instead
+of reading the top level, which was noise on this venue.
 
 In force from: `____________`  Signed: `____________`
 

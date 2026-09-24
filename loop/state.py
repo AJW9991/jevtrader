@@ -10,6 +10,12 @@ arm C IS (SPEC.md), so the definitions below are written out and pinned by tests
 
 Definitions (the window is the LAST config.WINDOW_MIN = 300 closed 1-min candles;
 index 0 is the oldest, -1 the newest closed minute, which is "now"):
+  fill1k_bps  the cost of ONE paper order walked through the book (2026-09-24, decided by
+              Alex): buy = 1e4·(VWAP of the asks for NOTIONAL_USD of quote − mid)/mid, sell
+              = 1e4·(mid − VWAP of the bids for NOTIONAL_USD)/mid, fill1k_bps = max(buy,
+              sell). A side the snapshot's levels cannot fill costs inf: logged as null with
+              fill1k_short = true, and liq reads thin. l1_min_usd (the smaller level-1 side in
+              USD) stays a logged feature; it no longer sets a word.
   vol5_usd    sum over the last 5 candles of base volume × close (the candle carries
               no notional; close is the only price the venue closes the minute on).
   vol5_p10/90 nearest-rank percentiles of the window's 60 NON-overlapping 5-min sums,
@@ -40,7 +46,8 @@ BUY, SELL, HOLD = "buy", "sell", "hold"
 BASE = config.PRODUCT.split("-")[0]                     # "SOL": the word in front of the colon
 FLOW_BLOCK_MIN = 5                                      # the 5 in vol5: CONTRACT §2 names the feature
 RET_BLOCK_MIN = config.HORIZON_S // config.CADENCE_S    # 15: the return block IS the horizon
-FEATURE_KEYS = ("mid", "spread_bps", "l1_min_usd", "vol5_usd", "vol5_p10", "vol5_p90",
+FEATURE_KEYS = ("mid", "spread_bps", "l1_min_usd", "fill1k_bps", "fill1k_short",
+                "vol5_usd", "vol5_p10", "vol5_p90",
                 "ret15_bps", "ret15_sd_bps", "ret15_z", "rv15", "rv15_med", "rv_ratio",
                 "window_min")
 
@@ -62,10 +69,32 @@ def _nearest_rank(values, p):
     return s[(p * len(s) + 99) // 100 - 1]
 
 
+def fill_cost_bps(levels, mid, side, notional=config.NOTIONAL_USD):
+    """The cost, in bps of mid, of one market order for `notional` USD of quote walked
+    through `levels` ([[price, size], ...], best first): buy walks the asks, sell the bids.
+    Whole levels are taken as `size` base units; the level that finishes the order gives
+    remaining_usd / price. VWAP = notional / base. buy → 1e4·(VWAP − mid)/mid, sell →
+    1e4·(mid − VWAP)/mid; both ≥ 0 on an uncrossed book. Levels that cannot absorb
+    `notional` → inf (the order does not fill on what the venue showed). No literal is
+    compared here (tests/test_state.py's AST test): the stop is `level usd >= what remains`."""
+    if side not in (BUY, SELL):
+        raise ValueError("side %r is not buy or sell" % (side,))
+    rem, base = float(notional), 0.0
+    for price, size in levels:
+        usd = price * size
+        if usd >= rem:                                  # this level finishes the order
+            vwap = notional / (base + rem / price)
+            return 1e4 * ((vwap - mid) if side == BUY else (mid - vwap)) / mid
+        base += size
+        rem -= usd
+    return math.inf
+
+
 def features(snap):
-    """Snapshot → the 13 numbers of CONTRACT §2. Logged, never sent. Raises ValueError
-    if the feed handed fewer than WINDOW_MIN candles: a shorter window silently changes
-    every percentile and median, so it is refused rather than approximated."""
+    """Snapshot → the numbers of CONTRACT §2 (fill1k_short is the one flag). Logged, never
+    sent. Raises ValueError if the feed handed fewer than WINDOW_MIN candles (a shorter
+    window silently changes every percentile and median, so it is refused rather than
+    approximated) or a side of the book with no levels (nothing to walk)."""
     candles = snap["candles"]
     if len(candles) < config.WINDOW_MIN:
         raise ValueError("window: %d candles < WINDOW_MIN %d" % (len(candles), config.WINDOW_MIN))
@@ -76,6 +105,11 @@ def features(snap):
     mid = (bid + ask) / 2.0
     spread_bps = 1e4 * (ask - bid) / mid
     l1_min_usd = min(bid * float(snap["bid_size"]), ask * float(snap["ask_size"]))
+    bids, asks = snap.get("bids"), snap.get("asks")
+    if not bids or not asks:
+        raise ValueError("book: a side with no levels")
+    fill = max(fill_cost_bps(asks, mid, BUY), fill_cost_bps(bids, mid, SELL))
+    short = math.isinf(fill)                            # JSON has no inf: null plus the flag
     # flow: the live 5-min notional against the window's own distribution of 5-min notionals.
     sums5 = [sum(b) for b in _blocks(usd, FLOW_BLOCK_MIN)]
     vol5 = sums5[-1]
@@ -95,6 +129,7 @@ def features(snap):
     rv_med = statistics.median(sum(b) for b in blocks)
     ratio = rv15 / rv_med if rv_med > 0.0 else 1.0
     return {"mid": mid, "spread_bps": spread_bps, "l1_min_usd": l1_min_usd,
+            "fill1k_bps": None if short else fill, "fill1k_short": short,
             "vol5_usd": vol5, "vol5_p10": p_lo, "vol5_p90": p_hi,
             "ret15_bps": ret15, "ret15_sd_bps": sd, "ret15_z": z,
             "rv15": rv15, "rv15_med": rv_med, "rv_ratio": ratio,
@@ -109,8 +144,11 @@ def _band(x, lo, hi, words):
 
 def adjectives(feat):
     """Numbers → four words. Every cut comes from config.py; flow's cuts come from the
-    window itself (the p10/p90 in feat), which is why they are features, not constants."""
-    return {"liq": _band(feat["l1_min_usd"], config.LIQ_THIN_USD, config.LIQ_DEEP_USD, LIQ),
+    window itself (the p10/p90 in feat), which is why they are features, not constants.
+    liq runs the other way round from the other three: a LOW cost is deep, so the cuts
+    are (LIQ_DEEP_BPS, LIQ_THIN_BPS) and the words reversed; a short side is inf → thin."""
+    fill = math.inf if feat["fill1k_short"] or feat["fill1k_bps"] is None else feat["fill1k_bps"]
+    return {"liq": _band(fill, config.LIQ_DEEP_BPS, config.LIQ_THIN_BPS, LIQ[::-1]),
             "flow": _band(feat["vol5_usd"], feat["vol5_p10"], feat["vol5_p90"], FLOW),
             "trend": _band(feat["ret15_z"], -config.TREND_Z, config.TREND_Z, TREND),
             "vol": _band(feat["rv_ratio"], config.VOL_RATIO_LO, config.VOL_RATIO_HI, VOL)}

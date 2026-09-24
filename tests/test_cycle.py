@@ -2,7 +2,8 @@
 test hands it a reply (so a call that reaches it is a failing test, never a packet);
 config.JEV_URL points at 127.0.0.1:9 (discard) as a second wall; every data path in
 config points into a temp dir; feed.snapshot is replaced by the fixture snapshot
-(fixtures/, 2026-09-24T02:28:49Z, assembled through feed.assemble); time.time is pinned
+(fixtures/: candles and trades 2026-09-24T02:28:49Z, the 100-level book 04:51:41Z,
+assembled through feed.assemble); time.time is pinned
 to the fixture's ts_rx so tick_id is known. main() installs and restores its own
 SIGTERM/SIGALRM handlers; the two signal tests raise the signal in-process."""
 import email.message, io, fcntl, hashlib, json, os, re, signal, tempfile, time, unittest, urllib.error
@@ -23,7 +24,7 @@ NOW = float(META["ts_rx_epoch"])                     # 1790216929 -> 2026-09-24T
 TS_RX = "2026-09-24T02:28:49.000Z"
 TICK = "20260924T022800Z"
 DAY = "20260924"
-STATE = "SOL: liquidity deep, flow quiet, trend pumping, vol normal"   # pinned by test_state's smoke run
+STATE = "SOL: liquidity deep, flow quiet, trend pumping, vol normal"   # liq pinned by test_feed's fixture walk
 SNAP = feed.assemble(META["product"], NOW, _load("book.json"), _load("candles.json"),
                      _load("trades.json"), {"calls": 3, "ms": 600})
 KEY = "unit-test-key-not-real-0000"
@@ -174,7 +175,7 @@ class CycleTest(unittest.TestCase):
         self.assert_shape(row)
         self.assertEqual((row["absence"], row["mode"], row["tick_id"], row["ts_rx"]), ("halt", "live", TICK, TS_RX))
         self.snapshot.assert_called_once()                    # the feed ran
-        self.assertEqual((row["bid"], row["ask"], row["mid"]), (SNAP["bid"], SNAP["ask"], 114.81))
+        self.assertEqual((row["bid"], row["ask"], row["mid"]), (SNAP["bid"], SNAP["ask"], (114.95 + 114.97) / 2))   # the 04:51:41Z book
         self.assertEqual((row["state"], row["rule_c"]), (STATE, "buy"))
         self.assertEqual(row["prompt_a_sha"], prompts.sha("v1"))
         self.assertIsNone(row["answers"])
@@ -311,15 +312,19 @@ class CycleTest(unittest.TestCase):
         self.assertIsNone(row["model_answered"])
         self.assertFalse(row["drift"])
         # the feed and the state are all there: the dry row is a full observation minus the model
-        self.assertEqual((row["bid"], row["ask"], row["mid"]), (SNAP["bid"], SNAP["ask"], 114.81))
+        self.assertEqual((row["bid"], row["ask"], row["mid"]), (SNAP["bid"], SNAP["ask"], (114.95 + 114.97) / 2))   # the 04:51:41Z book
         self.assertEqual((row["bid_size"], row["ask_size"]), (SNAP["bid_size"], SNAP["ask_size"]))
         self.assertEqual((row["book_time"], row["feed_age_s"]), (SNAP["book_time"], SNAP["feed_age_s"]))
         self.assertEqual(row["state"], STATE)
         self.assertEqual(row["adj"], {"liq": "deep", "flow": "quiet", "trend": "pumping", "vol": "normal"})
         self.assertEqual(row["rule_c"], "buy")
-        self.assertEqual(sorted(row["features"]), sorted(("mid", "spread_bps", "l1_min_usd", "vol5_usd",
-                         "vol5_p10", "vol5_p90", "ret15_bps", "ret15_sd_bps", "ret15_z", "rv15", "rv15_med",
-                         "rv_ratio", "window_min")))
+        self.assertEqual(sorted(row["features"]), sorted(("mid", "spread_bps", "l1_min_usd", "fill1k_bps",
+                         "fill1k_short", "vol5_usd", "vol5_p10", "vol5_p90", "ret15_bps", "ret15_sd_bps",
+                         "ret15_z", "rv15", "rv15_med", "rv_ratio", "window_min")))
+        self.assertAlmostEqual(row["features"]["fill1k_bps"], META["expect"]["fill1k_bps"], places=12)
+        self.assertIs(row["features"]["fill1k_short"], False)
+        self.assertNotIn("bids", row)                                  # the levels feed the walk; the row keeps L1
+        self.assertNotIn("asks", row)
         self.assertEqual((row["prompt_a"], row["prompt_b"]), ("v1", "v1"))
         self.assertEqual(row["prompt_a_sha"], prompts.sha("v1"))
         self.assertEqual(row["prompt_a_sha"], row["prompt_b_sha"])

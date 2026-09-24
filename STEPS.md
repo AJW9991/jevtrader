@@ -136,7 +136,7 @@ cd ~/Projects/jev-paper-loop && /opt/homebrew/bin/python3 -m unittest discover -
 
 Want `OK`. **What changes.** Nothing; a temp `data/` per test. **What this
 is not.** A live check of anything: the fixture snapshot is from
-2026-09-24T02:28:49Z and Jev is mocked.
+2026-09-24T02:28:49Z (its 100-level book from 04:51:41Z) and Jev is mocked.
 
 ## 4. `make dry` and read the row  (~2 min, free; three public GETs)
 
@@ -209,8 +209,11 @@ It is a pre-registration only if it is provably older than the first row it
 could have been tuned on: the first row with `prompt_b != "v1"`. The seal is a
 git tag on the commit that fills T0 and the signature (PREREG §11); it must
 also precede the day-14 look. Until you run `bin/promote` there is no v2 and
-nothing to seal — but the fee (SPEC §10) must be verified first, because the
-primary cell names it.
+nothing to seal. The venue fee (SPEC §10) no longer decides H1 (2026-09-24,
+decided by Alex: the primary cell is 0 bps, gross), so it does not block the
+seal; but verify it in-account before the sample's first row anyway, because
+`FEE_BPS_COLUMNS` is in SPEC.md (whose sha every row carries) and a value
+other than 120 changes `FEE_BPS_VENUE` and its descriptive column.
 
 Fill `T0` (the first minute boundary ≥ 24 h after the first live launchd row;
 `head -1`-style: `grep -m1 '"mode":"live"' data/decisions.jsonl | cut -c1-80` —

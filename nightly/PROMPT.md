@@ -9,8 +9,9 @@ the digest pasted below this text.
 
 ## What the digest contains
 
-- One summary line: ticks, adjective occupancy, trades and paper PnL per arm, and
-  the count of arm-B disagreements.
+- One summary line: ticks, adjective occupancy, trades and paper PnL per arm
+  twice, labelled — at zero fee (direction, gross of fees) and at the venue's retail
+  taker fee (the realistic cost) — and the count of arm-B disagreements.
 - Up to twenty-five rows where arm B answered with high confidence and the market
   went the other way (buy then down, sell then up), most confident first. Each row
   is the state the model saw, its choice, its confidence, the return that followed,

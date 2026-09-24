@@ -54,7 +54,7 @@ def apply(pos, intent, bid, ask, fee_bps):
         qty = pos["qty"]
         # The venue charges on the filled value qty*bid, not on the 1000 USD
         # opened: at a 1c spread on ~$200 SOL the two differ by 0.5 bps of the
-        # fee, ~0.006 bps at the 120 bps primary. Immaterial, but the exact one is free.
+        # fee, ~0.006 bps at the 120 bps venue fee. Immaterial, but the exact one is free.
         fee = qty * bid * fee_bps / 1e4
         return None, {"side": "sell", "price": bid, "qty": qty, "fee": fee}
     return pos, None

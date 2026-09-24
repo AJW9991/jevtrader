@@ -38,14 +38,16 @@ def walk(n, seed=7, p0=200.0):
     return closes, vols
 
 
-def snapshot(closes, vols, bid=199.99, ask=200.01, bid_size=20.0, ask_size=30.0):
+def snapshot(closes, vols, bid=199.99, ask=200.01, bid_size=20.0, ask_size=30.0, bids=None, asks=None):
     return {"ts_rx": "2026-09-23T00:00:00.000Z", "product": config.PRODUCT,
             "bid": bid, "bid_size": bid_size, "ask": ask, "ask_size": ask_size,
+            "bids": [[bid, bid_size]] if bids is None else bids,
+            "asks": [[ask, ask_size]] if asks is None else asks,
             "book_time": None, "candles": candles(closes, vols),
             "trades_5m": 100, "feed_age_s": 3.0, "http": {"calls": 3, "ms": 250}}
 
 
-MID_FEAT = {"mid": 200.0, "spread_bps": 1.0, "l1_min_usd": 5000.0,
+MID_FEAT = {"mid": 200.0, "spread_bps": 1.0, "l1_min_usd": 5000.0, "fill1k_bps": 3.0, "fill1k_short": False,
             "vol5_usd": 500.0, "vol5_p10": 100.0, "vol5_p90": 900.0,
             "ret15_bps": 0.0, "ret15_sd_bps": 10.0, "ret15_z": 0.0,
             "rv15": 1e-6, "rv15_med": 1e-6, "rv_ratio": 1.0, "window_min": W}
@@ -73,6 +75,9 @@ class Features(unittest.TestCase):
         self.assertAlmostEqual(self.f["mid"], 200.0)
         self.assertAlmostEqual(self.f["spread_bps"], 1e4 * 0.02 / 200.0)
         self.assertAlmostEqual(self.f["l1_min_usd"], min(199.99 * 20.0, 200.01 * 30.0))
+        # $4,000 and $6,000 at level 1: the $1,000 order fills there, so the cost is the half-spread
+        self.assertAlmostEqual(self.f["fill1k_bps"], 1e4 * 0.01 / 200.0)
+        self.assertIs(self.f["fill1k_short"], False)
 
     def test_flow_is_last_5_and_nearest_rank_over_60_blocks(self):
         c, v = self.closes[-W:], self.vols[-W:]
@@ -167,8 +172,25 @@ class Boundaries(unittest.TestCase):
         self.assertEqual(self.words(dim, key, hi + 1.0), whi)
 
     def test_liq(self):
-        self.assertEqual((config.LIQ_THIN_USD, config.LIQ_DEEP_USD), (1000.0, 10000.0))
-        self.check("liq", "l1_min_usd", config.LIQ_THIN_USD, config.LIQ_DEEP_USD, "thin", "normal", "deep")
+        # 2026-09-24: liq is fill1k_bps, the cost of walking the book for one NOTIONAL_USD order.
+        # It runs the other way round: a LOW cost is deep, so the low cut (1.0) is deep's and
+        # the high cut (5.0) is thin's; ON either cut is normal (strict < and >).
+        self.assertEqual((config.LIQ_DEEP_BPS, config.LIQ_THIN_BPS), (1.0, 5.0))
+        self.check("liq", "fill1k_bps", config.LIQ_DEEP_BPS, config.LIQ_THIN_BPS, "deep", "normal", "thin")
+
+    def test_liq_short_side_is_thin(self):
+        # a side the levels cannot fill: logged as null + fill1k_short, read as inf -> thin
+        self.assertEqual(state.adjectives(feat(fill1k_bps=None, fill1k_short=True))["liq"], "thin")
+        self.assertEqual(state.adjectives(feat(fill1k_bps=math.inf, fill1k_short=False))["liq"], "thin")
+        self.assertEqual(state.adjectives(feat(fill1k_bps=0.5, fill1k_short=True))["liq"], "thin")   # the flag wins
+
+    def test_l1_no_longer_sets_liq(self):
+        # the old word: l1_min_usd < $1000 -> thin. It is still logged; it moves no word now.
+        for l1 in (0.0, 1.0, 999.0, 1e6):
+            self.assertEqual(state.adjectives(feat(l1_min_usd=l1, fill1k_bps=0.87))["liq"], "deep")
+            self.assertEqual(state.adjectives(feat(l1_min_usd=l1))["liq"], "normal")
+        self.assertFalse(hasattr(config, "LIQ_THIN_USD"))
+        self.assertFalse(hasattr(config, "LIQ_DEEP_USD"))
 
     def test_flow(self):
         # flow's cuts are the window's own p10/p90, carried in feat (100.0 / 900.0 here).
@@ -186,13 +208,97 @@ class Boundaries(unittest.TestCase):
         # Moving one number moves one word.
         base = state.adjectives(MID_FEAT)
         self.assertEqual(base, {"liq": "normal", "flow": "organic", "trend": "flat", "vol": "normal"})
-        for key, dim, x in (("l1_min_usd", "liq", 0.0), ("vol5_usd", "flow", 1e9),
+        for key, dim, x in (("fill1k_bps", "liq", 99.0), ("vol5_usd", "flow", 1e9),
                             ("ret15_z", "trend", -5.0), ("rv_ratio", "vol", 9.0)):
             adj = state.adjectives(feat(**{key: x}))
             self.assertNotEqual(adj[dim], base[dim])
             for other in state.DIMS:
                 if other != dim:
                     self.assertEqual(adj[other], base[other])
+
+
+class Walk(unittest.TestCase):
+    """fill_cost_bps and fill1k_bps on hand-built books: every number below is restated
+    by hand, not taken from state.py. mid is 100.0 (bid 99.99 / ask 100.01)."""
+    MID = 100.0
+    # asks: $200.02 + $300.09 at levels 1-2, then $1,001.00 at level 3: the order ends in level 3
+    ASKS = [[100.01, 2.0], [100.03, 3.0], [100.10, 10.0]]
+    # bids: $499.95 + $499.90 at levels 1-2 ($999.85), then $9,990 at level 3: ends in level 3
+    BIDS = [[99.99, 5.0], [99.98, 5.0], [99.90, 100.0]]
+
+    def test_buy_vwap_exact(self):
+        rem = 1000.0 - 100.01 * 2.0 - 100.03 * 3.0                       # $499.89 left for level 3
+        base = 2.0 + 3.0 + rem / 100.10                                   # SOL bought
+        vwap = 1000.0 / base
+        want = 1e4 * (vwap - self.MID) / self.MID
+        got = state.fill_cost_bps(self.ASKS, self.MID, "buy")
+        self.assertAlmostEqual(got, want, places=9)
+        self.assertAlmostEqual(got, 6.0976, places=4)                     # 6.10 bps: past the 5.0 cut
+
+    def test_sell_vwap_exact(self):
+        rem = 1000.0 - 99.99 * 5.0 - 99.98 * 5.0                          # $0.15 left for level 3
+        base = 5.0 + 5.0 + rem / 99.90
+        vwap = 1000.0 / base
+        want = 1e4 * (self.MID - vwap) / self.MID
+        got = state.fill_cost_bps(self.BIDS, self.MID, "sell")
+        self.assertAlmostEqual(got, want, places=9)
+        self.assertAlmostEqual(got, 1.5013, places=4)
+
+    def test_level_one_alone_is_the_half_spread(self):
+        self.assertAlmostEqual(state.fill_cost_bps([[100.01, 50.0]], self.MID, "buy"), 1.0, places=9)
+        self.assertAlmostEqual(state.fill_cost_bps([[99.99, 50.0]], self.MID, "sell"), 1.0, places=9)
+        # exactly NOTIONAL at level 1 fills (>=), it is not short
+        self.assertAlmostEqual(state.fill_cost_bps([[100.0, 10.0]], self.MID, "buy"), 0.0, places=12)
+
+    def test_cannot_fill_is_inf(self):
+        # $200.02 + $300.09 + $100.10 = $600.21 < $1,000 on the asks
+        self.assertEqual(state.fill_cost_bps([[100.01, 2.0], [100.03, 3.0], [100.10, 1.0]], self.MID, "buy"),
+                         math.inf)
+        self.assertEqual(state.fill_cost_bps([], self.MID, "sell"), math.inf)
+        with self.assertRaises(ValueError):
+            state.fill_cost_bps(self.ASKS, self.MID, "hold")
+
+    def features(self, bids, asks):
+        c, v = walk(W)
+        return state.features(snapshot(c, v, bid=bids[0][0], bid_size=bids[0][1], ask=asks[0][0],
+                                       ask_size=asks[0][1], bids=bids, asks=asks))
+
+    def test_features_take_the_max_of_the_two_sides(self):
+        f = self.features(self.BIDS, self.ASKS)                          # buy 6.10, sell 1.50
+        self.assertAlmostEqual(f["mid"], self.MID)
+        self.assertAlmostEqual(f["fill1k_bps"], state.fill_cost_bps(self.ASKS, self.MID, "buy"), places=12)
+        self.assertIs(f["fill1k_short"], False)
+        self.assertEqual(state.adjectives(f)["liq"], "thin")
+        # the sides are independent: swap which one is expensive and the max follows it
+        cheap_asks = [[100.01, 50.0]]                                     # buy 1.0
+        f = self.features(self.BIDS, cheap_asks)                          # sell 1.50 is now the max
+        self.assertAlmostEqual(f["fill1k_bps"], state.fill_cost_bps(self.BIDS, self.MID, "sell"), places=12)
+        self.assertEqual(state.adjectives(f)["liq"], "normal")
+        deep_bids = [[99.99, 50.0]]
+        f = self.features(deep_bids, cheap_asks)                          # 1.0 both sides: ON the cut
+        self.assertAlmostEqual(f["fill1k_bps"], 1.0, places=9)
+        f = self.features([[99.995, 50.0]], [[100.005, 50.0]])            # 0.5 both sides
+        self.assertEqual(state.adjectives(f)["liq"], "deep")
+
+    def test_a_short_side_logs_null_and_the_flag_and_reads_thin(self):
+        for bids, asks in (([[99.99, 1.0]], [[100.01, 50.0]]),            # bids hold $99.99: short
+                           ([[99.99, 50.0]], [[100.01, 1.0]])):           # asks short
+            f = self.features(bids, asks)
+            self.assertIsNone(f["fill1k_bps"])                            # JSON has no inf
+            self.assertIs(f["fill1k_short"], True)
+            self.assertEqual(state.adjectives(f)["liq"], "thin")
+            import json
+            self.assertEqual(json.loads(json.dumps(f, allow_nan=False))["fill1k_bps"], None)
+        # an arm-C buy needs liq != thin: pumping on a short book holds (CONTRACT §2, unchanged)
+        adj = dict(state.adjectives(f), trend="pumping", vol="normal")
+        self.assertEqual(state.rule_c(adj), "hold")
+        self.assertEqual(state.rule_c(dict(adj, liq="normal")), "buy")
+
+    def test_a_book_side_with_no_levels_is_refused(self):
+        c, v = walk(W)
+        for bids, asks in (([], [[100.01, 5.0]]), ([[99.99, 5.0]], [])):
+            with self.assertRaises(ValueError):
+                state.features(snapshot(c, v, bids=bids, asks=asks))
 
 
 FORMAT = re.compile(r"^SOL: liquidity (thin|normal|deep), flow (quiet|organic|bot_war), "
@@ -292,7 +398,7 @@ class ThresholdsComeFromConfig(unittest.TestCase):
         self.assertEqual(sorted(v for _, v in literal_compares), [0.0, 0.0], literal_compares)
         names = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)
                  and isinstance(n.value, ast.Name) and n.value.id == "config"}
-        for name in ("LIQ_THIN_USD", "LIQ_DEEP_USD", "FLOW_P_LO", "FLOW_P_HI", "TREND_Z",
+        for name in ("LIQ_THIN_BPS", "LIQ_DEEP_BPS", "NOTIONAL_USD", "FLOW_P_LO", "FLOW_P_HI", "TREND_Z",
                      "VOL_RATIO_LO", "VOL_RATIO_HI", "WINDOW_MIN", "PRODUCT", "HORIZON_S", "CADENCE_S"):
             self.assertIn(name, names)
 

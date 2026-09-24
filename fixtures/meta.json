@@ -1,10 +1,12 @@
 {
   "recorded_utc": "2026-09-24T02:28:49Z",
+  "book_recorded_utc": "2026-09-24T04:51:41Z",
+  "book_recorded_epoch": 1790225501,
   "ts_rx_epoch": 1790216929,
   "product": "SOL-USD",
   "candles_url": "https://api.coinbase.com/api/v3/brokerage/market/products/SOL-USD/candles?start=1790195929&end=1790216929&granularity=ONE_MINUTE",
   "trades_url": "https://api.coinbase.com/api/v3/brokerage/market/products/SOL-USD/ticker?limit=1000&start=1790216629&end=1790216929",
-  "book_url": "https://api.coinbase.com/api/v3/brokerage/market/product_book?product_id=SOL-USD&limit=1",
+  "book_url": "https://api.coinbase.com/api/v3/brokerage/market/product_book?product_id=SOL-USD&limit=100",
   "expect": {
     "candles_raw": 350,
     "candles_closed": 349,
@@ -13,11 +15,24 @@
     "oldest_start": 1790195940,
     "trades_raw": 532,
     "trades_5m": 532,
-    "bid": 114.8,
-    "bid_size": 169.44915682,
-    "ask": 114.82,
-    "ask_size": 291.37339166,
-    "book_time": "2026-09-24T02:28:48.910921Z",
-    "feed_age_s": 49.0
+    "bid": 114.95,
+    "bid_size": 205.27970493,
+    "ask": 114.97,
+    "ask_size": 114.88,
+    "book_time": "2026-09-24T04:51:41.177886Z",
+    "feed_age_s": 49.0,
+    "book_bids": 100,
+    "book_asks": 100,
+    "bid_last": [
+      113.67,
+      0.42
+    ],
+    "ask_last": [
+      116.25,
+      4.86702943
+    ],
+    "fill1k_bps": 0.8698677800991063,
+    "fill1k_short": false,
+    "liq": "deep"
   }
 }

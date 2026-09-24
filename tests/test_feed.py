@@ -1,4 +1,5 @@
-"""Offline tests for loop.feed against fixtures/ (one real set, 2026-09-24T02:28:49Z).
+"""Offline tests for loop.feed against fixtures/ (one real set: candles and trades
+2026-09-24T02:28:49Z, the 100-level book re-recorded 2026-09-24T04:51:41Z).
 
 urllib.request.urlopen is mocked in every path that reaches snapshot(); a test that
 opens a socket is a failing test. Numbers are pinned in fixtures/meta.json `expect`.
@@ -27,7 +28,7 @@ META = load("meta.json")
 NOW = float(META["ts_rx_epoch"])
 EXP = META["expect"]
 BOOK, CANDLES, TRADES = load("book.json"), load("candles.json"), load("trades.json")
-KEYS = {"ts_rx", "product", "bid", "bid_size", "ask", "ask_size", "book_time",
+KEYS = {"ts_rx", "product", "bid", "bid_size", "ask", "ask_size", "bids", "asks", "book_time",
         "candles", "trades_5m", "feed_age_s", "http"}                    # CONTRACT §2, exactly
 
 
@@ -214,11 +215,12 @@ class TestSnapshot(unittest.TestCase):
         _, f = snap()
         end = int(NOW)
         self.assertEqual(f.urls, [
-            feed.BASE + "/product_book?product_id=SOL-USD&limit=1",
+            feed.BASE + "/product_book?product_id=SOL-USD&limit=100",
             feed.BASE + f"/products/SOL-USD/candles?start={end - 350 * 60}&end={end}&granularity=ONE_MINUTE",
             feed.BASE + f"/products/SOL-USD/ticker?limit=1000&start={end - 300}&end={end}",
         ])
         self.assertEqual(f.urls, [META["book_url"], META["candles_url"], META["trades_url"]])
+        self.assertEqual(config.BOOK_LEVELS, 100)
         for u in f.urls:
             self.assertTrue(u.startswith("https://api.coinbase.com/api/v3/brokerage/market/"), u)
 
@@ -277,6 +279,76 @@ class TestSnapshot(unittest.TestCase):
         del nob["pricebook"]["time"]
         self.assertIsNone(feed.parse_book(nob, "SOL-USD")[4])            # book_time null when absent
 
+    def test_snapshot_carries_levels_best_first_at_most_book_levels(self):
+        s, _ = snap()
+        for side, desc in (("bids", True), ("asks", False)):
+            lv = s[side]
+            self.assertIsInstance(lv, list)
+            self.assertEqual(len(lv), EXP["book_" + side])
+            self.assertLessEqual(len(lv), config.BOOK_LEVELS)
+            for x in lv:
+                self.assertIsInstance(x, list)                           # JSON-clean: lists, not tuples
+                self.assertEqual(len(x), 2)
+                self.assertIsInstance(x[0], float)
+                self.assertIsInstance(x[1], float)
+            prices = [p for p, _ in lv]
+            self.assertEqual(prices, sorted(prices, reverse=desc))       # best first
+        # level 1 of the levels IS the L1 fields
+        self.assertEqual(s["bids"][0], [s["bid"], s["bid_size"]])
+        self.assertEqual(s["asks"][0], [s["ask"], s["ask_size"]])
+        self.assertEqual(s["bids"][-1], EXP["bid_last"])
+        self.assertEqual(s["asks"][-1], EXP["ask_last"])
+
+    def test_levels_are_sorted_and_capped_whatever_the_venue_sends(self):
+        # 150 levels a side, shuffled: the Snapshot keeps the BOOK_LEVELS best, best first.
+        import random
+        rng = random.Random(3)
+        bids = [{"price": f"{100.0 - 0.01 * i:.2f}", "size": "1"} for i in range(150)]
+        asks = [{"price": f"{100.01 + 0.01 * i:.2f}", "size": "2"} for i in range(150)]
+        rng.shuffle(bids)
+        rng.shuffle(asks)
+        book = {"pricebook": {"product_id": "SOL-USD", "bids": bids, "asks": asks, "time": "t"}}
+        s, _ = snap(Fake(book=book))
+        self.assertEqual(len(s["bids"]), config.BOOK_LEVELS)
+        self.assertEqual(len(s["asks"]), config.BOOK_LEVELS)
+        self.assertEqual(s["bids"][0], [100.0, 1.0])
+        self.assertEqual(s["asks"][0], [100.01, 2.0])
+        self.assertEqual((s["bid"], s["ask"]), (100.0, 100.01))
+        self.assertAlmostEqual(s["bids"][-1][0], 100.0 - 0.01 * (config.BOOK_LEVELS - 1))
+        self.assertAlmostEqual(s["asks"][-1][0], 100.01 + 0.01 * (config.BOOK_LEVELS - 1))
+        self.assertEqual([p for p, _ in s["bids"]], sorted((p for p, _ in s["bids"]), reverse=True))
+        self.assertEqual([p for p, _ in s["asks"]], sorted(p for p, _ in s["asks"]))
+        # fewer than BOOK_LEVELS is fine: a thin venue is a measurement, not an error
+        few = {"pricebook": {"product_id": "SOL-USD", "bids": bids[:3], "asks": asks[:2], "time": "t"}}
+        b, a, _ = feed.parse_levels(few, "SOL-USD")
+        self.assertEqual((len(b), len(a)), (3, 2))
+
+    def test_a_garbage_or_crossed_deep_level_refuses_the_book(self):
+        def book(bids, asks):
+            return {"pricebook": {"product_id": "SOL-USD", "time": "t",
+                                  "bids": [{"price": p, "size": z} for p, z in bids],
+                                  "asks": [{"price": p, "size": z} for p, z in asks]}}
+        good_b, good_a = [("100", "1"), ("99.99", "1")], [("100.01", "1"), ("100.02", "1")]
+        feed.parse_levels(book(good_b, good_a), "SOL-USD")                  # the control parses
+        for bad in (book(good_b + [("99.9", "0")], good_a), book(good_b, good_a + [("100.1", "-1")]),
+                    book(good_b + [("nan", "1")], good_a), book(good_b, good_a + [("inf", "1")]),
+                    book(good_b + [("0", "1")], good_a), book(good_b, good_a + [("100.1", "x")]),
+                    book(good_b + [("100.05", "1")], good_a),                  # a deep bid above the best ask: crossed
+                    book([], good_a), book(good_b, [])):
+            with self.assertRaises(feed.FeedError, msg=bad):
+                feed.parse_levels(bad, "SOL-USD")
+
+    def test_fixture_book_walks_to_the_pinned_fill1k(self):
+        # the smoke run of the new liq on the recorded book: $1,000 fills at level 1 on both
+        # sides ($23,597 bid / $13,208 ask there), so the cost is the half-spread, 0.87 bps -> deep
+        from loop import state
+        s, _ = snap()
+        f = state.features(s)
+        self.assertAlmostEqual(f["fill1k_bps"], EXP["fill1k_bps"], places=12)
+        self.assertIs(f["fill1k_short"], EXP["fill1k_short"])
+        self.assertAlmostEqual(f["fill1k_bps"], 1e4 * (s["ask"] - s["bid"]) / 2 / f["mid"], places=9)
+        self.assertEqual(state.adjectives(f)["liq"], EXP["liq"])
+
     def test_assemble_equals_snapshot_and_is_the_cli_fixture_path(self):
         s, _ = snap()
         a = feed.assemble("SOL-USD", NOW, BOOK, CANDLES, TRADES, {"calls": 3, "ms": s["http"]["ms"]})
@@ -294,7 +366,9 @@ class TestSnapshot(unittest.TestCase):
         self.assertIn("best_bid", TRADES)
         self.assertRegex(TRADES["trades"][0]["time"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z$")
         self.assertEqual(BOOK["pricebook"]["product_id"], "SOL-USD")
-        self.assertEqual(len(BOOK["pricebook"]["bids"]), 1)
+        self.assertEqual(len(BOOK["pricebook"]["bids"]), EXP["book_bids"])   # limit=100, not level 1 alone
+        self.assertEqual(len(BOOK["pricebook"]["asks"]), EXP["book_asks"])
+        self.assertIsInstance(BOOK["pricebook"]["bids"][0]["price"], str)
 
     def test_feed_never_sleeps_retries_or_sees_jev(self):
         with open(feed.__file__) as fh:

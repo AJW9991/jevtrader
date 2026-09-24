@@ -56,8 +56,18 @@ KEY_PATHS = (                      # first hit wins; the loop's own key is prefe
 
 # ---- the alphabet: code computes numbers, the model sees words ------------------
 NOTIONAL_USD = 1000.0              # paper order size; also the liquidity yardstick
-LIQ_THIN_USD = NOTIONAL_USD        # l1_min_usd below this: the top of book cannot absorb one order
-LIQ_DEEP_USD = 10 * NOTIONAL_USD
+# liq, 2026-09-24, decided by Alex: the word is the cost of WALKING THE BOOK for one NOTIONAL_USD
+# market order, not the size of level 1. Twelve product_book samples over 60 s: top-of-book
+# min-side USD swung $1 to $11,580 and read "thin" 7/12 under the old l1_min_usd < $1000 rule,
+# while a $1,000 order's VWAP-vs-mid cost was 0.44-2.02 bps (median 0.87) on both sides and ask
+# depth within 5 bps was $91k-$191k: the old word was a coin flip that randomly blocked arm C's
+# buys. fill1k_bps = max(buy, sell) of 1e4 * |VWAP - mid| / mid over the first BOOK_LEVELS levels.
+BOOK_LEVELS = 100                  # product_book limit; 100 levels at a 1c tick is ~$1.3 of price
+                                   # (8.4 KB, 0.22 s in the recording), orders of magnitude past $1,000
+LIQ_THIN_BPS = 5.0                 # fill1k_bps above this (or a side the levels cannot fill) -> thin
+LIQ_DEEP_BPS = 1.0                 # fill1k_bps below this -> deep. The half-spread alone is ~0.44 bps
+                                   # at a 1c tick on ~$115, so deep and normal are both common and
+                                   # thin is a real dislocation; the report's > 95% flag is the check
 FLOW_P_LO, FLOW_P_HI = 10, 90      # 5-min traded volume vs percentiles of the window's 5-min sums
 TREND_Z = 1.0                      # 15-min log return, z-scored by the window's sd of 15-min returns
 VOL_RATIO_LO, VOL_RATIO_HI = 0.5, 2.0   # realised 15-min variance vs the window's median
@@ -65,22 +75,23 @@ WINDOW_MIN = 300                   # minutes of 1m candles required (Coinbase se
 DEAD_BAND_BPS = 5.0                # |ret_h| below this is "flat" for the outcome label
 
 # ---- paper execution --------------------------------------------------------------
-# The venue's own taker fee is the PRIMARY. Coinbase Advanced retail tier 0
-# ("Intro 1", < $1K 30-day volume) is 0.60% maker / 1.20% TAKER per two sources
-# updated April 2026 (tokenecho.io, cryptofeediscount.com; fetched 2026-09-24).
-# An earlier placeholder here said 60 bps was the taker rate — that is the maker
-# rate. The official table (coinbase.com/advanced-fees) is behind sign-in, so
-# this stays UNVERIFIED until Alex reads it in-account, before PREREG.md is sealed.
-#
-# Consequence worth knowing before sealing: a round trip at 120 bps is 240 bps
-# against a 15-minute sd of ~33 bps, so any NET comparison mostly ranks which
-# arm trades least. The 0 bps column is the only one that measures direction.
-FEE_BPS_PRIMARY = 120.0
-FEE_BPS_PRIMARY_SOURCE = ("UNVERIFIED — Coinbase Advanced Intro 1 taker per secondary sources "
-                          "(April 2026); confirm at https://www.coinbase.com/advanced-fees signed in")
-FEE_BPS_COLUMNS = (120.0, 60.0, 25.0, 10.0, 2.0, 0.0)   # same decision, different constant: venue taker,
-                                                        # venue maker, 10 = the article's, 2 = Binance.US,
-                                                        # 0 = gross, the direction-only control
+# 2026-09-24, decided by Alex: H1 is measured at 0 bps, GROSS (PREREG §4). Coinbase Advanced
+# retail tier 0 ("Intro 1", < $1K 30-day volume) is 0.60% maker / 1.20% TAKER per two sources
+# updated April 2026 (tokenecho.io, cryptofeediscount.com; fetched 2026-09-24); the official table
+# (coinbase.com/advanced-fees) is behind sign-in. A round trip at 120 bps is 240 bps against a
+# 15-minute sd of ~33 bps, so profitability at retail fees is settled by arithmetic, and a NET H1
+# would mostly rank which arm trades least. At 0 bps, gross of fees, a difference between arms is
+# direction NET OF THE SPREAD, which is the question: turnover still costs one spread per round trip
+# (open at the ask, close at the bid, marked to mid: 0.87 bps at 1c, 1.74 at 2c on ~$115, the order
+# of PREREG §7's 1.78 bps per-block MDE), so trades/day is read beside the cell. Every net-of-fee
+# column is descriptive.
+FEE_BPS_PRIMARY = 0.0              # the H1 cell (PREREG §4): gross of fees, not of the spread
+FEE_BPS_VENUE = 120.0              # the venue's own retail taker: the realistic-cost column, descriptive
+FEE_BPS_VENUE_SOURCE = ("UNVERIFIED — Coinbase Advanced Intro 1 taker per secondary sources "
+                        "(April 2026); confirm at https://www.coinbase.com/advanced-fees signed in")
+FEE_BPS_COLUMNS = (0.0, 2.0, 10.0, 25.0, 60.0, 120.0)   # ascending, the same decisions at six constants:
+                                                        # 0 = gross, the H1 cell; 2 = Binance.US; 10 = the
+                                                        # article's; 25; 60 = venue maker; 120 = venue taker
 
 # ---- rule columns ----------------------------------------------------------------
 CONF_THRESHOLDS = (0.50, 0.70, 0.85, 0.99)  # 0.99 is the only measured tail (JEV PROTOCOL 2.2); the

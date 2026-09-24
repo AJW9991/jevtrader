@@ -8,8 +8,9 @@ once; this prints the numbers PREREG names, and nothing here decides anything.
 
 Every section is one function returning its numbers and its rendered lines from a single
 computation, so a test asserts the number and the text together. The pair table (§4.5) is
-3 pairs x 11 columns x len(config.FEE_BPS_COLUMNS) fees (6 today: 198 cells, the primary
-config.FEE_BPS_PRIMARY among them and the 0 bps gross control last); book.paired per cell
+3 pairs x 11 columns x len(config.FEE_BPS_COLUMNS) fees (6 today: 198 cells, ascending; the
+primary config.FEE_BPS_PRIMARY = 0 bps, gross, is the first and the venue's own taker
+config.FEE_BPS_VENUE = 120 bps, the realistic-cost column, the last); book.paired per cell
 is two replays, ~396 at 0.065 s per replay of 40,320 rows (28 days, measured), ~26 s. One
 replay per (arm, column, fee) is kept instead: 2 arms x 11 x 6 + 6 for arm C, which reads
 no column = 138, ~9 s. d_t is book.paired's own expression, px[t] - py[t], on the cached
@@ -33,11 +34,15 @@ import argparse, collections, datetime, math, os, sys
 from loop import book, config, outcomes, rules, state
 
 PAIRS = (("b", "c"), ("a", "c"), ("b", "a"))       # §4.5 order: the night shift's arm against the rule first
-# The primary CELL. CONTRACT §0 fixes the fee ("the venue's own taker fee") and §4.5 says a
-# primary cell is marked, but no section names the COLUMN. argmax is the one column with no
-# threshold in it (every other column carries an unmeasured cut this project exists to
-# measure), so it is the reading here until PREREG.md freezes one; flagged in the build report.
+# The primary CELL, PREREG §4's H1: (B, C, argmax, FEE_BPS_PRIMARY). The fee is 0 bps, gross
+# (2026-09-24, decided by Alex): at 0 a difference between arms is direction NET OF THE SPREAD
+# (a round trip still pays one spread: 0.87 bps at 1c, 1.74 at 2c on ~$115, against a 1.78 bps
+# per-block MDE, so trades/day is printed beside every cell and read with it); at the venue's 120 bps taker a round trip is 240 bps against a ~33 bps 15-min sd, so a net
+# cell mostly ranks turnover and is printed beside it as the realistic cost, descriptive only.
+# argmax is the one column with no threshold in it (every other column carries an unmeasured
+# cut this project exists to measure).
 PRIMARY = ("b", "c", "argmax", config.FEE_BPS_PRIMARY)
+VENUE_FEE = config.FEE_BPS_VENUE                      # the realistic-cost column, printed with its source
 BLOCK_S = config.HORIZON_S                          # 900: PREREG §3's block, one horizon, anchored at T0
 SAMPLE_DAYS = 28                                    # PREREG §2: the sample is [T0, T0 + 28 days)
 TICKS_PER_DAY = 86400 // config.CADENCE_S          # 1440: trades/day is per 1440 TICKS, so a day of outage does not dilute it
@@ -263,6 +268,8 @@ def table(rows, outs, t0=None):
     fees = tuple(config.FEE_BPS_COLUMNS)
     if PRIMARY[3] not in fees:
         fees = (PRIMARY[3],) + fees                                  # the primary fee is always a column of the table
+    if VENUE_FEE not in fees:
+        fees = fees + (VENUE_FEE,)                                       # and so is the venue's own cost
     cache = {}
 
     def rep(arm, col, fee):
@@ -272,20 +279,34 @@ def table(rows, outs, t0=None):
         return cache[k]
 
     n_ticks = len({r["tick_id"] for r in rows})
-    per_arm, lines = {}, []
-    for arm in ARMS:
-        r = rep(arm, PRIMARY[2], PRIMARY[3])
-        per_arm[arm] = {"equity": r["equity"][-1][1] if r["equity"] else 0.0, "trades": len(r["trades"]),
+
+    def arms_at(fee):
+        out = {}
+        for arm in ARMS:
+            r = rep(arm, PRIMARY[2], fee)
+            out[arm] = {"equity": r["equity"][-1][1] if r["equity"] else 0.0, "trades": len(r["trades"]),
                         "forced_hold": r["forced_hold"]}
-    lines.append(f"  primary fee {PRIMARY[3]:g} bps (config.FEE_BPS_PRIMARY): {config.FEE_BPS_PRIMARY_SOURCE}"
-                 + ("; the 0 bps column is gross, the direction-only control" if 0.0 in fees else ""))
-    lines.append(f"  per arm at the primary (column {PRIMARY[2]}, fee {PRIMARY[3]:g} bps): "
-                 + " | ".join(f"{a.upper()} equity {per_arm[a]['equity']:.2f} bps, trades {per_arm[a]['trades']},"
-                              f" forced holds {per_arm[a]['forced_hold']}" for a in ARMS))
+        return out
+
+    def arms_line(what, fee, pa):
+        return (f"  per arm at the {what} (column {PRIMARY[2]}, fee {fee:g} bps): "
+                + " | ".join(f"{a.upper()} equity {pa[a]['equity']:.2f} bps, trades {pa[a]['trades']},"
+                             f" forced holds {pa[a]['forced_hold']}" for a in ARMS))
+
+    per_arm, per_arm_venue, lines = arms_at(PRIMARY[3]), arms_at(VENUE_FEE), []
+    lines.append(f"  primary fee {PRIMARY[3]:g} bps (config.FEE_BPS_PRIMARY): gross of fees, the H1 cell (PREREG §4):"
+                 " a difference between arms here is direction net of the spread; turnover still costs one spread"
+                 " per round trip (~0.9-1.7 bps at a 1-2c spread, the order of the 1.78 bps per-block MDE), so read"
+                 " tr/d beside the cell")
+    lines.append(f"  venue fee {VENUE_FEE:g} bps (config.FEE_BPS_VENUE), the realistic-cost column, descriptive only"
+                 f" (a round trip is {2 * VENUE_FEE:g} bps): {config.FEE_BPS_VENUE_SOURCE}")
+    lines.append(arms_line("primary", PRIMARY[3], per_arm))
+    lines.append(arms_line("venue fee", VENUE_FEE, per_arm_venue))
+    head_n = len(lines)                                              # the H1 statistic goes after these
     cells = {}
     if not answered(rows):
         lines.append("  no answered rows: arms A and B replay as forced holds, so the pair table is omitted")
-        return {"lines": lines, "cells": cells, "per_arm": per_arm, "fees": fees}
+        return {"lines": lines, "cells": cells, "per_arm": per_arm, "per_arm_venue": per_arm_venue, "fees": fees}
     first = min(r["tick_id"] for r in rows)
     anchor = t0 if t0 is not None else tick_epoch(first)
     where = (f"T0 {_iso_minute(t0)} (--t0), replayed from flat at T0" if t0 is not None
@@ -301,7 +322,9 @@ def table(rows, outs, t0=None):
     for x, y in PAIRS:
         for fee in fees:
             lines.append("")
-            lines.append(f"  pair {x.upper()}-{y.upper()}  fee {fee:g} bps" + ("  [* primary]" if (x, y, fee) == (PRIMARY[0], PRIMARY[1], PRIMARY[3]) else ""))
+            lines.append(f"  pair {x.upper()}-{y.upper()}  fee {fee:g} bps"
+                         + ("  [* primary]" if (x, y, fee) == (PRIMARY[0], PRIMARY[1], PRIMARY[3]) else "")
+                         + ("  [venue fee]" if fee == VENUE_FEE else ""))
             lines.append(head)
             for col in rules.COLUMNS:
                 px, py = rep(x, col, fee), rep(y, col, fee)
@@ -315,9 +338,10 @@ def table(rows, outs, t0=None):
                              f"{_r(a['hit']):>8}{_f(tpd[0], 1):>8}{_f(tpd[1], 1):>8}"
                              f"  |        {b['n']:>6}{b['dis']:>6}{_r(b['share']):>7}{_f(b['mean']):>10}{_f(b['mean_dis']):>12}")
     pb = cells[PRIMARY]["blocks"]
-    lines.insert(2, f"  H1 statistic (PREREG §4), mean S_k at the primary cell: {_f(pb['mean'])} bps over {pb['n']} blocks;"
+    lines.insert(head_n, f"  H1 statistic (PREREG §4), mean S_k at the primary cell: {_f(pb['mean'])} bps over {pb['n']} blocks;"
                     f" disagreement blocks {pb['dis']} ({_r(pb['share'])}), mean S_k on them {_f(pb['mean_dis'])}")
-    return {"lines": lines, "cells": cells, "per_arm": per_arm, "fees": fees, "anchor": anchor}
+    return {"lines": lines, "cells": cells, "per_arm": per_arm, "per_arm_venue": per_arm_venue, "fees": fees,
+            "anchor": anchor}
 
 
 # ---- §4.6 calibration, arm A ---------------------------------------------------------------

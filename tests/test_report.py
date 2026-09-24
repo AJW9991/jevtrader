@@ -210,37 +210,42 @@ class Synthetic(unittest.TestCase):
         t = report.table(self.rows, self.outs)
         self.assertEqual(t["fees"], config.FEE_BPS_COLUMNS)
         self.assertEqual(len(t["cells"]), 3 * len(rules.COLUMNS) * len(config.FEE_BPS_COLUMNS))
-        cell = t["cells"][report.PRIMARY]
-        # B and C hold the same position through minute 33 (both open at 10, close at 22). B alone
-        # opens at 34 (ask 100.01, mid 100) and closes at 38 (bid 99.99): two ticks with a fee.
-        d34 = ((N / 100.01) * (100.0 - 100.01) - N * FEE / 1e4) * 1e4 / N
-        d38 = ((N / 100.01) * (99.99 - 100.0) - (N / 100.01) * 99.99 * FEE / 1e4) * 1e4 / N
-        d = dict(cell["all"]["d"])
-        self.assertAlmostEqual(d["20260923T103400Z"], d34, places=9)
-        self.assertAlmostEqual(d["20260923T103800Z"], d38, places=9)
-        # the half-spread (0.01 / 100.01 = 0.9999 bps) plus the primary fee, read by name: the
-        # primary moved from 60 to 120 bps and a literal here would pin the old one
-        self.assertAlmostEqual(d34, -0.9999 - config.FEE_BPS_PRIMARY, places=3)
-        for m in MINUTES:
-            if m not in (34, 38):
-                self.assertEqual(d[f"20260923T10{m:02d}00Z"], 0.0)     # exactly, not almost
-        self.assertEqual(cell["all"]["n"], 40)
-        self.assertEqual(cell["all"]["dis"], 5)                        # 34 (out), 35, 36, 37 (in and out), 38 (in)
-        self.assertAlmostEqual(cell["all"]["mean"], (d34 + d38) / 40, places=9)
-        self.assertAlmostEqual(cell["all"]["mean_dis"], (d34 + d38) / 5, places=9)
-        self.assertEqual(cell["all"]["hit"], 0.0)
-        self.assertEqual(cell["trades_per_day"], (4 * 1440 / 40, 2 * 1440 / 40))   # 144 and 72
-        # PREREG §3 blocks, anchored at the first tick (no --t0): d34 and d38 both fall in k2
-        blk = cell["blocks"]
-        self.assertEqual([k for k, _ in blk["S"]], [0, 1, 2])
-        self.assertEqual(blk["S"][:2], [(0, 0.0), (1, 0.0)])
-        self.assertAlmostEqual(blk["S"][2][1], d34 + d38, places=9)
-        self.assertEqual((blk["n"], blk["dis"], blk["share"]), (3, 1, 1 / 3))
-        self.assertAlmostEqual(blk["mean"], (d34 + d38) / 3, places=9)
-        self.assertAlmostEqual(blk["mean_dis"], d34 + d38, places=9)
+        # 2026-09-24, decided by Alex: the primary is 0 bps, gross. The same hand arithmetic is
+        # run at the venue's 120 bps too, so the fee terms below are still exercised with a
+        # non-zero constant now that the primary's own fee term is 0.
+        self.assertEqual(report.PRIMARY, ("b", "c", "argmax", 0.0))
+        for fee in (FEE, config.FEE_BPS_VENUE):
+            with self.subTest(fee=fee):
+                cell = t["cells"][("b", "c", "argmax", fee)]
+                # B and C hold the same position through minute 33 (both open at 10, close at 22). B alone
+                # opens at 34 (ask 100.01, mid 100) and closes at 38 (bid 99.99): two ticks with a fee.
+                d34 = ((N / 100.01) * (100.0 - 100.01) - N * fee / 1e4) * 1e4 / N
+                d38 = ((N / 100.01) * (99.99 - 100.0) - (N / 100.01) * 99.99 * fee / 1e4) * 1e4 / N
+                d = dict(cell["all"]["d"])
+                self.assertAlmostEqual(d["20260923T103400Z"], d34, places=9)
+                self.assertAlmostEqual(d["20260923T103800Z"], d38, places=9)
+                # the half-spread (0.01 / 100.01 = 0.9999 bps) plus the fee, read by name
+                self.assertAlmostEqual(d34, -0.9999 - fee, places=3)
+                for m in MINUTES:
+                    if m not in (34, 38):
+                        self.assertEqual(d[f"20260923T10{m:02d}00Z"], 0.0)     # exactly, not almost
+                self.assertEqual(cell["all"]["n"], 40)
+                self.assertEqual(cell["all"]["dis"], 5)                        # 34 (out), 35, 36, 37 (in and out), 38 (in)
+                self.assertAlmostEqual(cell["all"]["mean"], (d34 + d38) / 40, places=9)
+                self.assertAlmostEqual(cell["all"]["mean_dis"], (d34 + d38) / 5, places=9)
+                self.assertEqual(cell["all"]["hit"], 0.0)
+                self.assertEqual(cell["trades_per_day"], (4 * 1440 / 40, 2 * 1440 / 40))   # 144 and 72
+                # PREREG §3 blocks, anchored at the first tick (no --t0): d34 and d38 both fall in k2
+                blk = cell["blocks"]
+                self.assertEqual([k for k, _ in blk["S"]], [0, 1, 2])
+                self.assertEqual(blk["S"][:2], [(0, 0.0), (1, 0.0)])
+                self.assertAlmostEqual(blk["S"][2][1], d34 + d38, places=9)
+                self.assertEqual((blk["n"], blk["dis"], blk["share"]), (3, 1, 1 / 3))
+                self.assertAlmostEqual(blk["mean"], (d34 + d38) / 3, places=9)
+                self.assertAlmostEqual(blk["mean_dis"], d34 + d38, places=9)
+                # the report's d_t is book.paired's, tick for tick
+                self.assertEqual(cell["all"]["d"], book.paired(self.rows, self.outs, "b", "c", "argmax", fee))
         self.assertEqual(t["anchor"], report.tick_epoch("20260923T100000Z"))
-        # the report's d_t is book.paired's, tick for tick
-        self.assertEqual(cell["all"]["d"], book.paired(self.rows, self.outs, "b", "c", "argmax", FEE))
         # B-A: B's extra hold on 30 while flat is a no-op, so the positions never differ
         ba = t["cells"][("b", "a", "argmax", FEE)]["all"]
         self.assertEqual((ba["dis"], ba["mean"], ba["mean_dis"], ba["hit"]), (0, 0.0, None, None))
@@ -248,9 +253,11 @@ class Synthetic(unittest.TestCase):
         self.assertEqual(t["per_arm"]["c"]["forced_hold"], 6)          # 5 dry + 1 absence: a dry row is forced for C too
         self.assertEqual(t["per_arm"]["a"]["forced_hold"], 6)          # 5 dry + 1 absence
         self.assertEqual(t["per_arm"]["a"]["trades"], 4)
-        c10 = ((N / 101.01) * (101.0 - 101.01) - N * FEE / 1e4) * 1e4 / N
-        c22 = ((N / 101.01) * (99.99 - 101.0) - (N / 101.01) * 99.99 * FEE / 1e4) * 1e4 / N
-        self.assertAlmostEqual(t["per_arm"]["c"]["equity"], c10 + c22, places=9)
+        for fee, per in ((FEE, t["per_arm"]), (config.FEE_BPS_VENUE, t["per_arm_venue"])):
+            c10 = ((N / 101.01) * (101.0 - 101.01) - N * fee / 1e4) * 1e4 / N
+            c22 = ((N / 101.01) * (99.99 - 101.0) - (N / 101.01) * 99.99 * fee / 1e4) * 1e4 / N
+            self.assertAlmostEqual(per["c"]["equity"], c10 + c22, places=9)
+            self.assertEqual(per["c"]["trades"], 2)                    # a fee never changes a decision
 
     def test_pair_table_renders_every_cell_once_with_one_primary(self):
         lines = report.table(self.rows, self.outs)["lines"]
@@ -259,9 +266,26 @@ class Synthetic(unittest.TestCase):
         self.assertEqual(len(cells), len(report.PAIRS) * len(rules.COLUMNS) * len(config.FEE_BPS_COLUMNS))
         self.assertEqual(sum(l.startswith("  * argmax") for l in cells), 1)
         self.assertEqual(sum("[* primary]" in l for l in lines), 1)
-        self.assertIn(f"pair B-C  fee {config.FEE_BPS_PRIMARY:g} bps  [* primary]", "\n".join(lines))
-        self.assertIn(0.0, config.FEE_BPS_COLUMNS)                      # the gross, direction-only control
-        self.assertIn("pair B-C  fee 0 bps\n", "\n".join(lines) + "\n")  # is a column, and never the primary
+        # 2026-09-24, decided by Alex: the primary IS the 0 bps gross column (it used to be the
+        # control and never the primary); the venue's own taker fee is now a column that is never
+        # the primary, printed with its source as the realistic cost.
+        self.assertEqual(config.FEE_BPS_PRIMARY, 0.0)
+        self.assertIn("pair B-C  fee 0 bps  [* primary]\n", "\n".join(lines) + "\n")
+        self.assertEqual(config.FEE_BPS_COLUMNS, tuple(sorted(config.FEE_BPS_COLUMNS)))   # ascending, 0 first
+        self.assertEqual(config.FEE_BPS_COLUMNS[0], config.FEE_BPS_PRIMARY)
+        self.assertIn(config.FEE_BPS_VENUE, config.FEE_BPS_COLUMNS)
+        self.assertIn(f"pair B-C  fee {config.FEE_BPS_VENUE:g} bps  [venue fee]\n", "\n".join(lines) + "\n")
+        self.assertEqual(sum("[venue fee]" in l for l in lines), len(report.PAIRS))
+        text = "\n".join(lines)
+        self.assertIn(f"primary fee 0 bps (config.FEE_BPS_PRIMARY): gross of fees", text)
+        # review, 2026-09-24: gross of fees is NOT free of turnover -- a round trip still pays the
+        # spread (tests/test_book.py pins 0.87 / 1.74 bps), so the header must not say otherwise.
+        self.assertIn("direction net of the spread", text)
+        self.assertNotIn("not turnover", text)
+        self.assertIn(f"venue fee {config.FEE_BPS_VENUE:g} bps (config.FEE_BPS_VENUE)", text)
+        self.assertIn(config.FEE_BPS_VENUE_SOURCE, text)                 # UNVERIFIED, beside the table
+        self.assertTrue(config.FEE_BPS_VENUE_SOURCE.startswith("UNVERIFIED"))
+        self.assertFalse(hasattr(config, "FEE_BPS_PRIMARY_SOURCE"))      # moved: the primary has no source, it is 0
         for x, y in report.PAIRS:
             for fee in config.FEE_BPS_COLUMNS:
                 self.assertIn(f"pair {x.upper()}-{y.upper()}  fee {fee:g} bps", "\n".join(lines))

@@ -1,9 +1,10 @@
 """What the slow model may read: one UTC day of the loop, reduced to words and outcomes.
 
 May: read data/decisions.jsonl through loop.outcomes.load, join every row to its t+h
-outcome (loop.outcomes.join), replay the three arms at the primary fee (loop.book),
-and write data/digest-<date>.md: ONE summary line, up to DISAGREE_MAX arm-B
-disagreement rows, the CURRENT `action` question verbatim, and both prompt shas.
+outcome (loop.outcomes.join), replay the three arms (loop.book) at 0 bps (the H1 fee,
+gross: direction) and at the venue's own taker fee (the realistic cost), and write
+data/digest-<date>.md: ONE summary line, up to DISAGREE_MAX arm-B disagreement rows,
+the CURRENT `action` question verbatim, and both prompt shas.
 May not: read the key or name its value, copy a raw log line, or print a single
 feature value. The model that reads this file rewrites wording, and PROMPT.md forbids
 it numbers, so the digest carries none of the numbers the tick computed; the
@@ -34,7 +35,12 @@ DISAGREE_MAX = 25          # CONTRACT §5: "up to 25"; ~1.7% of a full day, enou
 COLUMN = "argmax"          # the A/B column the summary replays: the model's bare answer. PREREG names
                            # the primary cell; until it does the digest shows the column every other
                            # column is derived from
-FEE = config.FEE_BPS_PRIMARY
+# The summary shows each arm's paper PnL twice, labelled (2026-09-24, decided by Alex): at
+# FEE_BPS_PRIMARY = 0 bps, the H1 cell, where a difference is direction net of the spread (a
+# round trip still pays one spread, ~0.9-1.7 bps, so the trade count is printed beside it); and at the venue's
+# FEE_BPS_VENUE = 120 bps taker, where a round trip is 240 bps against a ~33 bps 15-min sd and
+# the figure mostly counts trades. The trade count is the same at both: fees never change a decision.
+FEES = ((config.FEE_BPS_PRIMARY, "direction"), (config.FEE_BPS_VENUE, "venue fee"))
 CONTRADICTS = {("buy", "down"), ("sell", "up")}
 EXIT_EMPTY = 4
 
@@ -98,11 +104,11 @@ def occupancy(day):
     return "; ".join(parts)
 
 
-def arms(day):
-    """{arm: (trades, pnl_bps)} at the primary fee, the day replayed from flat."""
+def arms(day, fee):
+    """{arm: (trades, pnl_bps)} at `fee`, the day replayed from flat."""
     out = {}
     for arm in book.ARMS:
-        rep = book.replay(day, None, arm, COLUMN, FEE)
+        rep = book.replay(day, None, arm, COLUMN, fee)
         out[arm] = (len(rep["trades"]), rep["equity"][-1][1] if rep["equity"] else 0.0)
     return out
 
@@ -112,11 +118,15 @@ def summary(d, day, joined, dis):
     absent = collections.Counter(r["absence"] for r in day if r.get("absence"))
     priced = [r for r in day if _num(r.get("mid"))]
     filled = sum(1 for r in priced if (joined.get(r["tick_id"]) or outcomes.GAP)["absence"] is None)
-    arm_s = ", ".join(f"{arm.upper()} {t} trades {p:+.1f} bps" for arm, (t, p) in arms(day).items())
+    (f0, w0), (fv, wv) = FEES
+    gross, net = arms(day, f0), arms(day, fv)
+    arm_s = ", ".join(f"{arm.upper()} {gross[arm][0]} trades {gross[arm][1]:+.1f} / {net[arm][1]:+.1f} bps"
+                      for arm in gross)
     return (f"{d.isoformat()} | ticks {len(day)}, answered {answered}, absence "
             f"{' '.join(f'{k}:{v}' for k, v in sorted(absent.items())) or 'none'}, "
             f"outcomes joined {filled}/{len(priced)} | occupancy {occupancy(day)} | "
-            f"fee {FEE:g} bps, column {COLUMN}: {arm_s} | B disagreements {len(dis)}")
+            f"column {COLUMN}, paper PnL at {f0:g} bps ({w0}) / at {fv:g} bps ({wv}): {arm_s}"
+            f" | B disagreements {len(dis)}")
 
 
 def render(d, day, joined, cur_name, cur_doc, sha_a, sha_b):

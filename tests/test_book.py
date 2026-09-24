@@ -6,9 +6,10 @@ import unittest
 from loop import book, config
 
 N = config.NOTIONAL_USD
-# the primary by NAME and the cheapest non-zero column: two real constants for the fee arithmetic
-# (the last column is 0, gross, where the arithmetic would be trivially 0)
-FEES = (config.FEE_BPS_PRIMARY, min(f for f in config.FEE_BPS_COLUMNS if f > 0))
+# the venue's fee by NAME and the cheapest non-zero column: two real constants for the fee
+# arithmetic. (This read FEE_BPS_PRIMARY until 2026-09-24, when Alex moved the primary to 0 bps,
+# gross, where the arithmetic would be trivially 0; the venue's 120 bps is the constant it meant.)
+FEES = (config.FEE_BPS_VENUE, min(f for f in config.FEE_BPS_COLUMNS if f > 0))
 COLS = ("argmax", "c50", "c70", "c85", "c99", "c50v", "c70v", "c85v", "c99v", "pbuy60", "noultail")
 
 
@@ -98,6 +99,18 @@ class Replay(unittest.TestCase):
                                              "20260923T100400Z": 0.0, "20260923T100500Z": 0.0})
             self.assertEqual(r["forced_hold"], 0)
             self.assertEqual(sorted(r), ["equity", "forced_hold", "pnl_bps_per_tick", "position", "trades"])
+
+    def test_round_trip_at_the_primary_fee_still_pays_the_spread(self):
+        # PREREG §4 / SPEC §10 (review, 2026-09-24): at FEE_BPS_PRIMARY = 0 the H1 cell is gross of
+        # FEES, not of the spread. On a flat book one extra round trip costs exactly
+        # q * (bid - ask) = -1e4 * spread / ask bps: 0.87 at a 1c spread on ~$115, 1.74 at 2c --
+        # the order of the 1.78 bps per-block MDE, so turnover still moves the cell.
+        self.assertEqual(config.FEE_BPS_PRIMARY, 0.0)
+        for bid, ask, want in ((114.95, 114.96, 0.8699), (114.94, 114.96, 1.7397)):
+            rows = [_row(1, bid, ask, a="buy", c="hold"), _row(2, bid, ask, a="sell", c="hold")]
+            d = sum(v for _, v in book.paired(rows, None, "a", "c", "argmax", config.FEE_BPS_PRIMARY))
+            self.assertAlmostEqual(d, -1e4 * (ask - bid) / ask, places=9)
+            self.assertAlmostEqual(-d, want, places=4)
 
     def test_fee_constant_moves_only_trade_ticks(self):
         hi = book.replay(self.ROWS, None, "a", "argmax", 60.0)["pnl_bps_per_tick"]

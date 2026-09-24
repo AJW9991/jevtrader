@@ -29,7 +29,11 @@ Decisions already made (do not reopen): venue Coinbase Advanced Trade public
 API, product `SOL-USD`; cadence 60 s, horizon 15 min; three arms A/B/C; host is
 this Mac (attended `--forever` first, launchd `--once` later); nightly scores
 candidates on 81 synthetic states only, never on logged outcomes; PREREG is
-H1+H2 co-primary over 28 days at the venue's own taker fee.
+H1+H2 co-primary over 28 days. 2026-09-24, decided by Alex: H1 is at 0 bps
+gross (`FEE_BPS_PRIMARY = 0.0`), not at the venue's own taker fee (was
+decided 2026-09-23); the venue's 120 bps taker is `FEE_BPS_VENUE`, a
+descriptive realistic-cost column: profitability at retail fees is settled by
+arithmetic (240 bps a round trip against a ~33 bps 15-min sd), not tested.
 
 ## 1. Toolchain and layout
 
@@ -73,7 +77,10 @@ jev-paper-loop/
 ```
 { "ts_rx": ISO8601 UTC ms (this machine's clock, the decision timestamp),
   "product": "SOL-USD",
-  "bid": float, "bid_size": float, "ask": float, "ask_size": float,
+  "bid": float, "bid_size": float, "ask": float, "ask_size": float,   (level 1)
+  "bids": [[price, size], ...], "asks": [[price, size], ...]
+          floats, best first (bids down, asks up), at most config.BOOK_LEVELS = 100 a side,
+          from product_book?limit=100; bids[0] == [bid, bid_size], asks[0] == [ask, ask_size],
   "book_time": ISO8601 or null (venue's book timestamp if given),
   "candles": [ {"start": epoch_s int, "open","high","low","close","volume": float}, ... ]
               oldest first, ONE_MINUTE, at least 300 rows, newest is the last CLOSED minute,
@@ -81,11 +88,15 @@ jev-paper-loop/
   "feed_age_s": float (ts_rx minus the newest candle's start+60, i.e. how stale),
   "http": {"calls": int, "ms": int} }
 ```
-Raises `FeedError(str)` on any HTTP/parse failure. No retries inside feed.
+Raises `FeedError(str)` on any HTTP/parse failure, an empty or crossed book, or a
+level that is not a finite positive price and size. No retries inside feed.
+(2026-09-24, decided by Alex: `bids`/`asks` added and `limit=1` → `limit=100`, so
+`state.features` can walk the book; the row keeps level 1 only.)
 
 **Features** — `loop/state.py::features(snap) -> dict` (numbers; logged, never sent)
 ```
 { "mid": float, "spread_bps": float, "l1_min_usd": float,
+  "fill1k_bps": float|null, "fill1k_short": bool,
   "vol5_usd": float, "vol5_p10": float, "vol5_p90": float,
   "ret15_bps": float, "ret15_sd_bps": float, "ret15_z": float,
   "rv15": float, "rv15_med": float, "rv_ratio": float,
@@ -93,11 +104,18 @@ Raises `FeedError(str)` on any HTTP/parse failure. No retries inside feed.
 ```
 **Adjectives** — `loop/state.py::adjectives(feat) -> dict`, each value one word:
 ```
-liq   ∈ {thin, normal, deep}      l1_min_usd < NOTIONAL → thin; > 10*NOTIONAL → deep
+liq   ∈ {thin, normal, deep}      fill1k_bps > LIQ_THIN_BPS (5.0) or fill1k_short → thin;
+                                  fill1k_bps < LIQ_DEEP_BPS (1.0) → deep
 flow  ∈ {quiet, organic, bot_war} vol5_usd < p10 → quiet; > p90 → bot_war   (percentiles over the window's 5-min sums)
 trend ∈ {dumping, flat, pumping}  ret15_z < -1 → dumping; > +1 → pumping
 vol   ∈ {calm, normal, violent}   rv_ratio < 0.5 → calm; > 2.0 → violent
 ```
+`fill1k_bps` = max(buy, sell): buy = 1e4·(VWAP of walking the asks for NOTIONAL_USD of
+quote − mid)/mid, sell = 1e4·(mid − VWAP of walking the bids for NOTIONAL_USD)/mid. A side
+the levels cannot fill costs inf, logged as `fill1k_bps: null` with `fill1k_short: true`.
+`l1_min_usd` stays a logged feature and sets no word. 2026-09-24, decided by Alex: liq
+was `l1_min_usd < NOTIONAL → thin; > 10*NOTIONAL → deep`; level 1 swung $1–$11,580 within
+a minute and read thin 7/12 while a $1,000 order cost 0.44–2.02 bps (SPEC §5).
 Exact thresholds live in `loop/config.py` and are frozen into `SPEC.md`.
 **No position in the state.** Arms A and B ride one request on one state, so
 the state must be identical for both; a position would differ per arm.
@@ -192,8 +210,10 @@ replay(rows, outcomes, arm: "a"|"b"|"c", column: str, fee_bps) -> {"equity": [..
    mark-to-mid each tick; pnl per tick is the change in equity in bps of NOTIONAL
 paired(rows, outcomes, x, y, column, fee_bps) -> [ (tick_id, d_t) ]   d_t = pnl_x - pnl_y
 ```
-Fee constants come from `config.FEE_BPS_COLUMNS`; the primary is
-`config.FEE_BPS_PRIMARY` (the venue's own taker fee, with its source URL in config).
+Fee constants come from `config.FEE_BPS_COLUMNS` = (0, 2, 10, 25, 60, 120), ascending; the
+primary is `config.FEE_BPS_PRIMARY` = 0.0, gross, the H1 cell; the venue's own taker fee
+is `config.FEE_BPS_VENUE` = 120.0, with its UNVERIFIED source in `FEE_BPS_VENUE_SOURCE`.
+(2026-09-24, decided by Alex: the primary was the venue's taker fee.)
 
 ## 3. The tick (`loop/cycle.py`)
 
@@ -246,7 +266,9 @@ Print, plain text, in this order:
    the arms are on different SIDES (long vs flat) into or out of the tick
    ("disagreement ticks"; a quantity difference between two longs is not one),
    mean d_t, mean d_t on disagreement ticks, hit rate on disagreement ticks,
-   trades/day each side. Primary cell is marked. Beside the all-ticks figure,
+   trades/day each side. Primary cell is marked; the venue fee (`FEE_BPS_VENUE`), its
+   UNVERIFIED source and a per-arm line at it are printed beside the table as the
+   realistic-cost column (2026-09-24, decided by Alex). Beside the all-ticks figure,
    PREREG §3's statistic: 900 s blocks anchored at T0 (`--t0`; else at the log's
    first tick), n blocks, mean S_k, disagreement blocks and their share, mean S_k
    on them. `--t0` cuts the rows to [T0, T0 + 28 d) before any replay, so every
@@ -259,8 +281,9 @@ No p-values in `make report`. Inference lives in PREREG.md and is run once.
 ## 5. Nightly
 
 `nightly/digest.py [--date YYYY-MM-DD]` → `data/digest-<date>.md`: one summary
-line (ticks, occupancy, trades and paper PnL per arm at the primary fee,
-disagreement count for B), up to 25 arm-B disagreement rows (state, choice,
+line (ticks, occupancy, trades and paper PnL per arm at 0 bps, labelled direction, AND
+at `FEE_BPS_VENUE`, labelled venue fee (2026-09-24, decided by Alex), disagreement count
+for B), up to 25 arm-B disagreement rows (state, choice,
 confidence, ret_h_bps, label) highest confidence first, the CURRENT `action`
 question verbatim, both shas. Never the key, never the raw log, never the features.
 
@@ -288,10 +311,12 @@ first row with `prompt_b != "v1"`). A person runs it. Nothing else writes `promp
 
 ## 6. Tests (`tests/`, `python3 -m unittest`)
 
-Fixtures: ONE real Coinbase snapshot set recorded once (book + 350 candles +
-trades), committed under `fixtures/`, with the fetch command in a README. Tests
-must pass offline.
-- state: every adjective boundary (just below / at / just above); rule_c truth
+Fixtures: ONE real Coinbase snapshot set (book + 350 candles +
+trades), committed under `fixtures/`, with the fetch command in a README (the book
+re-recorded with `limit=100` on 2026-09-24, decided by Alex; the README says when and
+why). Tests must pass offline.
+- state: the book walk (exact VWAP on a hand-built book, each side alone, the max, a side
+  that cannot fill → null/short → thin); every adjective boundary (just below / at / just above); rule_c truth
   table over all 81 states; state string has no digit and exactly the format.
 - rules: each column against hand-built answers, including the veto and noultail.
 - book: open / close / no-op sequences; fee arithmetic at two constants;

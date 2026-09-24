@@ -71,10 +71,12 @@ and is NOT the statistic below. `make report` prints S_k this way (`python3
 ## 4. H1 (co-primary): the nightly's arm beats the rule
 
 - **Statistic:** mean over the sample blocks of `S_k(B − C, "argmax",
-  FEE_BPS_PRIMARY)`, where `FEE_BPS_PRIMARY = 120.0` bps — the Coinbase
-  Advanced retail "Intro 1" TAKER fee per two secondary sources (April 2026),
-  **UNVERIFIED** until read in-account (SPEC §10). A round trip is 2 × 120 =
-  **240 bps**.
+  FEE_BPS_PRIMARY)`, where `FEE_BPS_PRIMARY = 0.0` bps — gross of fees: a
+  difference between the arms is direction net of the spread. Turnover
+  still costs one spread per round trip (every open fills at the ask and
+  every close at the bid, marked to mid, SPEC §10: ~0.9–1.7 bps at a 1–2c
+  spread on ~$115, the same order as the 1.78 bps per-block MDE of §7), so
+  trades/day is read beside the cell.
 - **Hypothesis:** H0: mean ≤ 0; H1: mean > 0. One-sided, α = 0.025.
 - **Inference:** circular block bootstrap of the block series, block length
   = 4 samples = 1 h (the autocorrelation of a 15-min mark decays inside an
@@ -88,25 +90,28 @@ and is NOT the statistic below. `make report` prints S_k this way (`python3
   into or out of it; two longs opened on different ticks differ in quantity
   and are not a disagreement, SPEC §10), the mean on disagreement blocks
   only, trades/day each side. These are descriptive.
-- The same procedure is run for **A − C** at the primary cell (needed by stop
-  rule 1) and reported as secondary.
+- The same procedure is run for **A − C** at the primary cell, at α = 0.025,
+  ONLY as the decision input of stop rule 1 (§8) and the reading of §9. As a
+  claim ("A beats C") it is a secondary and takes the family α of §6.
 
-> **FOR ALEX TO DECIDE BEFORE SEALING.** At 240 bps per round trip against a
-> 15-minute return sd of ~33 bps (§7; 28.9 bps in the fixture window), one
-> extra round trip costs about seven standard deviations of the move it trades
-> on, so H1 at the primary fee mostly ranks which arm trades less: an arm that
-> never trades cannot lose at 120 bps, and an arm with real direction but more
-> turnover loses on fees before direction can show. Three options, none chosen
-> here: **(i)** keep H1 at the venue fee as decided on 2026-09-23 — the test
-> then asks "does the loop earn net of what this venue charges a retail taker",
-> and a null is expected to be mostly about turnover; **(ii)** move H1 to the
-> 0 bps gross column (`FEE_BPS_COLUMNS[-1]`), so it measures direction
-> (position × return) and the venue-fee cell becomes a reported secondary;
-> **(iii)** keep both, venue fee and gross, as co-primary H1 with α split
-> (0.0125 one-sided each, which moves the 28-day MDE per block from 1.78 to
-> 1.96 bps). Stop rules 1 and 2 (§8) name the same cell and follow whichever
-> is chosen. The choice replaces this paragraph in its own commit BEFORE the
-> sealing commit, which still changes only the two fields of §11 (§10).
+**2026-09-24, decided by Alex: H1 is at 0 bps, gross.** The Coinbase
+Advanced retail tier-0 ("Intro 1") taker fee is 120 bps per two secondary
+sources (April 2026; the official table is behind sign-in, so
+`FEE_BPS_VENUE = 120.0` stays UNVERIFIED, SPEC §10). A round trip is
+2 × 120 = 240 bps against a 15-minute return sd of ~33 bps (§7; 28.9 bps in
+the fixture window): one extra round trip costs about seven standard
+deviations of the move it trades on, so an H1 net of that fee would mostly
+rank which arm trades less (an arm that never trades cannot lose), and an arm
+with real direction but more turnover would lose on fees before direction
+could show. **Profitability at retail fees is not tested; it is settled by
+arithmetic.** H1 is therefore: mean S_k(B − C, `argmax`, 0 bps) > 0,
+one-sided, circular block bootstrap exactly as above, α = 0.025. H2 (§5) is
+unchanged at α = 0.025. Every net-of-fee cell (2, 10, 25, 60, 120 bps) is
+DESCRIPTIVE: printed by `make report`, never tested (§6). Stop rules 1 and 2
+(§8) name the same 0 bps cell. This replaces the paragraph that set out three
+options for Alex before sealing; the other two, H1 at the venue fee (the
+2026-09-23 decision) and venue fee plus gross as co-primaries at α = 0.0125
+each, were not taken, so the MDE of §7 stays at 1.78 bps per block.
 
 ## 5. H2 (co-primary): choice-confidence calibration on the frozen arm
 
@@ -130,19 +135,32 @@ and is NOT the statistic below. `make report` prints S_k this way (`python3
   exists to catch, and the bins of CONTRACT §4.6 are printed beside r.
 
 Both primaries must hold for the experiment to be reported as "the loop
-works as described": H1 that the nightly arm earns something net of the
-venue's fee, H2 that the number the fast model attaches to its choice carries
-information. Either alone is reported as exactly that.
+works as described": H1 that the nightly arm's direction beats the rule's,
+gross of fees and net of the spread, H2 that the number the fast model attaches to its choice
+carries information. Either alone is reported as exactly that. Neither says
+the loop earns anything at a retail fee: that is not tested (§4).
 
 ## 6. Secondaries — descriptive, Bonferroni if ever claimed
 
-- **A − C** and **B − A** at the primary cell (B − A is what the nightly adds
-  over the frozen prompt; B − A ≤ 0 is stop rule 2).
+- **A − C** and **B − A** at the primary cell, 0 bps (B − A is what the
+  nightly adds over the frozen prompt; B − A ≤ 0 is stop rule 2).
 - Every pair × every column × every fee: 3 pairs (B−C, A−C, B−A) × 11 columns
-  (`rules.COLUMNS`) × 6 fees (`FEE_BPS_COLUMNS` = 120, 60, 25, 10, 2, 0 bps) =
-  **198 cells**, printed by `make report` with no p-values. If any secondary
-  cell is ever claimed as significant it is tested with the §4 procedure at
-  α = 0.025 / 198 ≈ 1.26 × 10⁻⁴, and the claim says so.
+  (`rules.COLUMNS`) × 6 fees (`FEE_BPS_COLUMNS` = 0, 2, 10, 25, 60, 120 bps) =
+  **198 cells**, printed by `make report` with no p-values.
+- The **165 net-of-fee cells** (3 pairs × 11 columns × 5 fees: 2, 10, 25, 60,
+  120 bps) are DESCRIPTIVE: never tested and never claimed as significant in
+  this pre-registration. The 120 bps column is the venue's own taker
+  (`FEE_BPS_VENUE`, UNVERIFIED), printed as the realistic cost.
+- Only the **33 gross cells** (3 pairs × 11 columns at 0 bps) may ever be
+  claimed. The H1 cell (B − C, `argmax`, 0 bps) is the primary: §4 tests it
+  at α = 0.025 and it is NOT a member of the Bonferroni family. The family
+  is the **other 32 gross cells**; a claim from it is tested with the §4
+  procedure at α = 0.025 / 32 ≈ 7.81 × 10⁻⁴, and says so. A − C at the
+  primary cell is one of the 32: §4 runs it at 0.025 for stop rule 1 and §9
+  only. (Until 2026-09-24 the family was all 198 cells at 0.025 / 198 ≈
+  1.26 × 10⁻⁴; the net cells left it when they became descriptive. The same
+  day, before sealing, text that put the H1 cell inside a family of 33 at
+  0.025 / 33 while §4 tested it at 0.025 was made one cell, one α, as above.)
 - Test-retest agreement (rows with `prompt_a_sha == prompt_b_sha`), agreement
   of `a.argmax` with `rule_c`, adjective occupancy, drift count: health
   numbers, no inference.
@@ -179,10 +197,11 @@ the disagreement blocks:
 | 98 % | 54 | 12.6 bps | 0.25 bps |
 
 Two things follow and are accepted now. First, 1.78 bps per block is 171
-bps/day: a big edge, and one extra round trip per day costs 2 ×
-`FEE_BPS_PRIMARY` = 240 bps at the 120 bps primary (UNVERIFIED, SPEC §10) —
-more than the whole daily MDE — so a B that trades more than C must earn back
-a lot before it shows (see the paragraph for Alex in §4).
+bps/day: a big edge in direction, measured gross (`FEE_BPS_PRIMARY = 0`). At
+the venue's taker (`FEE_BPS_VENUE` = 120 bps, UNVERIFIED, SPEC §10) one extra
+round trip per day costs 240 bps — more than the whole daily MDE — which is
+why H1 is gross and profitability at retail fees is settled by arithmetic,
+not tested (§4).
 Second, if `make report` on day 14 shows agreement above 95 % on the primary
 cell, the block is under-powered for anything under ~8 bps per disagreement
 and the final write-up says so; that is a finding about the prompts, not a
@@ -190,12 +209,14 @@ reason to change the test (§8.5).
 
 ## 8. Stop rules — fixed now
 
-1. **Day 28, neither A nor B beats C on H1** (§4 procedure, primary cell, for
-   B−C and A−C) → the model arms are retired: the loop stops sending, arm C
-   and the feed keep logging only if a second pre-registration wants them.
+1. **Day 28, neither A nor B beats C on H1** (§4 procedure, primary cell at
+   0 bps, for B−C and A−C) → the model arms are retired: the loop stops
+   sending, arm C and the feed keep logging only if a second
+   pre-registration wants them.
 2. **B − A ≤ 0** at day 28 (point estimate of mean S_k(B−A, argmax,
-   FEE_BPS_PRIMARY) on the sample) → the nightly is stopped (its plist booted
-   out); arm A is kept. The rewrite did not add to the frozen prompt.
+   FEE_BPS_PRIMARY = 0 bps) on the sample) → the nightly is stopped (its
+   plist booted out); arm A is kept. The rewrite did not add to the frozen
+   prompt.
 3. **A bad day is excluded, logged, and three of them pause the run.** A UTC
    day is bad when its outcome fill (share of live rows with a non-`gap`
    outcome) is < 95 %, or its Jev error share (rows with `absence: "jev"` over
@@ -220,7 +241,8 @@ reason to change the test (§8.5).
 - H1 rejected for A and not for B: the frozen prompt beat the rule and the
   rewriting hurt (stop rule 2 fires with it).
 - Neither: the model arms are no better than four words and three lines of
-  `if`, at this fee, on this product, over these 28 days (stop rule 1).
+  `if`, in direction, gross of fees, on this product, over these 28 days
+  (stop rule 1).
 - H2 not supported: the confidence is not a probability of being right on
   this task; the `c*` columns are then noise around `argmax` and are reported
   as such.
@@ -240,6 +262,14 @@ this pre-registration.
 
 Written by Claude on 2026-09-23 from the decisions Alex made the same day
 (H1 + H2 co-primary over 28 days at the venue's fee; 24 h warm-up; every-15th-
-tick samples; block bootstrap; the five stop rules).
+tick samples; block bootstrap; the five stop rules). Amended 2026-09-24,
+before any decision row existed, from two decisions Alex made that day: H1 at
+0 bps gross, net-of-fee cells descriptive (§4, §6); and `liq` by walking the
+book for one $1,000 order (SPEC §4–§5), which changes what arm C's `liq !=
+thin` means and so what arm C is. Two review corrections the same day, also
+before any decision row, change neither primary's statistic nor its α: §4 says the 0 bps cell is
+direction net of the spread (a round trip still pays one spread), not free of
+turnover; §6 takes the H1 cell out of the Bonferroni family (H1 at 0.025, the
+other 32 gross cells at 0.025 / 32).
 
 T0 (first tick_id of day 1): `____________________`   Sealed by: `____________`   on: `____________`

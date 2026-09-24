@@ -116,13 +116,33 @@ class DigestTest(unittest.TestCase):
         self.assertTrue(line.startswith("2026-09-22 | ticks 41, answered 40, absence feed:1"))
         self.assertIn("outcomes joined 25/40", line)      # minutes 0..24 resolve inside the 41-row log (6 is unpriced)
         self.assertIn("trend dumping 0% flat 0% pumping 100%", line)
-        self.assertIn(f"fee {config.FEE_BPS_PRIMARY:g} bps, column argmax: A 0 trades +0.0 bps", line)
+        # 2026-09-24, decided by Alex: PnL per arm twice, labelled -- at 0 bps (H1, direction)
+        # and at the venue's own taker fee (the realistic cost)
+        self.assertIn(f"column argmax, paper PnL at {config.FEE_BPS_PRIMARY:g} bps (direction) / at "
+                      f"{config.FEE_BPS_VENUE:g} bps (venue fee): A 0 trades +0.0 / +0.0 bps", line)
+        self.assertIn("paper PnL at 0 bps (direction) / at 120 bps (venue fee)", line)
         # a trade is a FILL (book.replay "trades"), not a round trip: B opens at 0, closes at 1,
         # opens again at 2 (buy 0.99), holds through 3-4 and closes at 5 (sell 0.86); the
         # sell at 30 finds it flat and is a no-op. Four fills, two round trips.
         self.assertIn("B 4 trades", line)
         self.assertIn("C 1 trades", line)                 # rule_c buy at minute 0, then held long
         self.assertIn("B disagreements 3", line)
+
+    def test_summary_pnl_at_both_fees(self):
+        # the trade count is the same at both fees (a fee never changes a decision); the net
+        # figure is the gross one minus each fill's fee. C: one fill, the open at minute 0 at
+        # ask 100.01 on $1,000, fee exactly FEE_BPS_VENUE bps of notional.
+        day = [r for r in digest.outcomes.load(self.log, []) if r["tick_id"].startswith("20260922")]
+        gross, net = digest.arms(day, config.FEE_BPS_PRIMARY), digest.arms(day, config.FEE_BPS_VENUE)
+        for arm in ("a", "b", "c"):
+            self.assertEqual(gross[arm][0], net[arm][0], arm)
+        self.assertEqual(gross["c"][0], 1)
+        self.assertAlmostEqual(gross["c"][1] - net["c"][1], config.FEE_BPS_VENUE, places=9)
+        self.assertEqual(gross["b"][0], 4)
+        self.assertGreater(gross["b"][1] - net["b"][1], 3.9 * config.FEE_BPS_VENUE)   # four fills, ~120 each
+        line = digest.build(DAY, self.log)[0].splitlines()[2]
+        self.assertIn(f"C 1 trades {gross['c'][1]:+.1f} / {net['c'][1]:+.1f} bps", line)
+        self.assertIn(f"B 4 trades {gross['b'][1]:+.1f} / {net['b'][1]:+.1f} bps", line)
 
     def test_cap_at_25(self):
         # forty buys at 0.9 on a mid that falls 0.1 a minute: every t+15 is ~-150 bps, so

@@ -1,23 +1,42 @@
 # fixtures/ — ONE recorded Coinbase snapshot set
 
-Recorded once from this Mac, **2026-09-24T02:28:49Z** (epoch `1790216929`), Coinbase
-Advanced Trade PUBLIC market-data endpoints, no key, no signature. `tests/test_feed.py`
+Recorded from this Mac, candles and trades at **2026-09-24T02:28:49Z** (epoch
+`1790216929`), the book re-recorded at **2026-09-24T04:51:41Z** (epoch `1790225501`) with
+100 levels a side (see "What changed" below); Coinbase Advanced Trade PUBLIC market-data
+endpoints, no key, no signature. `tests/test_feed.py`
 loads these files and mocks `urllib.request.urlopen`; nothing under `tests/` opens a
 socket. Do not re-record casually: `meta.json` → `expect` and the tests pin the numbers
 in this set.
 
 | file | what | bytes |
 |---|---|---|
-| `book.json` | `product_book?limit=1` — L1 bid/ask with the venue's book time | 276 |
+| `book.json` | `product_book?limit=100` — 100 bid and 100 ask levels, best first, with the venue's book time (re-recorded 2026-09-24T04:51:41Z) | 8,421 |
 | `candles.json` | 350 `ONE_MINUTE` candles for the 350 minutes ending at the recording minute | 40,688 |
 | `trades.json` | every trade in `[ts_rx-300, ts_rx]` via the `ticker` endpoint (532 rows) | 98,078 |
-| `meta.json` | `ts_rx_epoch` the parsers use, the three exact URLs, and the pinned expectations | — |
+| `meta.json` | `ts_rx_epoch` the parsers use, the book's own recording time, the three exact URLs, and the pinned expectations | — |
 
-## The exact commands (bash, UTC; all HTTP 200; 0.159 s, 0.223 s, 0.224 s; T0→T1 < 1 s)
+## What changed, 2026-09-24T04:51:41Z: the book, and only the book
+
+`liq` is now the cost of walking the book for one `NOTIONAL_USD` = $1,000 order
+(`fill1k_bps`, SPEC §4–§5; decided by Alex 2026-09-24), so `feed.py` asks for
+`limit=100` (`config.BOOK_LEVELS`) and the Snapshot carries `bids` / `asks`. The old
+`book.json` was `limit=1` and could not be walked; it was replaced by one fresh 100-level
+recording (HTTP 200, 0.223 s, 8,421 bytes). `candles.json`, `trades.json` and `ts_rx_epoch`
+are unchanged, so the book is ~2 h 23 min younger than the candles: its mid (114.96) is not
+the candles' last close (114.78). Nothing reads the two together except `features()`, which
+takes `mid` from the book and every return from the candles, as it does live; no test
+depends on them agreeing. What the new book pins (`meta.json` → `expect`): L1 114.95 ×
+205.27970493 / 114.97 × 114.88 (l1_min_usd $13,208), 100 levels a side ending at 113.67 /
+116.25, $118,730 bid and $163,207 ask within 5 bps of mid, `fill1k_bps` 0.8698677800991063
+(the $1,000 fills at level 1 on both sides, so it is the half-spread) → `liq` deep.
+
+## The exact commands (bash, UTC; all HTTP 200; 0.223 s, 0.223 s, 0.224 s)
 
 ```bash
+# the book, 2026-09-24T04:51:41Z (epoch 1790225501): 100 levels a side
+curl -sS -w '%{http_code} %{time_total}s %{size_download}B\n' -o book.json 'https://api.coinbase.com/api/v3/brokerage/market/product_book?product_id=SOL-USD&limit=100'
+# candles and trades, 2026-09-24T02:28:49Z; T0 -> T1 < 1 s
 T0=1790216929      # $(date -u +%s) at 2026-09-24T02:28:49Z
-curl -sS -o book.json    'https://api.coinbase.com/api/v3/brokerage/market/product_book?product_id=SOL-USD&limit=1'
 curl -sS -o candles.json "https://api.coinbase.com/api/v3/brokerage/market/products/SOL-USD/candles?start=$((T0-350*60))&end=$T0&granularity=ONE_MINUTE"
 curl -sS -o trades.json  "https://api.coinbase.com/api/v3/brokerage/market/products/SOL-USD/ticker?limit=1000&start=$((T0-300))&end=$T0"
 ```
@@ -28,9 +47,11 @@ them; `test_urls_three_calls_no_retry` asserts equality). Offline replay of this
 
 ## Response shapes observed (verbatim)
 
-**product_book** — every number is a string; `time` is the venue's book timestamp:
+**product_book** — every number is a string; `time` is the venue's book timestamp; with
+`limit=100` each side is 100 levels, best first (bids price-descending, asks ascending, as
+recorded; `feed.py` sorts anyway):
 ```
-{"pricebook":{"product_id":"SOL-USD", "bids":[{"price":"114.8", "size":"169.44915682"}], "asks":[{"price":"114.82", "size":"291.37339166"}], "time":"2026-09-24T02:28:48.910921Z"}, "last":"114.81", "mid_market":"114.81", "spread_bps":"1.741856819369", "spread_absolute":"0.02"}
+{"pricebook":{"product_id":"SOL-USD", "bids":[{"price":"114.95", "size":"205.27970493"}, {"price":"114.94", "size":"222.27527608"}, … 100 levels … {"price":"113.67", "size":"0.42"}], "asks":[{"price":"114.97", "size":"114.88"}, {"price":"114.98", "size":"448.8961656"}, … {"price":"116.25", "size":"4.86702943"}], "time":"2026-09-24T04:51:41.177886Z"}, "last":"114.96", "mid_market":"114.96", "spread_bps":"1.739584239367", "spread_absolute":"0.02"}
 ```
 
 **candles** — `{"candles": [...]}`, NEWEST FIRST, every number a string. Row 0 is the
@@ -72,6 +93,8 @@ row 531:        {"trade_id": "354979947", "product_id": "SOL-USD", "price": "114
 
 ## Re-recording
 
-Only if the venue changes shape. Run the three commands above with a fresh `T0`, then
+Only if the venue changes shape, or what `feed.py` requests changes (as the book did on
+2026-09-24). Run the commands above (all three with a fresh `T0` for a whole new set), then
 update `meta.json` (`ts_rx_epoch`, the three URLs, every `expect` value) and re-run
-`python3 -m unittest tests.test_feed -v`. Commit all four files together.
+`python3 -m unittest tests.test_feed tests.test_state tests.test_cycle -v`. Commit the
+changed files together.

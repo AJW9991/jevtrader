@@ -9,10 +9,17 @@ alphabet reads it (flow is candle volume), so a dead ticker must not cost a tick
 
 Rate: Coinbase allows 10 public requests/s per IP. This module sends 3 per tick
 at CADENCE_S = 60, i.e. 0.05 req/s, 200x under the limit. The recorded fixtures
-took 0.16-0.22 s per call (fixtures/README.md, 2026-09-24T02:28:49Z).
+took 0.16-0.22 s per call (fixtures/README.md, 2026-09-24T02:28:49Z; the 100-level
+book, 8.4 KB, 0.22 s at 2026-09-24T04:51:41Z).
+
+The book is asked for config.BOOK_LEVELS = 100 levels a side (2026-09-24, decided by
+Alex): liq is the cost of walking the book for one NOTIONAL_USD order (state.py), and
+level 1 alone swung $1 to $11,580 within a minute. The Snapshot carries the levels
+best-first as `bids` / `asks`; bid/bid_size/ask/ask_size stay the level-1 values.
 """
 import datetime as dt
 import json
+import math
 import time
 import urllib.error
 import urllib.request
@@ -76,20 +83,45 @@ def _num(d, k, what):
         raise FeedError(f"parse {what}.{k}") from None
 
 
-def parse_book(j, product):
-    """pricebook.bids[0] / asks[0] -> (bid, bid_size, ask, ask_size, book_time)."""
+def _levels(raw, what):
+    """[{"price","size"}, ...] -> [[price, size], ...] floats. A level that is not a finite
+    positive price and size is garbage and refuses the book: the walk in state.py would
+    price the order on it. Lists, not tuples: the Snapshot is JSON and round-trips equal."""
+    out = []
+    for lv in raw:
+        p, z = _num(lv, "price", what), _num(lv, "size", what)
+        if not (math.isfinite(p) and math.isfinite(z) and p > 0 and z > 0):
+            raise FeedError(f"book {what} level not positive and finite: {p}x{z}")
+        out.append([p, z])
+    return out
+
+
+def parse_levels(j, product):
+    """pricebook -> (bids, asks, book_time): each side best-first (bids by price down,
+    asks up; the venue's order is not trusted, the same rule as the candles), at most
+    config.BOOK_LEVELS a side. An empty side, a wrong product, a garbage level or a
+    crossed best (bid > ask) raises FeedError; locked (bid == ask) happens and is kept."""
     try:
         pb = j["pricebook"]
-        b, a = pb["bids"][0], pb["asks"][0]
+        rb, ra = pb["bids"], pb["asks"]
+        rb[0], ra[0]
     except (KeyError, IndexError, TypeError):
         raise FeedError("parse book: no L1") from None
     if pb.get("product_id") != product:
         raise FeedError(f"book product {pb.get('product_id')!r} != {product!r}")
-    bid, bs = _num(b, "price", "bid"), _num(b, "size", "bid")
-    ask, az = _num(a, "price", "ask"), _num(a, "size", "ask")
-    if not 0 < bid <= ask or bs <= 0 or az <= 0:   # locked (bid == ask) happens; crossed is garbage
-        raise FeedError(f"book crossed or empty: {bid}x{bs} / {ask}x{az}")
-    return bid, bs, ask, az, (pb.get("time") or None)
+    if not isinstance(rb, list) or not isinstance(ra, list):
+        raise FeedError("parse book: levels are not lists")
+    bids = sorted(_levels(rb, "bid"), key=lambda lv: -lv[0])[:config.BOOK_LEVELS]
+    asks = sorted(_levels(ra, "ask"), key=lambda lv: lv[0])[:config.BOOK_LEVELS]
+    if bids[0][0] > asks[0][0]:                   # crossed is garbage
+        raise FeedError(f"book crossed or empty: {bids[0][0]}x{bids[0][1]} / {asks[0][0]}x{asks[0][1]}")
+    return bids, asks, (pb.get("time") or None)
+
+
+def parse_book(j, product):
+    """Level 1 of parse_levels -> (bid, bid_size, ask, ask_size, book_time)."""
+    bids, asks, book_time = parse_levels(j, product)
+    return bids[0][0], bids[0][1], asks[0][0], asks[0][1], book_time
 
 
 def parse_candles(j, now):
@@ -149,7 +181,8 @@ def parse_trades(j, now):
 def assemble(product, now, book_j, candles_j, trades_j, http):
     """Pure: the three payloads -> the Snapshot dict, keys exactly as CONTRACT §2.
     trades_j None (call failed) or unparseable -> trades_5m = -1, never a raise."""
-    bid, bid_size, ask, ask_size, book_time = parse_book(book_j, product)
+    bids, asks, book_time = parse_levels(book_j, product)
+    (bid, bid_size), (ask, ask_size) = bids[0], asks[0]
     candles = parse_candles(candles_j, now)
     check_contiguous(candles)
     age = now - (candles[-1]["start"] + 60)
@@ -163,6 +196,7 @@ def assemble(product, now, book_j, candles_j, trades_j, http):
         "ts_rx": _iso_ms(now),
         "product": product,
         "bid": bid, "bid_size": bid_size, "ask": ask, "ask_size": ask_size,
+        "bids": bids, "asks": asks,
         "book_time": book_time,
         "candles": candles,
         "trades_5m": trades_5m,
@@ -188,7 +222,7 @@ def snapshot(product=config.PRODUCT, now=None):
         finally:
             http["ms"] += (time.monotonic() - t0) * 1000.0
 
-    book_j = get(f"{BASE}/product_book?product_id={product}&limit=1")
+    book_j = get(f"{BASE}/product_book?product_id={product}&limit={config.BOOK_LEVELS}")
     candles_j = get(f"{BASE}/products/{product}/candles"
                     f"?start={end - CANDLES_REQ * 60}&end={end}&granularity=ONE_MINUTE")
     try:
