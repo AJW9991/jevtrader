@@ -163,9 +163,9 @@ def health(rows, outs, bad=(), t0=None):
         f"  prompt_b versions: " + ", ".join(f"{k} {v}" for k, v in sorted(versions.items())),
         f"  key answering: " + (", ".join(f"{k} {v}" for k, v in sorted(keys.items())) or "none")
         + (f"; SHARED KEY on {shared} rows (PROTOCOL §3.6: the loop key file is missing or empty)" if shared else ""),
-        f"  realised horizon (the row the join picked, t + {config.HORIZON_S} s +- {outcomes.JOIN_TOL_S:g} s): mean {_f(hz['mean'], 1)} s,"
-        f" |offset| p95 {_f(hz['p95'], 0)} s, max {_f(hz['max'], 0)} s; within 5 s of the join edge {hz['edge']}/{hz['n']}"
-        + (" (a cadence that drifts past the edge turns fills into gaps)" if hz["edge"] else ""),
+        f"  realised horizon, ts_rx to ts_rx of the row the join picked: mean {_f(hz['mean'], 1)} s, |offset from {config.HORIZON_S}| p95 {_f(hz['p95'], 0)} s,"
+        f" max {_f(hz['max'], 0)} s (n {hz['n']}); isolated skipped minutes {hz['skips']}"
+        + (" (a launchd StartInterval of 60 s runs a ~61 s grid: each skip costs the row 15 min earlier its outcome)" if hz["skips"] else ""),
         "  HALT: PRESENT at " + config.HALT + " (nothing is sent; the feed, arm C, the join and this report go on)" if halt else "  HALT: absent",
     ] + per_day["lines"]
     return {"lines": lines, "rows": len(rows), "ticks": len(ticks), "live": len(live), "dry": len(dry),
@@ -179,26 +179,35 @@ def health(rows, outs, bad=(), t0=None):
 
 
 def realised_horizon(rows):
-    """What the outcome join actually reached: for every priced tick, the nearest tick to t + h
-    within the join tolerance (outcomes.join's rule), as an offset from t + h. Descriptive: a
-    launchd StartInterval drifts, so the realised horizon is not 900 s and the margin to the
-    +-30 s edge is worth seeing before it turns fills into gaps."""
-    ticks = sorted({r["tick_id"] for r in rows if _num(r.get("mid")) and isinstance(r.get("tick_id"), str)})
+    """What the outcome join actually reached, in wall-clock seconds between the two snapshots:
+    the join matches by tick_id (minutes), but launchd's StartInterval drifts inside the minute,
+    so ts_rx(t + h) - ts_rx(t) is not 900 s. Also the isolated skipped minutes: a minute with no
+    row whose neighbours both have one, which is what a 61 s grid produces (~28 a day) and each of
+    which costs the row 15 minutes earlier its outcome. A longer hole is sleep or an outage."""
+    first = {}
+    for r in rows:
+        t = r.get("tick_id")
+        if _num(r.get("mid")) and isinstance(t, str) and t not in first:
+            first[t] = r
+    ticks = sorted(first)
     ep = [tick_epoch(t) for t in ticks]
     offs = []
-    for t in ep:
-        target = t + config.HORIZON_S
+    for t, e in zip(ticks, ep):
+        target = e + config.HORIZON_S
         i = bisect.bisect_left(ep, target)
         best = None
         for j in (i - 1, i):
-            if 0 <= j < len(ep) and abs(ep[j] - target) <= outcomes.JOIN_TOL_S:
-                if best is None or abs(ep[j] - target) < abs(best):
-                    best = ep[j] - target
+            if 0 <= j < len(ep) and abs(ep[j] - target) <= outcomes.JOIN_TOL_S and (best is None or abs(ep[j] - target) < abs(ep[best] - target)):
+                best = j
         if best is not None:
-            offs.append(best)
-    a = [abs(o) for o in offs]
-    return {"n": len(offs), "mean": (config.HORIZON_S + _mean(offs)) if offs else None, "p95": _p95(a), "max": max(a) if a else None,
-            "edge": sum(1 for o in a if o > outcomes.JOIN_TOL_S - 5)}
+            a, b = outcomes.ts_epoch(first[t].get("ts_rx")), outcomes.ts_epoch(first[ticks[best]].get("ts_rx"))
+            if a is not None and b is not None:
+                offs.append(b - a - config.HORIZON_S)
+    all_ticks = sorted({tick_epoch(r["tick_id"]) for r in rows if isinstance(r.get("tick_id"), str)})
+    skips = sum(1 for a, b in zip(all_ticks, all_ticks[1:]) if b - a == 2 * config.CADENCE_S)
+    ab = [abs(o) for o in offs]
+    return {"n": len(offs), "mean": (config.HORIZON_S + _mean(offs)) if offs else None, "p95": _p95(ab), "max": max(ab) if ab else None,
+            "skips": skips}
 
 
 # ---- §4.1 per day: PREREG §8 stop rule 3 ----------------------------------------------------
@@ -242,6 +251,11 @@ def days_table(rows, outs, t0=None):
     here removes a day from any section."""
     per = {}
     last = max((tick_epoch(r["tick_id"]) for r in rows if isinstance(r.get("tick_id"), str)), default=None)
+    all_ticks = sorted({r["tick_id"] for r in rows if isinstance(r.get("tick_id"), str)})
+    skips = collections.Counter()
+    for a, b in zip(all_ticks, all_ticks[1:]):
+        if tick_epoch(b) - tick_epoch(a) == 2 * config.CADENCE_S:
+            skips[day_of(a, t0)] += 1                                  # the missing minute belongs to the day of the row before it
     for r in rows:
         d = day_of(r.get("tick_id"), t0)
         x = per.setdefault(d, {"ticks": set(), "live": 0, "filled": 0, "pending": 0, "attempted": 0, "errors": 0})
@@ -274,7 +288,7 @@ def days_table(rows, outs, t0=None):
         if err is not None and err > BAD_JEV_ERR:
             why.append("jev-err")
         days.append({"day": d, "span": span, "ticks": len(x["ticks"]), "cov": _rate(len(x["ticks"]), DAY_TICKS), "live": x["live"],
-                     "filled": x["filled"], "pending": x["pending"], "fill": fill, "attempted": x["attempted"],
+                     "filled": x["filled"], "pending": x["pending"], "skips": skips.get(d, 0), "fill": fill, "attempted": x["attempted"],
                      "errors": x["errors"], "jev_err": err, "open": is_open, "bad": is_bad, "why": why})
         if is_bad:
             bad.append(d)
@@ -282,16 +296,16 @@ def days_table(rows, outs, t0=None):
             else "per UTC calendar day (no --t0; the sample's days are counted from T0)")
     lines = [f"  {what} (stop rule 3: BAD when fill < {100 * BAD_FILL:.0f}% of live rows or jev errors"
              f" > {100 * BAD_JEV_ERR:.0f}% of attempted; {BAD_DAYS_PAUSE} BAD days pause the run, PREREG §8.3):",
-             f"    {'day':<9}{'ticks':>6}{'cov':>7}{'live':>6}{'fill':>7}{'pend':>6}{'jev-err':>9}" + ("  from..to" if t0 is not None else "")]
+             f"    {'day':<9}{'ticks':>6}{'cov':>7}{'live':>6}{'fill':>7}{'pend':>6}{'skip':>6}{'jev-err':>9}" + ("  from..to" if t0 is not None else "")]
     for x in days:
-        lines.append(f"    {x['day']:<9}{x['ticks']:>6}{_pc(x['cov']):>7}{x['live']:>6}{_pc(x['fill']):>7}{x['pending']:>6}{_pc(x['jev_err']):>9}"
+        lines.append(f"    {x['day']:<9}{x['ticks']:>6}{_pc(x['cov']):>7}{x['live']:>6}{_pc(x['fill']):>7}{x['pending']:>6}{x['skips']:>6}{_pc(x['jev_err']):>9}"
                      + (f"  {x['span'][0]}..{x['span'][1]}" if x["span"] else "")
                      + (f"  BAD ({', '.join(x['why'])})" if x["bad"] else "  open" if x["open"] else ""))
     if not days:
         lines.append("    no rows")
     lines.append(f"  BAD days {len(bad)}" + (": " + ", ".join(bad) if bad else "")
                  + "; the exclusion is a line in data/exclusions.tsv, written by hand, never here."
-                 " fill counts live rows whose t + h the log has reached (pend = not yet); an open day is not judged")
+                 " fill counts live rows whose t + h the log has reached (pend = not yet); skip = isolated missing minutes; an open day is not judged")
     return {"lines": lines, "days": days, "bad": bad}
 
 

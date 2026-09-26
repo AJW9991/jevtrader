@@ -267,16 +267,16 @@ def render(rows, outs, t0=None, now=None, hb=None, halt=False, props=(), current
     parts.append(("<h2>per day from T0 &middot; PREREG §8 stop rule 3</h2>" if t0 is not None else "<h2>per UTC day &middot; PREREG §8 stop rule 3</h2>")
                  + f"<p class='sub'>BAD when fill &lt; {100 * report.BAD_FILL:.0f}% of live rows or jev errors &gt; {100 * report.BAD_JEV_ERR:.0f}% of attempted; "
                  f"{report.BAD_DAYS_PAUSE} BAD days pause the run. The exclusion is a hand-written line in data/exclusions.tsv, never this page.</p>")
-    t = ["<div class='wrap'><table><tr><th>day</th><th>ticks</th><th>coverage</th><th>live</th><th>fill</th><th>pending</th><th>jev-err</th><th>spend</th><th class='l'>flag</th></tr>"]
+    t = ["<div class='wrap'><table><tr><th>day</th><th>ticks</th><th>coverage</th><th>live</th><th>fill</th><th>pending</th><th>skipped min</th><th>jev-err</th><th>spend</th><th class='l'>flag</th></tr>"]
     for d in h["days"]:
         flag = (f"<span class='badge crit'>BAD ({', '.join(d['why'])})</span>" if d["bad"]
                 else "<span class='badge warn'>open</span>" if d["open"] else "<span class='badge ok'>ok</span>")
         lab = (f"{d['day']} <span class='mono'>{d['span'][0][:13]}Z..{d['span'][1][:13]}Z</span>" if d["span"]
                else f"{d['day'][:4]}-{d['day'][4:6]}-{d['day'][6:]}")
         t.append(f"<tr><td>{lab}</td><td>{d['ticks']}</td><td>{_pc(d['cov'])}</td><td>{d['live']}</td>"
-                 f"<td>{_pc(d['fill'])}</td><td>{d['pending']}</td><td>{_pc(d['jev_err'])}</td><td>${spend_of(d):.4f}</td><td class='l'>{flag}</td></tr>")
+                 f"<td>{_pc(d['fill'])}</td><td>{d['pending']}</td><td>{d['skips']}</td><td>{_pc(d['jev_err'])}</td><td>${spend_of(d):.4f}</td><td class='l'>{flag}</td></tr>")
     if not h["days"]:
-        t.append("<tr><td colspan='9'>no rows in the sample yet</td></tr>")
+        t.append("<tr><td colspan='10'>no rows in the sample yet</td></tr>")
     t.append("</table></div>")
     parts.extend(t)
 

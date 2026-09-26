@@ -180,24 +180,24 @@ class Synthetic(unittest.TestCase):
         self.assertNotIn("SHARED KEY", text)
         self.assertEqual(h["shared_key_rows"], 0)
         # the fixture ticks every 60 s exactly: the join lands on t + 900 with no offset
-        self.assertIn("realised horizon (the row the join picked, t + 900 s +- 30 s): mean 900.0 s, |offset| p95 0 s, max 0 s; within 5 s of the join edge 0/", text)
-        self.assertEqual((h["horizon"]["n"], h["horizon"]["mean"], h["horizon"]["max"], h["horizon"]["edge"]), (23, 900.0, 0.0, 0))
+        self.assertIn("realised horizon, ts_rx to ts_rx of the row the join picked: mean 900.0 s, |offset from 900| p95 0 s, max 0 s (n 23); isolated skipped minutes 0", text)
+        self.assertEqual((h["horizon"]["n"], h["horizon"]["mean"], h["horizon"]["max"], h["horizon"]["skips"]), (23, 900.0, 0.0, 0))
         self.assertIn("HALT: absent", text)
         self.assertFalse(h["halt"])
 
-    def test_shared_key_and_a_drifting_cadence_are_named(self):
-        rows = [dict(_row(m)) for m in range(5, 40)]
+    def test_shared_key_skipped_minutes_and_the_receive_time_horizon_are_named(self):
+        rows = [dict(_row(m)) for m in range(5, 40) if m != 20]                # minute 20 has no row: one isolated skip
         for r in rows:
             r["jev"] = dict(r["jev"], key_path="file:~/.secondbrain-secrets/typesafe-api-key")   # the brain's key, not the loop's
-        # ticks 61.2 s apart: after 20 rows the join's target sits 24 s from the nearest row
-        for i, r in enumerate(rows):
-            e = report.tick_epoch("20260923T100000Z") + i * 61.2
-            r["tick_id"] = datetime.datetime.fromtimestamp(e, datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        h = report.health(rows, outcomes.join(rows))
+        rows[1]["ts_rx"] = "2026-09-23T10:06:40.000Z"                            # received 40 s into its minute: the join
+        h = report.health(rows, outcomes.join(rows))                             # still lands on 10:21 by tick_id, 860 s later
         text = "\n".join(h["lines"])
-        self.assertIn("SHARED KEY on 35 rows", text)
-        self.assertGreater(h["horizon"]["max"], 10)
-        self.assertLessEqual(h["horizon"]["max"], 30)
+        self.assertIn("SHARED KEY on 34 rows", text)
+        self.assertEqual(h["horizon"]["skips"], 1)
+        self.assertIn("isolated skipped minutes 1 (a launchd StartInterval of 60 s runs a ~61 s grid", text)
+        self.assertAlmostEqual(h["horizon"]["max"], 39.9, places=6)                # the fixture rows carry .100 ms
+        self.assertEqual(h["days"][0]["skips"], 1)
+        self.assertIn("    20260923     34   2.4%", text)
 
     def test_occupancy_and_the_95_percent_flag(self):
         o = report.occupancy(self.rows)
@@ -788,9 +788,9 @@ class PerDay(unittest.TestCase):
         self.assertAlmostEqual(dc["cov"], 30 / 1440)
         text = "\n".join(h["lines"])
         self.assertIn("per UTC calendar day (no --t0; the sample's days are counted from T0) (stop rule 3: BAD when fill < 95% of live rows or jev errors > 5% of attempted; 3 BAD days pause the run", text)
-        self.assertIn("20260923     30   2.1%    29 100.0%     0     3.3%", text)
-        self.assertIn("20260924     30   2.1%    29  48.3%     0     3.3%  BAD (fill)", text)
-        self.assertIn("20260925      1   0.1%     0    n/a     0      n/a  open", text)
+        self.assertIn("20260923     30   2.1%    29 100.0%     0     0     3.3%", text)
+        self.assertIn("20260924     30   2.1%    29  48.3%     0     0     3.3%  BAD (fill)", text)
+        self.assertIn("20260925      1   0.1%     0    n/a     0     0      n/a  open", text)
         self.assertIn("BAD days 1: 20260924; the exclusion is a line in data/exclusions.tsv, written by hand, never here.", text)
 
     def test_an_open_day_is_pending_not_bad(self):
@@ -803,7 +803,7 @@ class PerDay(unittest.TestCase):
         self.assertTrue(d["open"])
         self.assertFalse(d["bad"])
         self.assertEqual(h["bad_days"], [])
-        self.assertIn("20260924     30   2.1%    14 100.0%    15     3.3%  open", "\n".join(h["lines"]))
+        self.assertIn("20260924     30   2.1%    14 100.0%    15     0     3.3%  open", "\n".join(h["lines"]))
 
     def test_t0_anchored_days_are_labelled_dNN_with_their_span(self):
         from loop import outcomes
@@ -823,7 +823,7 @@ class PerDay(unittest.TestCase):
         self.assertTrue(d2["open"])
         text = "\n".join(h["lines"])
         self.assertIn("per day from T0 (dNN = [T0 + 86400(N-1), T0 + 86400 N), 96 blocks; d00 is before T0)", text)
-        self.assertIn("d01          60   4.2%    58  74.1%     0     3.3%  20260923T233000Z..20260924T233000Z  BAD (fill)", text)
+        self.assertIn("d01          60   4.2%    58  74.1%     0     0     3.3%  20260923T233000Z..20260924T233000Z  BAD (fill)", text)
         # a row before T0 is d00
         self.assertEqual(report.day_of("20260923T100000Z", t0), "d00")
         self.assertEqual(report.day_of("20260923T100000Z", None), "20260923")
@@ -850,7 +850,7 @@ class PerDay(unittest.TestCase):
         self.assertEqual((d["ticks"], d["live"], d["attempted"]), (5, 0, 0))
         self.assertIsNone(d["fill"])
         self.assertFalse(d["bad"])
-        self.assertIn("20260923      5   0.3%     0    n/a     0      n/a  open", "\n".join(h["lines"]))
+        self.assertIn("20260923      5   0.3%     0    n/a     0     0      n/a  open", "\n".join(h["lines"]))
         self.assertEqual(report.health([], {})["days"], [])
         self.assertIn("    no rows", report.health([], {})["lines"])
 
