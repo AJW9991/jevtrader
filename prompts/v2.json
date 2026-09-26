@@ -1,0 +1,38 @@
+{
+  "version": "v2",
+  "frozen": "2026-09-26",
+  "note": "Promoted by bin/promote from proposals/2026-09-25.json candidate 2. Rationale: Every dumping+violent-vol row in the digest bounced back up regardless of liquidity or flow, i.e. looked like capitulation rather than a trend to exit into; removing violent volatility as an independent sell trigger and routing violent dumps to hold instead should recover those missed bounces, leaving the buy side unchanged so this candidate isolates the sell-side fix. skip/up15/down15 carried from v1 unchanged.",
+  "action": {
+    "type": "choice",
+    "instructions": "Decide whether to be long SOL for the next stretch of trading. Buy on strength only when the book can absorb the order and volatility is not violent. Get flat when the trend turns down, unless the volatility on that dump has gone violent — a violent dump looks like capitulation, not a trend to follow out of, so ride it out instead of selling into the panic.",
+    "criteria": {
+      "buy": "the trend is pumping, volatility is not violent, and liquidity is not thin",
+      "sell": "the trend is dumping and volatility is not violent",
+      "hold": "anything else, including a dump where volatility is violent: keep whatever position is already on"
+    }
+  },
+  "skip": {
+    "type": "noul",
+    "instructions": "Conditions are too hostile to trade at all this cycle.",
+    "criteria": {
+      "yes": "liquidity is thin and volatility is violent, or the flow is a bot war on a thin book",
+      "no": "the market is orderly enough that a small order would fill near the quote"
+    }
+  },
+  "up15": {
+    "type": "noul",
+    "instructions": "The mid price will be higher fifteen minutes from now.",
+    "criteria": {
+      "yes": "the trend and flow point to the price rising over the next quarter hour",
+      "no": "the price is more likely to be flat or lower"
+    }
+  },
+  "down15": {
+    "type": "noul",
+    "instructions": "The mid price will be lower fifteen minutes from now.",
+    "criteria": {
+      "yes": "the trend and flow point to the price falling over the next quarter hour",
+      "no": "the price is more likely to be flat or higher"
+    }
+  }
+}
