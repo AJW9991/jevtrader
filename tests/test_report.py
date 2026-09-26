@@ -745,11 +745,14 @@ class PerDay(unittest.TestCase):
         ms = list(range(5, 35))                                  # 30 live rows; m == 15 is absence "jev"
         b = self._day(ms, "20260923", 23, 30)
         c = self._day(ms, "20260924", 0, 0)
-        rows = b + c
+        sentinel = self._day([0], "20260925", 12, 0)               # a dry row two days on: both days are closed
+        sentinel[0]["mode"] = "dry"
+        rows = b + c + sentinel
         outs = outcomes.join(rows)
         h = report.health(rows, outs)
-        self.assertEqual([d["day"] for d in h["days"]], ["20260923", "20260924"])
-        db, dc = h["days"]
+        self.assertEqual([d["day"] for d in h["days"]], ["20260923", "20260924", "20260925"])
+        db, dc, ds = h["days"]
+        self.assertEqual((ds["live"], ds["pending"], ds["open"], ds["bad"]), (0, 0, True, False))
         self.assertEqual((db["ticks"], db["live"], db["filled"], db["attempted"], db["errors"]), (30, 29, 29, 30, 1))
         self.assertEqual(db["fill"], 1.0)
         self.assertAlmostEqual(db["jev_err"], 1 / 30)
@@ -763,13 +766,54 @@ class PerDay(unittest.TestCase):
         self.assertAlmostEqual(dc["cov"], 30 / 1440)
         text = "\n".join(h["lines"])
         self.assertIn("per UTC day (stop rule 3: BAD when fill < 95% of live rows or jev errors > 5% of attempted; 3 BAD days pause the run", text)
-        self.assertIn("20260923     30   2.1%    29 100.0%     3.3%", text)
-        self.assertIn("20260924     30   2.1%    29  48.3%     3.3%  BAD (fill)", text)
-        self.assertIn("BAD days 1: 20260924; the exclusion is a line in data/exclusions.tsv, written by hand, never here", text)
+        self.assertIn("20260923     30   2.1%    29 100.0%     0     3.3%", text)
+        self.assertIn("20260924     30   2.1%    29  48.3%     0     3.3%  BAD (fill)", text)
+        self.assertIn("20260925      1   0.1%     0    n/a     0      n/a  open", text)
+        self.assertIn("BAD days 1: 20260924; the exclusion is a line in data/exclusions.tsv, written by hand, never here.", text)
+
+    def test_an_open_day_is_pending_not_bad(self):
+        from loop import outcomes
+        rows = self._day(list(range(5, 35)), "20260924", 0, 0)      # the log ends at 00:29: rows from 00:15 cannot fill yet
+        h = report.health(rows, outcomes.join(rows))
+        d = h["days"][0]
+        self.assertEqual((d["live"], d["filled"], d["pending"]), (14, 14, 15))   # m == 15 (minute 10) is the jev absence
+        self.assertEqual(d["fill"], 1.0)
+        self.assertTrue(d["open"])
+        self.assertFalse(d["bad"])
+        self.assertEqual(h["bad_days"], [])
+        self.assertIn("20260924     30   2.1%    14 100.0%    15     3.3%  open", "\n".join(h["lines"]))
+
+    def test_t0_anchored_days_are_labelled_dNN_with_their_span(self):
+        from loop import outcomes
+        b = self._day(list(range(5, 35)), "20260923", 23, 30)
+        c = self._day(list(range(5, 35)), "20260924", 0, 0)
+        sentinel = self._day([0], "20260925", 12, 0)
+        sentinel[0]["mode"] = "dry"
+        rows = b + c + sentinel
+        t0 = report.tick_epoch("20260923T233000Z")
+        h = report.health(rows, outcomes.join(rows), t0=t0)
+        self.assertEqual([d["day"] for d in h["days"]], ["d01", "d02"])
+        d1, d2 = h["days"]
+        self.assertEqual(d1["span"], ("20260923T233000Z", "20260924T233000Z"))
+        self.assertEqual((d1["live"], d1["filled"]), (58, 43))       # B all filled, C 14 of 29
+        self.assertTrue(d1["bad"])
+        self.assertEqual(d2["day"], "d02")
+        self.assertTrue(d2["open"])
+        text = "\n".join(h["lines"])
+        self.assertIn("per day from T0 (dNN = [T0 + 86400(N-1), T0 + 86400 N), 96 blocks; d00 is before T0)", text)
+        self.assertIn("d01          60   4.2%    58  74.1%     0     3.3%  20260923T233000Z..20260924T233000Z  BAD (fill)", text)
+        # a row before T0 is d00
+        self.assertEqual(report.day_of("20260923T100000Z", t0), "d00")
+        self.assertEqual(report.day_of("20260923T100000Z", None), "20260923")
+        self.assertIsNone(report.day_span("20260923", None))
 
     def test_jev_errors_flag_a_day_too(self):
         from loop import outcomes
         rows = self._day([10, 15, 20], "20260923", 12, 0)         # one of three reached-the-ask rows is a jev error
+        h = report.health(rows, outcomes.join(rows))
+        d = h["days"][0]
+        rows += self._day([0], "20260925", 12, 0)                    # closed by a later dry row
+        rows[-1]["mode"] = "dry"
         h = report.health(rows, outcomes.join(rows))
         d = h["days"][0]
         self.assertEqual((d["attempted"], d["errors"], d["live"], d["filled"]), (3, 1, 2, 0))
@@ -784,7 +828,7 @@ class PerDay(unittest.TestCase):
         self.assertEqual((d["ticks"], d["live"], d["attempted"]), (5, 0, 0))
         self.assertIsNone(d["fill"])
         self.assertFalse(d["bad"])
-        self.assertIn("20260923      5   0.3%     0    n/a      n/a", "\n".join(h["lines"]))
+        self.assertIn("20260923      5   0.3%     0    n/a     0      n/a  open", "\n".join(h["lines"]))
         self.assertEqual(report.health([], {})["days"], [])
         self.assertIn("    no rows", report.health([], {})["lines"])
 

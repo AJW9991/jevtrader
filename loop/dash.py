@@ -72,12 +72,12 @@ def hourly(rows):
     return {k: len(v) for k, v in c.items()}
 
 
-def spend_by_day(rows):
+def spend_by_day(rows, t0=None):
     c = collections.Counter()
     for r in rows:
         tok = (r.get("jev") or {}).get("input_tokens")
         if isinstance(tok, (int, float)) and tok > 0:
-            c[str(r.get("tick_id"))[:8]] += tok
+            c[report.day_of(r.get("tick_id"), t0)] += tok
     return {d: t * config.USD_PER_MTOK / 1e6 for d, t in c.items()}
 
 
@@ -191,7 +191,7 @@ def render(rows, outs, t0=None, now=None, hb=None, halt=False, props=(), current
     now = now or datetime.datetime.now(datetime.timezone.utc)
     sample = report.in_sample(rows, t0) if t0 is not None else rows
     h_all = report.health(rows, outs)
-    h = report.health(sample, outs)
+    h = report.health(sample, outs, t0=t0)
     occ = report.occupancy(sample)
     rt = report.retest(sample)
     age = _age(hb, now)
@@ -201,7 +201,10 @@ def render(rows, outs, t0=None, now=None, hb=None, halt=False, props=(), current
     cov_since = None
     if t0 is not None and now.timestamp() > t0:
         cov_since = h["ticks"] / max(1.0, (min(now.timestamp(), t0 + report.SAMPLE_DAYS * 86400) - t0) / config.CADENCE_S)
-    spend = spend_by_day(rows)
+    spend = spend_by_day(rows, t0)
+
+    def spend_of(d):
+        return spend.get(d["day"], 0.0)
     days_seen = sorted({d["day"] for d in h_all["days"]})
     hourly_c = hourly(rows)
     sc = state_counts(sample)
@@ -256,16 +259,19 @@ def render(rows, outs, t0=None, now=None, hb=None, halt=False, props=(), current
     parts.extend(strip)
 
     # -- per-day table (stop rule 3)
-    parts.append("<h2>per UTC day &middot; PREREG §8 stop rule 3</h2>"
-                 f"<p class='sub'>BAD when fill &lt; {100 * report.BAD_FILL:.0f}% of live rows or jev errors &gt; {100 * report.BAD_JEV_ERR:.0f}% of attempted; "
+    parts.append(("<h2>per day from T0 &middot; PREREG §8 stop rule 3</h2>" if t0 is not None else "<h2>per UTC day &middot; PREREG §8 stop rule 3</h2>")
+                 + f"<p class='sub'>BAD when fill &lt; {100 * report.BAD_FILL:.0f}% of live rows or jev errors &gt; {100 * report.BAD_JEV_ERR:.0f}% of attempted; "
                  f"{report.BAD_DAYS_PAUSE} BAD days pause the run. The exclusion is a hand-written line in data/exclusions.tsv, never this page.</p>")
-    t = ["<div class='wrap'><table><tr><th>day</th><th>ticks</th><th>coverage</th><th>live</th><th>fill</th><th>jev-err</th><th>spend</th><th class='l'>flag</th></tr>"]
+    t = ["<div class='wrap'><table><tr><th>day</th><th>ticks</th><th>coverage</th><th>live</th><th>fill</th><th>pending</th><th>jev-err</th><th>spend</th><th class='l'>flag</th></tr>"]
     for d in h["days"]:
-        flag = f"<span class='badge crit'>BAD ({', '.join(d['why'])})</span>" if d["bad"] else "<span class='badge ok'>ok</span>"
-        t.append(f"<tr><td>{d['day'][:4]}-{d['day'][4:6]}-{d['day'][6:]}</td><td>{d['ticks']}</td><td>{_pc(d['cov'])}</td><td>{d['live']}</td>"
-                 f"<td>{_pc(d['fill'])}</td><td>{_pc(d['jev_err'])}</td><td>${spend.get(d['day'], 0.0):.4f}</td><td class='l'>{flag}</td></tr>")
+        flag = (f"<span class='badge crit'>BAD ({', '.join(d['why'])})</span>" if d["bad"]
+                else "<span class='badge warn'>open</span>" if d["open"] else "<span class='badge ok'>ok</span>")
+        lab = (f"{d['day']} <span class='mono'>{d['span'][0][:13]}Z..{d['span'][1][:13]}Z</span>" if d["span"]
+               else f"{d['day'][:4]}-{d['day'][4:6]}-{d['day'][6:]}")
+        t.append(f"<tr><td>{lab}</td><td>{d['ticks']}</td><td>{_pc(d['cov'])}</td><td>{d['live']}</td>"
+                 f"<td>{_pc(d['fill'])}</td><td>{d['pending']}</td><td>{_pc(d['jev_err'])}</td><td>${spend_of(d):.4f}</td><td class='l'>{flag}</td></tr>")
     if not h["days"]:
-        t.append("<tr><td colspan='8'>no rows in the sample yet</td></tr>")
+        t.append("<tr><td colspan='9'>no rows in the sample yet</td></tr>")
     t.append("</table></div>")
     parts.extend(t)
 

@@ -126,7 +126,7 @@ def answered(rows):
 
 
 # ---- §4.1 health ---------------------------------------------------------------------------
-def health(rows, outs, bad=()):
+def health(rows, outs, bad=(), t0=None):
     live = [r for r in rows if r.get("mode") == "live" and r.get("absence") is None]
     dry = [r for r in rows if r.get("mode") == "dry"]
     absence = collections.Counter(r["absence"] for r in rows if r.get("absence") is not None)
@@ -144,7 +144,7 @@ def health(rows, outs, bad=()):
     drift = sum(1 for r in rows if r.get("drift") is True)
     versions = collections.Counter(str(r.get("prompt_b")) for r in rows)
     span = f"{ticks[0]}..{ticks[-1]}" if ticks else "-"
-    per_day = days_table(rows, outs)
+    per_day = days_table(rows, outs, t0)
     lines = [
         f"  rows {len(rows)} ({len(ticks)} ticks, {len(days)} day{'s' if len(days) != 1 else ''}, {span}); skipped lines {len(bad)}",
         f"  live answered {len(live)}; dry {len(dry)}; absence: "
@@ -174,16 +174,43 @@ BAD_DAYS_PAUSE = 3          # the third BAD day writes data/HALT by hand (PREREG
 DAY_TICKS = 86400 // config.CADENCE_S   # 1440: cov is ticks over a full day, so a partial day reads low on purpose
 
 
-def days_table(rows, outs):
-    """Per UTC day (the first 8 chars of tick_id): distinct ticks, coverage of a full day, live rows,
-    the share of them with a non-gap outcome, the Jev error share over rows that reached the ask,
-    and the BAD flag of PREREG §8 stop rule 3. `outs` is the join over the WHOLE log, so a day's
-    last 15 minutes are filled by the next day's rows. Descriptive: the exclusion itself is a line a
-    person appends to data/exclusions.tsv; nothing here removes a day from any section."""
+def day_of(tick, t0=None):
+    """The 'day' a tick belongs to. With T0 (PREREG §2, read as decided by Alex 2026-09-26 before any
+    look: 'every UTC day boundary from T0' = 24 h periods anchored at T0, day j = [T0 + 86400(j-1),
+    T0 + 86400 j), 96 whole blocks each, so n = 96 x 28 = 2,688): the label 'dNN', d01 the first
+    sample day, d00 the day before T0, d29 the day after the sample. Without T0: the UTC calendar day,
+    the first 8 chars of tick_id, which is what the nightly's digest and the launchd logs use."""
+    if t0 is None:
+        return str(tick)[:8]
+    j = math.floor((tick_epoch(tick) - t0) / 86400) + 1
+    return f"d{j:02d}" if 0 <= j <= 99 else f"d{j}"
+
+
+def day_span(label, t0):
+    """The [from, to) tick_ids of a T0-anchored day label 'dNN'; None for a calendar label."""
+    if t0 is None or not (label.startswith("d") and label[1:].lstrip("-").isdigit()):
+        return None
+    j = int(label[1:])
+    a = t0 + 86400 * (j - 1)
+    return (_tick_of(a), _tick_of(a + 86400))
+
+
+def _tick_of(epoch):
+    return datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def days_table(rows, outs, t0=None):
+    """Per day (day_of: T0-anchored 'dNN' with T0, else the UTC calendar day): distinct ticks,
+    coverage of a full day, live rows, the share of them with a non-gap outcome, the Jev error
+    share over rows that reached the ask, and the BAD flag of PREREG §8 stop rule 3. `outs` is the
+    join over the WHOLE log, so a day's last 15 minutes are filled by the next day's rows.
+    Descriptive: the exclusion itself is a line a person appends to data/exclusions.tsv; nothing
+    here removes a day from any section."""
     per = {}
+    last = max((tick_epoch(r["tick_id"]) for r in rows if isinstance(r.get("tick_id"), str)), default=None)
     for r in rows:
-        d = str(r.get("tick_id"))[:8]
-        x = per.setdefault(d, {"ticks": set(), "live": 0, "filled": 0, "attempted": 0, "errors": 0})
+        d = day_of(r.get("tick_id"), t0)
+        x = per.setdefault(d, {"ticks": set(), "live": 0, "filled": 0, "pending": 0, "attempted": 0, "errors": 0})
         x["ticks"].add(r["tick_id"])
         if r.get("mode") != "live":
             continue
@@ -192,34 +219,45 @@ def days_table(rows, outs):
         if r.get("absence") == "jev":
             x["errors"] += 1
         elif r.get("absence") is None:
-            x["live"] += 1
             if (outs.get(r["tick_id"]) or {}).get("absence") is None:
+                x["live"] += 1
                 x["filled"] += 1
+            elif tick_epoch(r["tick_id"]) + config.HORIZON_S + outcomes.JOIN_TOL_S > last:
+                x["pending"] += 1                     # the log has not reached t + h yet: not a gap, not decided
+            else:
+                x["live"] += 1
     days, bad = [], []
     for d in sorted(per):
         x = per[d]
+        span = day_span(d, t0)
+        end = tick_epoch(span[1]) if span else tick_epoch(d + "T000000Z") + 86400
+        is_open = last is None or end + config.HORIZON_S + outcomes.JOIN_TOL_S > last   # its last row can still fill
         fill, err = _rate(x["filled"], x["live"]), _rate(x["errors"], x["attempted"])
-        is_bad = (fill is not None and fill < BAD_FILL) or (err is not None and err > BAD_JEV_ERR)
+        is_bad = not is_open and ((fill is not None and fill < BAD_FILL) or (err is not None and err > BAD_JEV_ERR))
         why = []
         if fill is not None and fill < BAD_FILL:
             why.append("fill")
         if err is not None and err > BAD_JEV_ERR:
             why.append("jev-err")
-        days.append({"day": d, "ticks": len(x["ticks"]), "cov": _rate(len(x["ticks"]), DAY_TICKS), "live": x["live"],
-                     "filled": x["filled"], "fill": fill, "attempted": x["attempted"], "errors": x["errors"],
-                     "jev_err": err, "bad": is_bad, "why": why})
+        days.append({"day": d, "span": span, "ticks": len(x["ticks"]), "cov": _rate(len(x["ticks"]), DAY_TICKS), "live": x["live"],
+                     "filled": x["filled"], "pending": x["pending"], "fill": fill, "attempted": x["attempted"],
+                     "errors": x["errors"], "jev_err": err, "open": is_open, "bad": is_bad, "why": why})
         if is_bad:
             bad.append(d)
-    lines = [f"  per UTC day (stop rule 3: BAD when fill < {100 * BAD_FILL:.0f}% of live rows or jev errors"
+    what = (f"per day from T0 (dNN = [T0 + 86400(N-1), T0 + 86400 N), 96 blocks; d00 is before T0)" if t0 is not None
+            else "per UTC calendar day (no --t0; the sample's days are counted from T0)")
+    lines = [f"  {what} (stop rule 3: BAD when fill < {100 * BAD_FILL:.0f}% of live rows or jev errors"
              f" > {100 * BAD_JEV_ERR:.0f}% of attempted; {BAD_DAYS_PAUSE} BAD days pause the run, PREREG §8.3):",
-             f"    {'day':<9}{'ticks':>6}{'cov':>7}{'live':>6}{'fill':>7}{'jev-err':>9}"]
+             f"    {'day':<9}{'ticks':>6}{'cov':>7}{'live':>6}{'fill':>7}{'pend':>6}{'jev-err':>9}" + ("  from..to" if t0 is not None else "")]
     for x in days:
-        lines.append(f"    {x['day']:<9}{x['ticks']:>6}{_pc(x['cov']):>7}{x['live']:>6}{_pc(x['fill']):>7}{_pc(x['jev_err']):>9}"
-                     + (f"  BAD ({', '.join(x['why'])})" if x["bad"] else ""))
+        lines.append(f"    {x['day']:<9}{x['ticks']:>6}{_pc(x['cov']):>7}{x['live']:>6}{_pc(x['fill']):>7}{x['pending']:>6}{_pc(x['jev_err']):>9}"
+                     + (f"  {x['span'][0]}..{x['span'][1]}" if x["span"] else "")
+                     + (f"  BAD ({', '.join(x['why'])})" if x["bad"] else "  open" if x["open"] else ""))
     if not days:
         lines.append("    no rows")
     lines.append(f"  BAD days {len(bad)}" + (": " + ", ".join(bad) if bad else "")
-                 + "; the exclusion is a line in data/exclusions.tsv, written by hand, never here")
+                 + "; the exclusion is a line in data/exclusions.tsv, written by hand, never here."
+                 " fill counts live rows whose t + h the log has reached (pend = not yet); an open day is not judged")
     return {"lines": lines, "days": days, "bad": bad}
 
 
@@ -659,7 +697,7 @@ def render(rows, bad=(), log=None, since=None, missing=False, t0=None, outs=None
     health_only: sections 1-3 only (PREREG §8.4); 4-7 are neither computed nor printed, so the
     blind look cannot show an H1 or H2 number by accident."""
     outs = outcomes.join(rows) if outs is None else outs
-    secs = (health(rows, outs, bad), occupancy(rows), retest(rows))
+    secs = (health(rows, outs, bad, t0), occupancy(rows), retest(rows))
     if not health_only:
         secs += (agreement(rows), table(rows, outs, t0), h2(rows, outs, t0), calibration(rows, outs))
     lines = [f"jev-paper-loop report: {config.VENUE} {config.PRODUCT}, cadence {config.CADENCE_S} s, horizon {config.HORIZON_S} s"
