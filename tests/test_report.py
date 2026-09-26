@@ -765,7 +765,7 @@ class PerDay(unittest.TestCase):
         self.assertEqual(h["bad_days"], ["20260924"])
         self.assertAlmostEqual(dc["cov"], 30 / 1440)
         text = "\n".join(h["lines"])
-        self.assertIn("per UTC day (stop rule 3: BAD when fill < 95% of live rows or jev errors > 5% of attempted; 3 BAD days pause the run", text)
+        self.assertIn("per UTC calendar day (no --t0; the sample's days are counted from T0) (stop rule 3: BAD when fill < 95% of live rows or jev errors > 5% of attempted; 3 BAD days pause the run", text)
         self.assertIn("20260923     30   2.1%    29 100.0%     0     3.3%", text)
         self.assertIn("20260924     30   2.1%    29  48.3%     0     3.3%  BAD (fill)", text)
         self.assertIn("20260925      1   0.1%     0    n/a     0      n/a  open", text)
