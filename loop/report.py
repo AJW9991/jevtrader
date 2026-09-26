@@ -41,7 +41,7 @@ market. --health prints sections 1-3 only (PREREG §8.4's day-14 look) and compu
 An empty, missing or dry-only log is said so at the top; health and occupancy still print
 (a dry log has adjectives), the other sections say what they lack.
 """
-import argparse, collections, datetime, math, os, sys
+import argparse, bisect, collections, datetime, math, os, sys
 
 from loop import book, config, outcomes, rules, state
 
@@ -145,6 +145,10 @@ def health(rows, outs, bad=(), t0=None):
     versions = collections.Counter(str(r.get("prompt_b")) for r in rows)
     span = f"{ticks[0]}..{ticks[-1]}" if ticks else "-"
     per_day = days_table(rows, outs, t0)
+    keys = collections.Counter(_jev(r, "key_path") for r in rows if isinstance(_jev(r, "key_path"), str))
+    shared = sum(v for k, v in keys.items() if "loop" not in k.lower())      # PROTOCOL §3.6: the loop's own key, or it says so
+    hz = realised_horizon(rows)
+    halt = os.path.exists(config.HALT)
     lines = [
         f"  rows {len(rows)} ({len(ticks)} ticks, {len(days)} day{'s' if len(days) != 1 else ''}, {span}); skipped lines {len(bad)}",
         f"  live answered {len(live)}; dry {len(dry)}; absence: "
@@ -157,14 +161,44 @@ def health(rows, outs, bad=(), t0=None):
         f"  model_answered: " + (", ".join(f"{k} {v}" for k, v in sorted(models.items())) or "none")
         + f" ({len(models)} distinct); drift {drift}",
         f"  prompt_b versions: " + ", ".join(f"{k} {v}" for k, v in sorted(versions.items())),
+        f"  key answering: " + (", ".join(f"{k} {v}" for k, v in sorted(keys.items())) or "none")
+        + (f"; SHARED KEY on {shared} rows (PROTOCOL §3.6: the loop key file is missing or empty)" if shared else ""),
+        f"  realised horizon (the row the join picked, t + {config.HORIZON_S} s +- {outcomes.JOIN_TOL_S:g} s): mean {_f(hz['mean'], 1)} s,"
+        f" |offset| p95 {_f(hz['p95'], 0)} s, max {_f(hz['max'], 0)} s; within 5 s of the join edge {hz['edge']}/{hz['n']}"
+        + (" (a cadence that drifts past the edge turns fills into gaps)" if hz["edge"] else ""),
+        "  HALT: PRESENT at " + config.HALT + " (nothing is sent; the feed, arm C, the join and this report go on)" if halt else "  HALT: absent",
     ] + per_day["lines"]
     return {"lines": lines, "rows": len(rows), "ticks": len(ticks), "live": len(live), "dry": len(dry),
-            "days": per_day["days"], "bad_days": per_day["bad"],
+            "days": per_day["days"], "bad_days": per_day["bad"], "keys": dict(keys), "shared_key_rows": shared,
+            "horizon": hz, "halt": halt,
             "absence": dict(absence), "priced": len(priced), "filled": len(priced) and filled,
             "fill": _rate(filled, len(priced)), "attempted": len(attempted), "errors": dict(errors),
             "error_rate": _rate(sum(errors.values()), len(attempted)), "latency_mean": _mean(lat),
             "latency_p95": _p95(lat), "tokens": tokens, "usd": usd, "models": dict(models), "drift": drift,
             "versions": dict(versions), "skipped": len(bad)}
+
+
+def realised_horizon(rows):
+    """What the outcome join actually reached: for every priced tick, the nearest tick to t + h
+    within the join tolerance (outcomes.join's rule), as an offset from t + h. Descriptive: a
+    launchd StartInterval drifts, so the realised horizon is not 900 s and the margin to the
+    +-30 s edge is worth seeing before it turns fills into gaps."""
+    ticks = sorted({r["tick_id"] for r in rows if _num(r.get("mid")) and isinstance(r.get("tick_id"), str)})
+    ep = [tick_epoch(t) for t in ticks]
+    offs = []
+    for t in ep:
+        target = t + config.HORIZON_S
+        i = bisect.bisect_left(ep, target)
+        best = None
+        for j in (i - 1, i):
+            if 0 <= j < len(ep) and abs(ep[j] - target) <= outcomes.JOIN_TOL_S:
+                if best is None or abs(ep[j] - target) < abs(best):
+                    best = ep[j] - target
+        if best is not None:
+            offs.append(best)
+    a = [abs(o) for o in offs]
+    return {"n": len(offs), "mean": (config.HORIZON_S + _mean(offs)) if offs else None, "p95": _p95(a), "max": max(a) if a else None,
+            "edge": sum(1 for o in a if o > outcomes.JOIN_TOL_S - 5)}
 
 
 # ---- §4.1 per day: PREREG §8 stop rule 3 ----------------------------------------------------

@@ -129,7 +129,16 @@ def h1_series(rows, outs, x, y, anchor, excluded=(), n_blocks=BLOCKS_PER_DAY * N
     series = [(k, S.get(k, 0.0)) for k in range(n_blocks) if day_of_block(k) not in excluded]
     kept = [v for _, v in series]
     on_dis = [v for k, v in series if k in hot]
-    return {"series": series, "S": kept, "dis_blocks": len(on_dis), "mean_dis": mean(on_dis),
+    # descriptive: blocks on which a gap longer than the horizon lands (SPEC §10 carries the position
+    # across a gap and marks the whole move on the first priced tick after it; PREREG-v2 material)
+    priced = sorted(t for t, _ in cell["d"])
+    absorbing = set()
+    for a, b in zip(priced, priced[1:]):
+        if report.tick_epoch(b) - report.tick_epoch(a) > config.HORIZON_S:
+            k = int((report.tick_epoch(b) - anchor) // report.BLOCK_S)
+            if 0 <= k < n_blocks and day_of_block(k) not in excluded:
+                absorbing.add(k)
+    return {"series": series, "S": kept, "dis_blocks": len(on_dis), "mean_dis": mean(on_dis), "gap_blocks": len(absorbing),
             "trades_x": len(px["trades"]), "trades_y": len(py["trades"]), "forced_x": px["forced_hold"], "forced_y": py["forced_hold"],
             "ticks": cell["n"], "mean_tick": cell["mean"]}
 
@@ -142,7 +151,7 @@ def h1(rows, outs, anchor, excluded=(), resamples=RESAMPLES, n_blocks=BLOCKS_PER
         bs = bootstrap(s["S"], mean, resamples=resamples) if x != "b" or y != "a" else None   # B - A: point estimate only
         out.append({"pair": f"{x.upper()} - {y.upper()}", "title": title, "n": len(s["S"]), "mean": m,
                     "lower": bs["lower"] if bs else None, "reject": bs["reject"] if bs else None,
-                    "dis_blocks": s["dis_blocks"], "mean_dis": s["mean_dis"], "ticks": s["ticks"], "mean_tick": s["mean_tick"],
+                    "dis_blocks": s["dis_blocks"], "mean_dis": s["mean_dis"], "gap_blocks": s["gap_blocks"], "ticks": s["ticks"], "mean_tick": s["mean_tick"],
                     "trades_x": s["trades_x"], "trades_y": s["trades_y"], "forced_x": s["forced_x"], "forced_y": s["forced_y"]})
     return out
 
@@ -193,6 +202,9 @@ def render(mode, t0, now, log, log_sha, n_rows, excluded, excl_lines, kept_days,
         lines.append(f"  VOID (PREREG §8.3): fewer than {MIN_KEPT_DAYS} days kept; reported as void, a second block is a new pre-registration")
     lines.append("")
     lines.append("H1 -- mean S_k of the paired 15-minute pnl difference, column argmax, 0 bps (gross of fees, net of the spread)")
+    if h1s:
+        lines.append(f"  descriptive: blocks on which a gap longer than the horizon lands {h1s[0]['gap_blocks']} of {h1s[0]['n']}"
+                     " (SPEC §10: the move across a gap is marked on the first priced tick after it; kept as pre-registered)")
     for h in h1s:
         lines.append(f"  {h['pair']}: {h['title']}")
         verdict = ("REJECT H0: the arm beats the other" if h["reject"] else "not rejected") if h["reject"] is not None else "no test (point estimate)"

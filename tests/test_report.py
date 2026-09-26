@@ -20,7 +20,7 @@ horizon, and this fixture used to pin that); m 7..9 flat; m 10..19 down; m 22..2
 gap (past the log). Blocks (no --t0) are anchored at 10:00: k0 = m 0..14, k1 = m 15..29,
 k2 = m 30..41.
 """
-import contextlib, io, json, math, os, tempfile, unittest
+import contextlib, datetime, io, json, math, os, tempfile, unittest
 
 from loop import book, config, outcomes, report, rules, state
 
@@ -176,6 +176,28 @@ class Synthetic(unittest.TestCase):
         self.assertIn("input tokens 34000 = $0.001428 to date", text)
         self.assertIn("model_answered: jev-1.13.0 33, jev-1.14.0 1 (2 distinct); drift 1", text)
         self.assertIn("prompt_b versions: v1 30, v2 10", text)
+        self.assertIn("key answering: env:TYPESAFE_API_KEY_LOOP 35", text)        # 34 answered + the jev-error row
+        self.assertNotIn("SHARED KEY", text)
+        self.assertEqual(h["shared_key_rows"], 0)
+        # the fixture ticks every 60 s exactly: the join lands on t + 900 with no offset
+        self.assertIn("realised horizon (the row the join picked, t + 900 s +- 30 s): mean 900.0 s, |offset| p95 0 s, max 0 s; within 5 s of the join edge 0/", text)
+        self.assertEqual((h["horizon"]["n"], h["horizon"]["mean"], h["horizon"]["max"], h["horizon"]["edge"]), (23, 900.0, 0.0, 0))
+        self.assertIn("HALT: absent", text)
+        self.assertFalse(h["halt"])
+
+    def test_shared_key_and_a_drifting_cadence_are_named(self):
+        rows = [dict(_row(m)) for m in range(5, 40)]
+        for r in rows:
+            r["jev"] = dict(r["jev"], key_path="file:~/.secondbrain-secrets/typesafe-api-key")   # the brain's key, not the loop's
+        # ticks 61.2 s apart: after 20 rows the join's target sits 24 s from the nearest row
+        for i, r in enumerate(rows):
+            e = report.tick_epoch("20260923T100000Z") + i * 61.2
+            r["tick_id"] = datetime.datetime.fromtimestamp(e, datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        h = report.health(rows, outcomes.join(rows))
+        text = "\n".join(h["lines"])
+        self.assertIn("SHARED KEY on 35 rows", text)
+        self.assertGreater(h["horizon"]["max"], 10)
+        self.assertLessEqual(h["horizon"]["max"], 30)
 
     def test_occupancy_and_the_95_percent_flag(self):
         o = report.occupancy(self.rows)

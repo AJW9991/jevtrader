@@ -95,6 +95,7 @@ class Guard(unittest.TestCase):
         self.assertIn("mode sample", out)
         self.assertIn("(clock overridden with --now 2026-10-21T10:00)", out.splitlines()[0])
         self.assertIn("n blocks 2688", out)                           # every block kept, empty ones as 0
+        self.assertIn("blocks on which a gap longer than the horizon lands 0 of 2688", out)
         self.assertIn("days kept 28 of 28", out)
         self.assertIn("H2 -- Pearson", out)
         self.assertIn("exclusions.tsv: absent or empty", out)
