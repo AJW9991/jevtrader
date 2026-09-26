@@ -4,7 +4,7 @@ in --dry; promote refuses on a dirty tree and carries v1's three nouls byte for 
 propose.sh --dry turns the fixture reply into a proposals json. Offline: loop.jev.ask
 is mocked wherever the table is run, subprocess.run is mocked for git, and every
 write lands in a temp dir. Nothing here opens a socket."""
-import datetime, importlib.util, io, json, os, shutil, subprocess, sys, tempfile, unittest
+import datetime, importlib.util, io, json, os, shutil, subprocess, sys, tempfile, time, unittest
 from contextlib import redirect_stdout
 from unittest import mock
 
@@ -576,6 +576,41 @@ class ProposeDryTest(unittest.TestCase):
         code = [l for l in src.splitlines() if not l.lstrip().startswith("#")]
         self.assertEqual([l for l in code if "prompts/" in l or "/prompts" in l], [])
 
+
+
+class Capped(unittest.TestCase):
+    """nightly/capped.py: the claude call's cap on awake seconds (propose.sh wires it in)."""
+    PY = "/opt/homebrew/bin/python3"
+
+    def _run(self, *args):
+        return subprocess.run([self.PY, "-m", "nightly.capped", *args], cwd=REPO, capture_output=True, text=True, timeout=30)
+
+    def test_exit_is_the_commands_own(self):
+        self.assertEqual(self._run("5", "--", "true").returncode, 0)
+        self.assertEqual(self._run("5", "--", "sh", "-c", "exit 7").returncode, 7)
+
+    def test_a_hang_exits_124_and_kills_the_child(self):
+        t = time.monotonic()
+        r = self._run("1", "--", "sleep", "20")
+        self.assertEqual(r.returncode, 124)
+        self.assertLess(time.monotonic() - t, 10)
+        self.assertIn("exceeded 1 s awake", r.stderr)
+
+    def test_usage_is_2_and_a_missing_command_is_127(self):
+        self.assertEqual(self._run("x", "--", "true").returncode, 2)
+        self.assertEqual(self._run("5", "true").returncode, 2)
+        self.assertEqual(self._run("0", "--", "true").returncode, 2)
+        self.assertEqual(self._run("5", "--", "/nonexistent-cmd").returncode, 127)
+
+    def test_propose_sh_wires_the_cap_around_claude_under_caffeinate(self):
+        with open(os.path.join(REPO, "nightly", "propose.sh")) as fh:
+            src = fh.read()
+        code = [l for l in src.splitlines() if not l.lstrip().startswith("#")]
+        call = [l for l in code if '"$CAFFEINATE" -i' in l]
+        self.assertEqual(len(call), 1)
+        self.assertIn('"$PY" -m nightly.capped "$CLAUDE_CAP_S" --', call[0])
+        self.assertIn('CLAUDE_CAP_S=2700', src)
+        self.assertIn('[ $rc -eq 124 ] && fail "claude capped', src)
 
 if __name__ == "__main__":
     unittest.main()

@@ -28,6 +28,7 @@ PY=/opt/homebrew/bin/python3
 CLAUDE=/opt/homebrew/bin/claude
 CAFFEINATE=/usr/bin/caffeinate
 TOKEN_FILE="$HOME/.secondbrain-secrets/oauth_token"
+CLAUDE_CAP_S=2700   # 45 min awake: the first two nights took 52 s and 51 s
 ROOT="$REPO"; DATE=""; DRY=0
 
 while [ $# -gt 0 ]; do
@@ -95,10 +96,17 @@ else
   PROMPT="$(cat "$REPO/nightly/PROMPT.md")
 
 $(cat "$DIGEST")"
-  "$CAFFEINATE" -i "$CLAUDE" -p "$PROMPT" --tools "" --restricted --strict-mcp-config \
+  # nightly/capped.py: CLAUDE_CAP_S of AWAKE time (monotonic pauses in sleep, so a night the Mac
+  # sleeps through still finishes); a hang while awake exits 124 instead of blocking every later
+  # night, since launchd never starts a second instance while one runs. caffeinate stays outermost.
+  T_START=$(date +%s)
+  "$CAFFEINATE" -i "$PY" -m nightly.capped "$CLAUDE_CAP_S" -- \
+    "$CLAUDE" -p "$PROMPT" --tools "" --restricted --strict-mcp-config \
     --settings "$REPO/nightly/settings.json" --output-format text >"$RAW" 2>"$LOGS/claude-$DATE.err"
   rc=$?
   unset CLAUDE_CODE_OAUTH_TOKEN
+  log "claude exit $rc after $(( $(date +%s) - T_START )) s wall clock (cap $CLAUDE_CAP_S s awake)"
+  [ $rc -eq 124 ] && fail "claude capped at $CLAUDE_CAP_S s awake (see $LOGS/claude-$DATE.err)"
   [ $rc -eq 0 ] || fail "claude exit $rc (see $LOGS/claude-$DATE.err)"
 fi
 
