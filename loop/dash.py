@@ -17,8 +17,7 @@ from . import config, outcomes, report, state
 
 T0_RE = re.compile(r"T0 \(first tick_id of day 1\): `(\d{8}T\d{6}Z)`")
 PROPOSAL_HEAD = re.compile(r"requests: (\d+), answered: (\d+), errors: (\d+)")
-PROPOSAL_CAND = re.compile(r"^## (cand_\d+)\n\nrationale: (.*?)\n\ndiffers from CURRENT on (\d+) of (\d+) answered states; from rule_c on (\d+) of \d+",
-                           re.M | re.S)
+PROPOSAL_CAND = re.compile(r"^(cand_\d+)\n\nrationale: ([^\n]*)\n\ndiffers from CURRENT on (\d+) of (\d+) answered states; from rule_c on (\d+) of \d+")
 CURRENT_CAND = re.compile(r"^## current \((v\d+)\)\n\ndiffers from rule_c on (\d+) of (\d+)", re.M)
 HOURS = 24
 DAY_TICKS = report.DAY_TICKS
@@ -101,8 +100,11 @@ def proposals(root=config.PROPOSALS):
             continue
         head = PROPOSAL_HEAD.search(txt)
         cur = CURRENT_CAND.search(txt)
-        cands = [{"name": m.group(1), "rationale": m.group(2).strip(), "vs_current": int(m.group(3)),
-                  "of": int(m.group(4)), "vs_rule": int(m.group(5))} for m in PROPOSAL_CAND.finditer(txt)]
+        cands = []
+        for sec in txt.split("\n## ")[1:]:                        # one section per candidate: a regex cannot span two
+            m = PROPOSAL_CAND.match(sec)
+            if m:
+                cands.append({"name": m.group(1), "vs_current": int(m.group(3)), "of": int(m.group(4)), "vs_rule": int(m.group(5))})
         out.append({"date": os.path.basename(path)[:-3],
                     "requests": int(head.group(1)) if head else None, "answered": int(head.group(2)) if head else None,
                     "errors": int(head.group(3)) if head else None,
@@ -146,7 +148,8 @@ th, td { padding: 6px 10px; text-align: right; border-bottom: 1px solid var(--gr
 th { color: var(--ink2); font-weight: 500; font-size: 12px; } td:first-child, th:first-child { text-align: left; }
 tr:last-child td { border-bottom: 0; } td.l, th.l { text-align: left; white-space: normal; }
 .wrap { overflow-x: auto; }
-.strip { display: grid; grid-template-columns: 90px repeat(24, 1fr); gap: 2px; align-items: center; }
+.strip { display: grid; grid-template-columns: 90px repeat(24, minmax(14px, 1fr)) 64px; gap: 2px; align-items: center; min-width: 560px; }
+.strip .tot { color: var(--ink2); font-size: 12px; text-align: right; padding-left: 6px; }
 .strip .lab { color: var(--ink2); font-size: 12px; text-align: right; padding-right: 8px; }
 .strip .hr { color: var(--muted); font-size: 10px; text-align: center; }
 .cell { height: 18px; border-radius: 3px; background: var(--surface); border: 1px solid var(--grid); }
@@ -159,7 +162,7 @@ tr:last-child td { border-bottom: 0; } td.l, th.l { text-align: left; white-spac
 .occ { display:grid; grid-template-columns: 60px 1fr; gap: 6px 12px; align-items: center; }
 .occ .lab { color: var(--ink2); font-size: 12px; text-align: right; }
 .occ .words { color: var(--ink2); font-size: 12px; grid-column: 2; margin-top: -2px; margin-bottom: 6px; }
-.map { display: grid; grid-template-columns: 120px repeat(9, 1fr); gap: 3px; }
+.map { display: grid; grid-template-columns: 120px repeat(9, minmax(44px, 1fr)); gap: 3px; min-width: 560px; }
 .map .rl { color: var(--ink2); font-size: 11px; text-align: right; padding-right: 6px; line-height: 1.1; }
 .map .cl { color: var(--muted); font-size: 10px; text-align: center; line-height: 1.1; }
 .map .c { height: 34px; border-radius: 4px; background: var(--surface); border: 1px solid var(--grid); position: relative; }
@@ -169,7 +172,7 @@ tr:last-child td { border-bottom: 0; } td.l, th.l { text-align: left; white-spac
 .map .c.b2 b, .map .c.b3 b, .map .c.b4 b { color: #fff; }
 .foot { color: var(--muted); font-size: 12px; margin-top: 32px; border-top: 1px solid var(--grid); padding-top: 10px; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
-@media (max-width: 700px) { .strip { grid-template-columns: 60px repeat(24, 1fr); } .map { grid-template-columns: 70px repeat(9, 1fr); } .map .c { height: 26px; } }
+@media (max-width: 700px) { .strip { grid-template-columns: 60px repeat(24, minmax(12px, 1fr)) 56px; } .map { grid-template-columns: 70px repeat(9, minmax(40px, 1fr)); } .map .c { height: 26px; } }
 """
 
 
@@ -198,6 +201,7 @@ def render(rows, outs, t0=None, now=None, hb=None, halt=False, props=(), current
     day_n = None
     if t0 is not None:
         day_n = int((now.timestamp() - t0) // 86400) + 1
+        day_n = "not started" if day_n < 1 else f"{report.SAMPLE_DAYS} of {report.SAMPLE_DAYS} (ended)" if day_n > report.SAMPLE_DAYS else f"{day_n} of {report.SAMPLE_DAYS}"
     cov_since = None
     if t0 is not None and now.timestamp() > t0:
         cov_since = h["ticks"] / max(1.0, (min(now.timestamp(), t0 + report.SAMPLE_DAYS * 86400) - t0) / config.CADENCE_S)
@@ -228,7 +232,7 @@ def render(rows, outs, t0=None, now=None, hb=None, halt=False, props=(), current
              + (f" &middot; prompt_b {_esc(current)}" if current else "") + "</p>"]
 
     # -- tiles (sample)
-    tiles = [_tile("sample day", f"{day_n} of {report.SAMPLE_DAYS}" if day_n else "-", "days from T0" if t0 is not None else "no T0"),
+    tiles = [_tile("sample day", day_n or "-", "days from T0" if t0 is not None else "no T0"),
              _tile("ticks in sample", f"{h['ticks']:,}", f"{h_all['ticks']:,} in the whole log"),
              _tile("coverage since T0", _pc(cov_since), "ticks per minute elapsed"),
              _tile("outcome fill", _pc(h["fill"]), f"{h['filled']}/{h['priced']} priced ticks"),
@@ -242,7 +246,7 @@ def render(rows, outs, t0=None, now=None, hb=None, halt=False, props=(), current
     # -- hourly strip: every gap is a light cell
     parts.append("<h2>ticks per hour (UTC)</h2><p class='sub'>a full hour is 60 ticks; a pale or empty cell is a gap "
                  "(the Mac asleep, logged out, or the feed down). Days before T0 are labelled.</p>")
-    strip = ["<div class='strip'><div></div>"] + [f"<div class='hr'>{hh:02d}</div>" for hh in range(HOURS)]
+    strip = ["<div class='wrap'><div class='strip'><div></div>"] + [f"<div class='hr'>{hh:02d}</div>" for hh in range(HOURS)] + ["<div class='hr'>ticks</div>"]
     for d in days_seen:
         pre = t0 is not None and report.tick_epoch(d + "T000000Z") + 86400 <= t0
         lab = f"{d[:4]}-{d[4:6]}-{d[6:]}" + (" (pre-T0)" if pre else "")
@@ -252,7 +256,8 @@ def render(rows, outs, t0=None, now=None, hb=None, halt=False, props=(), current
             b = _bin(n, 60)
             cls = "cell" + (f" b{b}" if b >= 0 else "")
             strip.append(f"<div class='{cls}' title='{_esc(lab)} {hh:02d}:00Z: {n}/60 ticks'></div>")
-    strip.append("</div>")
+        strip.append(f"<div class='tot'>{sum(hourly_c.get((d, hh), 0) for hh in range(HOURS))}/{DAY_TICKS}</div>")
+    strip.append("</div></div>")
     strip.append("<div class='legend'><span>ticks/hour</span>"
                  + "".join(f"<span><i class='sw b{i}'></i>{lo}-{hi}</span>" for i, (lo, hi) in enumerate(((1, 12), (13, 24), (25, 36), (37, 48), (49, 60))))
                  + "<span><i class='sw'></i>0</span></div>")
@@ -296,7 +301,7 @@ def render(rows, outs, t0=None, now=None, hb=None, halt=False, props=(), current
                  "<p class='sub'>rows: trend &times; vol; columns: liquidity &times; flow. The letter is arm C's rule for the state "
                  "(B buy, S sell, H hold; SPEC §6), fixed by the words, not an answer. The number is rows seen.</p>")
     cols = [(l, f) for l in state.LIQ for f in state.FLOW]
-    m = ["<div class='map'><div></div>"] + [f"<div class='cl'>{_esc(l)}<br>{_esc(f)}</div>" for l, f in cols]
+    m = ["<div class='wrap'><div class='map'><div></div>"] + [f"<div class='cl'>{_esc(l)}<br>{_esc(f)}</div>" for l, f in cols]
     for tr in state.TREND:
         for v in state.VOL:
             m.append(f"<div class='rl'>{_esc(tr)}<br>{_esc(v)}</div>")
@@ -308,7 +313,7 @@ def render(rows, outs, t0=None, now=None, hb=None, halt=False, props=(), current
                 cls = "c" + (f" b{b}" if b >= 0 else "")
                 m.append(f"<div class='{cls}' title='{_esc(state.state_string(adj))}: {n} rows ({_pc(n / occ['n'] if occ['n'] else None)}), rule_c {rc}'>"
                          f"<i>{RULE_MARK.get(rc, '?')}</i>{'<b>' + str(n) + '</b>' if n else ''}</div>")
-    m.append("</div>")
+    m.append("</div></div>")
     parts.extend(m)
 
     # -- test-retest
@@ -318,19 +323,18 @@ def render(rows, outs, t0=None, now=None, hb=None, halt=False, props=(), current
     # -- nightly
     parts.append("<h2>the nightly &middot; proposals on the 81 synthetic states</h2>"
                  "<p class='sub'>what the slow model proposed and how Jev answered each candidate across every state the alphabet can make. "
-                 "Nothing here touches a logged outcome. A person promotes with bin/promote; nothing else changes prompts/.</p>")
+                 "Nothing here touches a logged outcome, and the rationale (which quotes the digest) stays in proposals/. A person promotes with bin/promote; nothing else changes prompts/.</p>")
     if props:
-        t = ["<div class='wrap'><table><tr><th class='l'>night</th><th>sends</th><th class='l'>candidate</th><th>vs CURRENT</th><th>vs rule_c</th><th class='l'>rationale</th></tr>"]
+        t = ["<div class='wrap'><table><tr><th class='l'>night</th><th>sends</th><th class='l'>candidate</th><th>vs CURRENT</th><th>vs rule_c</th></tr>"]
         for p in props:
             sends = f"{p['answered']}/{p['requests']}" + (f", {p['errors']} err" if p["errors"] else "") if p["requests"] is not None else "-"
             cur = f"current {p['current']}: {p['current_vs_rule']}/81 vs rule_c" if p["current"] else ""
             if not p["candidates"]:
-                t.append(f"<tr><td class='l'>{_esc(p['date'])}</td><td>{_esc(sends)}</td><td class='l' colspan='4'>{_esc(cur) or 'no candidates parsed'}</td></tr>")
+                t.append(f"<tr><td class='l'>{_esc(p['date'])}</td><td>{_esc(sends)}</td><td class='l' colspan='3'>{_esc(cur) or 'no candidates parsed'}</td></tr>")
             for i, c in enumerate(p["candidates"]):
                 first = f"<td class='l'>{_esc(p['date'])}<br><span class='mono'>{_esc(cur)}</span></td><td>{_esc(sends)}</td>" if i == 0 else "<td></td><td></td>"
                 noop = " <span class='badge warn'>no-op</span>" if c["vs_current"] == 0 else ""
-                t.append(f"<tr>{first}<td class='l'>{_esc(c['name'])}{noop}</td><td>{c['vs_current']}/{c['of']}</td><td>{c['vs_rule']}/{c['of']}</td>"
-                         f"<td class='l'>{_esc(c['rationale'][:220])}{'…' if len(c['rationale']) > 220 else ''}</td></tr>")
+                t.append(f"<tr>{first}<td class='l'>{_esc(c['name'])}{noop}</td><td>{c['vs_current']}/{c['of']}</td><td>{c['vs_rule']}/{c['of']}</td></tr>")
         t.append("</table></div>")
         parts.extend(t)
     else:

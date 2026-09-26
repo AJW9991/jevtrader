@@ -20,8 +20,10 @@ class Dash(unittest.TestCase):
     def test_renders_sections_1_to_3_and_the_strip(self):
         page = dash.render(self.rows, self.outs, t0=None, hb="2026-09-23T10:41:00.000Z", log=self.log)
         for needle in ("ticks per hour (UTC)", "PREREG §8 stop rule 3", "adjective occupancy", "the 81 states",
-                       "test-retest", "the nightly", "Health only (PREREG §8.4)", "2026-09-23", "class='cell b"):
+                       "test-retest", "the nightly", "Health only (PREREG §8.4)", "2026-09-23", "class='cell b",
+                       "<div class='tot'>42/1440</div>"):                 # the strip's text total: never colour alone
             self.assertIn(needle, page)
+        self.assertNotIn("rationale</th>", page)
         self.assertNotIn("<script", page)
         self.assertNotIn("http://", page.split("</style>", 1)[1])
         self.assertNotIn("https://", page.split("</style>", 1)[1])
@@ -36,7 +38,7 @@ class Dash(unittest.TestCase):
         code = "\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
         for banned in ("report.table", "report.h2", "report.calibration", "report.agreement", "book.", "paired(", "replay("):
             self.assertNotIn(banned, code)
-        self.assertNotIn("from . import", [l for l in code.splitlines() if "book" in l and "import" in l])
+        self.assertEqual([l for l in code.splitlines() if "import" in l and "book" in l], [])   # never imports the book
 
     def test_t0_from_prereg_and_the_sample_cut(self):
         with open(os.path.join(REPO, "PREREG.md")) as fh:
@@ -46,8 +48,12 @@ class Dash(unittest.TestCase):
         self.assertIsNone(dash.read_t0(os.path.join(self.tmp, "nope.md")))
         page = dash.render(self.rows, self.outs, t0=report.tick_epoch("20260923T102000Z"))
         self.assertIn("T0 2026-09-23T10:20Z", page)
-        self.assertIn("(pre-T0)", page) if False else None       # the same UTC day holds T0: not pre-T0
-        self.assertIn("ticks in sample", page)
+        self.assertIn('<div class="v">22</div><div class="n">42 in the whole log</div>', page)   # the cut: 10:20 .. 10:41
+        self.assertNotIn("(pre-T0)", page)                        # the one UTC day holds T0 itself: not before it
+        page = dash.render(self.rows, self.outs, t0=report.tick_epoch("20260924T000000Z"))
+        self.assertIn("(pre-T0)", page)
+        self.assertIn("not started", dash.render(self.rows, self.outs, t0=report.tick_epoch("20991231T000000Z")))
+        self.assertIn("28 of 28 (ended)", dash.render(self.rows, self.outs, t0=report.tick_epoch("20200101T000000Z")))
 
     def test_main_writes_the_file_and_reports_rows(self):
         import contextlib, io
@@ -74,6 +80,9 @@ class Dash(unittest.TestCase):
 
     def test_proposals_parse_the_committed_tables(self):
         props = dash.proposals(os.path.join(REPO, "proposals"))
+        for p in props:
+            for c in p["candidates"]:
+                self.assertNotIn("rationale", c)                  # never on the health page: it quotes the digest's outcomes
         dates = [p["date"] for p in props]
         self.assertTrue(all(re.match(r"^\d{4}-\d{2}-\d{2}$", d) for d in dates))
         if "2026-09-25" in dates:
