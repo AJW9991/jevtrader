@@ -144,6 +144,7 @@ def health(rows, outs, bad=()):
     drift = sum(1 for r in rows if r.get("drift") is True)
     versions = collections.Counter(str(r.get("prompt_b")) for r in rows)
     span = f"{ticks[0]}..{ticks[-1]}" if ticks else "-"
+    per_day = days_table(rows, outs)
     lines = [
         f"  rows {len(rows)} ({len(ticks)} ticks, {len(days)} day{'s' if len(days) != 1 else ''}, {span}); skipped lines {len(bad)}",
         f"  live answered {len(live)}; dry {len(dry)}; absence: "
@@ -156,13 +157,74 @@ def health(rows, outs, bad=()):
         f"  model_answered: " + (", ".join(f"{k} {v}" for k, v in sorted(models.items())) or "none")
         + f" ({len(models)} distinct); drift {drift}",
         f"  prompt_b versions: " + ", ".join(f"{k} {v}" for k, v in sorted(versions.items())),
-    ]
+    ] + per_day["lines"]
     return {"lines": lines, "rows": len(rows), "ticks": len(ticks), "live": len(live), "dry": len(dry),
+            "days": per_day["days"], "bad_days": per_day["bad"],
             "absence": dict(absence), "priced": len(priced), "filled": len(priced) and filled,
             "fill": _rate(filled, len(priced)), "attempted": len(attempted), "errors": dict(errors),
             "error_rate": _rate(sum(errors.values()), len(attempted)), "latency_mean": _mean(lat),
             "latency_p95": _p95(lat), "tokens": tokens, "usd": usd, "models": dict(models), "drift": drift,
             "versions": dict(versions), "skipped": len(bad)}
+
+
+# ---- §4.1 per day: PREREG §8 stop rule 3 ----------------------------------------------------
+BAD_FILL = 0.95             # a UTC day is BAD when live rows with a non-gap outcome are under this share ...
+BAD_JEV_ERR = 0.05          # ... or rows with absence "jev" over rows that reached the ask are over this
+BAD_DAYS_PAUSE = 3          # the third BAD day writes data/HALT by hand (PREREG §8.3); the calendar goes on
+DAY_TICKS = 86400 // config.CADENCE_S   # 1440: cov is ticks over a full day, so a partial day reads low on purpose
+
+
+def days_table(rows, outs):
+    """Per UTC day (the first 8 chars of tick_id): distinct ticks, coverage of a full day, live rows,
+    the share of them with a non-gap outcome, the Jev error share over rows that reached the ask,
+    and the BAD flag of PREREG §8 stop rule 3. `outs` is the join over the WHOLE log, so a day's
+    last 15 minutes are filled by the next day's rows. Descriptive: the exclusion itself is a line a
+    person appends to data/exclusions.tsv; nothing here removes a day from any section."""
+    per = {}
+    for r in rows:
+        d = str(r.get("tick_id"))[:8]
+        x = per.setdefault(d, {"ticks": set(), "live": 0, "filled": 0, "attempted": 0, "errors": 0})
+        x["ticks"].add(r["tick_id"])
+        if r.get("mode") != "live":
+            continue
+        if r.get("absence") in (None, "jev"):
+            x["attempted"] += 1
+        if r.get("absence") == "jev":
+            x["errors"] += 1
+        elif r.get("absence") is None:
+            x["live"] += 1
+            if (outs.get(r["tick_id"]) or {}).get("absence") is None:
+                x["filled"] += 1
+    days, bad = [], []
+    for d in sorted(per):
+        x = per[d]
+        fill, err = _rate(x["filled"], x["live"]), _rate(x["errors"], x["attempted"])
+        is_bad = (fill is not None and fill < BAD_FILL) or (err is not None and err > BAD_JEV_ERR)
+        why = []
+        if fill is not None and fill < BAD_FILL:
+            why.append("fill")
+        if err is not None and err > BAD_JEV_ERR:
+            why.append("jev-err")
+        days.append({"day": d, "ticks": len(x["ticks"]), "cov": _rate(len(x["ticks"]), DAY_TICKS), "live": x["live"],
+                     "filled": x["filled"], "fill": fill, "attempted": x["attempted"], "errors": x["errors"],
+                     "jev_err": err, "bad": is_bad, "why": why})
+        if is_bad:
+            bad.append(d)
+    lines = [f"  per UTC day (stop rule 3: BAD when fill < {100 * BAD_FILL:.0f}% of live rows or jev errors"
+             f" > {100 * BAD_JEV_ERR:.0f}% of attempted; {BAD_DAYS_PAUSE} BAD days pause the run, PREREG §8.3):",
+             f"    {'day':<9}{'ticks':>6}{'cov':>7}{'live':>6}{'fill':>7}{'jev-err':>9}"]
+    for x in days:
+        lines.append(f"    {x['day']:<9}{x['ticks']:>6}{_pc(x['cov']):>7}{x['live']:>6}{_pc(x['fill']):>7}{_pc(x['jev_err']):>9}"
+                     + (f"  BAD ({', '.join(x['why'])})" if x["bad"] else ""))
+    if not days:
+        lines.append("    no rows")
+    lines.append(f"  BAD days {len(bad)}" + (": " + ", ".join(bad) if bad else "")
+                 + "; the exclusion is a line in data/exclusions.tsv, written by hand, never here")
+    return {"lines": lines, "days": days, "bad": bad}
+
+
+def _pc(x):
+    return "n/a" if x is None else f"{100.0 * x:.1f}%"
 
 
 # ---- §4.2 occupancy ------------------------------------------------------------------------

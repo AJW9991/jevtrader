@@ -722,5 +722,71 @@ class Degenerate(unittest.TestCase):
             self.assertNotIn(word, src)
 
 
+
+class PerDay(unittest.TestCase):
+    """§1's per-day table: PREREG §8 stop rule 3, per UTC day, on the join over the whole log."""
+
+    @staticmethod
+    def _day(rows_m, day, hour, minute0):
+        out = []
+        for i, m in enumerate(rows_m):
+            r = dict(_row(m))
+            mm = minute0 + i
+            r["tick_id"] = f"{day}T{hour:02d}{mm:02d}00Z"
+            r["ts_rx"] = f"{day[:4]}-{day[4:6]}-{day[6:]}T{hour:02d}:{mm:02d}:00.100Z"
+            r["mode"], r["absence"] = "live", r["absence"]
+            out.append(r)
+        return out
+
+    def test_fill_is_per_live_row_and_a_day_ends_into_the_next(self):
+        from loop import outcomes
+        # day B: 23:30..23:59, every row's t+15 exists (in B or in C) -> fill 100%, ok
+        # day C: 00:00..00:29, rows from 00:15 on have no t+15 -> fill under 95%, BAD (fill)
+        ms = list(range(5, 35))                                  # 30 live rows; m == 15 is absence "jev"
+        b = self._day(ms, "20260923", 23, 30)
+        c = self._day(ms, "20260924", 0, 0)
+        rows = b + c
+        outs = outcomes.join(rows)
+        h = report.health(rows, outs)
+        self.assertEqual([d["day"] for d in h["days"]], ["20260923", "20260924"])
+        db, dc = h["days"]
+        self.assertEqual((db["ticks"], db["live"], db["filled"], db["attempted"], db["errors"]), (30, 29, 29, 30, 1))
+        self.assertEqual(db["fill"], 1.0)
+        self.assertAlmostEqual(db["jev_err"], 1 / 30)
+        self.assertFalse(db["bad"])
+        # C: minutes 0..14 have an outcome; minute 10 (m == 15) is the jev absence, so 14 filled of 29 live
+        self.assertEqual((dc["ticks"], dc["live"], dc["filled"]), (30, 29, 14))
+        self.assertAlmostEqual(dc["fill"], 14 / 29)
+        self.assertTrue(dc["bad"])
+        self.assertEqual(dc["why"], ["fill"])
+        self.assertEqual(h["bad_days"], ["20260924"])
+        self.assertAlmostEqual(dc["cov"], 30 / 1440)
+        text = "\n".join(h["lines"])
+        self.assertIn("per UTC day (stop rule 3: BAD when fill < 95% of live rows or jev errors > 5% of attempted; 3 BAD days pause the run", text)
+        self.assertIn("20260923     30   2.1%    29 100.0%     3.3%", text)
+        self.assertIn("20260924     30   2.1%    29  48.3%     3.3%  BAD (fill)", text)
+        self.assertIn("BAD days 1: 20260924; the exclusion is a line in data/exclusions.tsv, written by hand, never here", text)
+
+    def test_jev_errors_flag_a_day_too(self):
+        from loop import outcomes
+        rows = self._day([10, 15, 20], "20260923", 12, 0)         # one of three reached-the-ask rows is a jev error
+        h = report.health(rows, outcomes.join(rows))
+        d = h["days"][0]
+        self.assertEqual((d["attempted"], d["errors"], d["live"], d["filled"]), (3, 1, 2, 0))
+        self.assertEqual(d["why"], ["fill", "jev-err"])
+        self.assertIn("BAD (fill, jev-err)", "\n".join(h["lines"]))
+
+    def test_dry_rows_and_absences_are_not_live(self):
+        from loop import outcomes
+        rows = [dict(_row(m)) for m in range(0, 5)]                # all dry
+        h = report.health(rows, outcomes.join(rows))
+        d = h["days"][0]
+        self.assertEqual((d["ticks"], d["live"], d["attempted"]), (5, 0, 0))
+        self.assertIsNone(d["fill"])
+        self.assertFalse(d["bad"])
+        self.assertIn("20260923      5   0.3%     0    n/a      n/a", "\n".join(h["lines"]))
+        self.assertEqual(report.health([], {})["days"], [])
+        self.assertIn("    no rows", report.health([], {})["lines"])
+
 if __name__ == "__main__":
     unittest.main()
