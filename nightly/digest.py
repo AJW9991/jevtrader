@@ -75,12 +75,25 @@ def _num(x):
     return isinstance(x, (int, float)) and not isinstance(x, bool)
 
 
-def disagreements(day, joined):
+def on_current(day, cur_name):
+    """The day's rows whose arm B answered the CURRENT wording. A promotion mid-day (v2 on
+    2026-09-26 at 22:21Z) leaves rows of the superseded wording before it; those are not arm B
+    on CURRENT and are never shown to the slow model as if they were. A row without a prompt_b
+    name (a fixture) is kept."""
+    return [r for r in day if not isinstance(r.get("prompt_b"), str) or r["prompt_b"] == cur_name]
+
+
+def versions(day):
+    return collections.Counter(str(r.get("prompt_b")) for r in day if isinstance(r.get("prompt_b"), str))
+
+
+def disagreements(day, joined, cur_name=None):
     """Every arm-B disagreement of the day, most confident first (tick_id breaks ties so
-    two runs over one log list the same rows in the same order). The caller cuts to
-    DISAGREE_MAX; the full count goes on the summary line."""
+    two runs over one log list the same rows in the same order), over the CURRENT wording's
+    rows only when cur_name is given. The caller cuts to DISAGREE_MAX; the full count goes on
+    the summary line."""
     out = []
-    for r in day:
+    for r in (on_current(day, cur_name) if cur_name else day):
         a = (r.get("answers") or {}).get("b_action")
         if not isinstance(a, dict) or not _num(a.get("confidence")) or a["confidence"] < DISAGREE_CONF:
             continue
@@ -113,8 +126,13 @@ def arms(day, fee):
     return out
 
 
-def summary(d, day, joined, dis):
+def summary(d, day, joined, dis, cur_name=None):
     answered = sum(1 for r in day if isinstance(r.get("answers"), dict))
+    vers = versions(day)
+    ver_s = ""
+    if cur_name and any(k != cur_name for k in vers):
+        ver_s = (" | prompt_b " + ", ".join(f"{k} {v}" for k, v in sorted(vers.items()))
+                 + f" (arm B is read from the {cur_name} rows only; the other rows answered a superseded wording)")
     absent = collections.Counter(r["absence"] for r in day if r.get("absence"))
     priced = [r for r in day if _num(r.get("mid"))]
     filled = sum(1 for r in priced if (joined.get(r["tick_id"]) or outcomes.GAP)["absence"] is None)
@@ -126,13 +144,13 @@ def summary(d, day, joined, dis):
             f"{' '.join(f'{k}:{v}' for k, v in sorted(absent.items())) or 'none'}, "
             f"outcomes joined {filled}/{len(priced)} | occupancy {occupancy(day)} | "
             f"column {COLUMN}, paper PnL at {f0:g} bps ({w0}) / at {fv:g} bps ({wv}): {arm_s}"
-            f" | B disagreements {len(dis)}")
+            f" | B disagreements {len(dis)}{ver_s}")
 
 
 def render(d, day, joined, cur_name, cur_doc, sha_a, sha_b):
-    dis = disagreements(day, joined)
+    dis = disagreements(day, joined, cur_name)
     shown = dis[:DISAGREE_MAX]
-    out = [f"# digest {d.isoformat()}", "", summary(d, day, joined, dis), "",
+    out = [f"# digest {d.isoformat()}", "", summary(d, day, joined, dis, cur_name), "",
            f"## arm B disagreements (confidence >= {DISAGREE_CONF:g}, label at t+h contradicts the "
            f"choice; {len(shown)} of {len(dis)} shown, highest confidence first)", "",
            "| state | choice | confidence | ret_h_bps | label |", "|---|---|---|---|---|"]

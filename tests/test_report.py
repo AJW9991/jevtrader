@@ -454,6 +454,14 @@ class SampleAndSides(unittest.TestCase):
         cut = report.in_sample(self.rows, t0)
         self.assertEqual((len(cut), cut[-1]["tick_id"]), (20, "20260923T101900Z"))
 
+    def test_a_row_exactly_at_t0_plus_28_days_is_out(self):
+        # the fixture has no rows at 10:20 and 10:21, so end = 10:22 lands on a real row: it is excluded (<)
+        cut = report.in_sample(self.rows, report._t0("2026-08-26T10:22"))
+        self.assertEqual(cut[-1]["tick_id"], "20260923T101900Z")
+        self.assertNotIn("20260923T102200Z", [r["tick_id"] for r in cut])
+        cut = report.in_sample(self.rows, report._t0("2026-08-26T10:23"))
+        self.assertEqual(cut[-1]["tick_id"], "20260923T102200Z")
+
     def test_bad_t0_is_a_usage_error(self):
         with contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit) as cm:

@@ -41,11 +41,17 @@ while [ $# -gt 0 ]; do
 done
 
 # The same two prefixes as config.FORBIDDEN_PREFIXES: the nightly imports loop/ and
-# must never run under the crypto repo or its mirror either (CONTRACT §0, exit 3).
-case "$REPO" in
-  "$HOME/Projects/crypto-trading-system"*|"$HOME/Library/Mobile Documents/com~apple~CloudDocs/crypto-trading-system-backup"*)
-    echo "propose: refusing to run under a forbidden prefix" >&2; exit 3 ;;
-esac
+# must never run under the crypto repo or its mirror either (CONTRACT §0, exit 3). Checked on
+# the repo, the --root and the working directory alike: every path this script writes under.
+guard_path() {
+  case "$1" in
+    "$HOME/Projects/crypto-trading-system"*|"$HOME/Library/Mobile Documents/com~apple~CloudDocs/crypto-trading-system-backup"*)
+      echo "propose: refusing to run under a forbidden prefix ($2)" >&2; exit 3 ;;
+  esac
+}
+guard_path "$REPO" repo
+guard_path "$(cd "$ROOT" 2>/dev/null && pwd -P || echo "$ROOT")" root
+guard_path "$(pwd -P)" cwd
 
 LOGS="$ROOT/logs"
 mkdir -p "$LOGS" "$ROOT/data" "$ROOT/proposals" 2>/dev/null || { echo "propose: cannot create $ROOT dirs" >&2; exit 0; }
@@ -61,6 +67,11 @@ case "$DATE" in
 esac
 cd "$REPO" || fail "cd $REPO"
 log "start date=$DATE dry=$DRY root=$ROOT"
+# A slot the Mac slept through and launchd fired after 00:00Z digests a later "yesterday" and the
+# intended day gets no proposal; nothing is processed twice here (one claude call a night), but the
+# hole is named so a person sees it in the log.
+PREV="$("$PY" -c 'import datetime as d, sys; print((d.date.fromisoformat(sys.argv[1]) - d.timedelta(days=1)).isoformat())' "$DATE")"
+[ -e "$ROOT/proposals/$PREV.json" ] || [ -e "$REPO/proposals/$PREV.md" ] || log "note: no proposal exists for $PREV (a missed slot?); this run is for $DATE only"
 
 # 1. digest: exit 4 = the day has no rows, so there is nothing for the model to read.
 DIGEST="$ROOT/data/digest-$DATE.md"

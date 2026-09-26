@@ -4,7 +4,7 @@ in --dry; promote refuses on a dirty tree and carries v1's three nouls byte for 
 propose.sh --dry turns the fixture reply into a proposals json. Offline: loop.jev.ask
 is mocked wherever the table is run, subprocess.run is mocked for git, and every
 write lands in a temp dir. Nothing here opens a socket."""
-import datetime, importlib.util, io, json, os, shutil, subprocess, sys, tempfile, time, unittest
+import datetime, hashlib, importlib.util, io, json, os, shutil, subprocess, sys, tempfile, time, unittest
 from contextlib import redirect_stdout
 from unittest import mock
 
@@ -94,6 +94,18 @@ class DigestTest(unittest.TestCase):
         self.assertEqual(_table_rows(text), [("buy", 0.95, "down"), ("sell", 0.90, "up"), ("sell", 0.86, "up")])
         self.assertIn("B disagreements 3", text)
         self.assertIn("3 of 3 shown", text)
+
+    def test_rows_of_a_superseded_wording_are_not_arm_b_on_current(self):
+        rows = synthetic_log()
+        rows[0]["prompt_b"], rows[1]["prompt_b"] = "v2", "v2"            # the two most confident listed rows answered v2
+        rows[5]["prompt_b"] = "v1"                                       # CURRENT is pinned to v1: this one stays
+        _write_log(self.log, rows)
+        text, n = digest.build(DAY, self.log)
+        self.assertEqual(n, 41)
+        self.assertEqual(_table_rows(text), [("sell", 0.86, "up")])
+        self.assertIn("B disagreements 1 | prompt_b v1 1, v2 2 (arm B is read from the v1 rows only; the other rows answered a superseded wording)", text)
+        self.assertEqual(digest.versions(rows), {"v1": 1, "v2": 2})
+        self.assertEqual(len(digest.on_current(rows, "v1")), 39)
 
     def test_never_features_never_the_log(self):
         text, _ = digest.build(DAY, self.log)
@@ -340,6 +352,35 @@ class PolicyTableTest(unittest.TestCase):
         self.assertEqual(self.ask.call_count, policy_table.MAX_TRANSIENT_RUN)
         self.assertEqual(sum(1 for r in results if r["error"]), 81)
 
+    def test_three_other_errors_in_a_row_end_the_night(self):
+        by = _by_state()
+        calls = []
+
+        def fake(s, qs, **kw):
+            calls.append(s)
+            if len(calls) >= 3:
+                raise jev.JevError("http-4xx", "x", 404, "env:X")        # not 401/403: not a HALT, not fatal alone
+            return {"answers": {"cand_0": _answer("hold", 0.5), "current": _answer(state.rule_c(by[s]), 0.9)},
+                    "model": config.MODEL}
+        self.ask.side_effect = fake
+        results = policy_table.run(policy_table.questions(policy_table.load_candidates(self.prop),
+                                                          policy_table.current_action()[1]))
+        self.assertEqual(len(calls), 5)                                  # 2 answers, then 3 in a row end it
+        self.assertEqual(sum(1 for r in results if r["error"] == "http-4xx"), 79)
+        self.assertEqual(policy_table.counts(results, "cand_0")[2], 2)
+
+    def test_table_names_the_proposal_sha(self):
+        by = _by_state()
+        self.ask.side_effect = lambda s, qs, **kw: {"answers": {"cand_0": _answer("hold", 0.5), "current": _answer(state.rule_c(by[s]), 0.9)},
+                                                    "model": config.MODEL}
+        out = os.path.join(self.tmp, "t.md")
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(policy_table.main([self.prop, "--out", out]), 0)
+        with open(self.prop, "rb") as fh:
+            sha = hashlib.sha256(fh.read()).hexdigest()
+        with open(out) as fh:
+            self.assertIn(f"proposal sha256: {sha}", fh.read())
+
     def test_transient_error_continues(self):
         by = _by_state()
         calls = []
@@ -424,6 +465,27 @@ class PromoteTest(unittest.TestCase):
         with redirect_stdout(buf), mock.patch("sys.stderr", err):
             rc = self.promote.main(list(argv))
         return rc, buf.getvalue(), err.getvalue()
+
+    def test_the_committed_table_vouches_for_the_json(self):
+        md = self.prop[:-5] + ".md"
+        with open(md, "w") as fh:
+            fh.write("# policy table\n\nproposal sha256: " + "0" * 64 + "  \n")
+        rc, _, err = self._run(self.prop, "0", "--prompts", self.root)
+        self.assertEqual(rc, 1)
+        self.assertIn("changed after its table was made", err)
+        self.assertFalse(os.path.exists(os.path.join(self.root, "v2.json")))
+        with open(self.prop, "rb") as fh:
+            sha = hashlib.sha256(fh.read()).hexdigest()
+        with open(md, "w") as fh:
+            fh.write("# policy table\n\nproposal sha256: " + sha + "  \n")
+        rc, _, err = self._run(self.prop, "0", "--prompts", self.root)
+        self.assertEqual(rc, 0)
+        self.assertNotIn("WARNING", err)
+
+    def test_no_table_warns_and_proceeds(self):
+        rc, _, err = self._run(self.prop, "0", "--prompts", self.root)
+        self.assertEqual(rc, 0)
+        self.assertIn("WARNING no policy table", err)
 
     def test_dirty_tree_refuses_and_writes_nothing(self):
         self.status = " M loop/x.py\n"
@@ -624,6 +686,19 @@ class Capped(unittest.TestCase):
                            capture_output=True, text=True, timeout=120)
         self.assertEqual(r.returncode, 0)
         self.assertTrue(os.path.exists(os.path.join(tmp, "data", "dash.html")))
+        with open(os.path.join(tmp, "logs", "propose.log")) as fh:
+            self.assertIn("note: no proposal exists for 2026-09-21 (a missed slot?); this run is for 2026-09-22 only", fh.read())
+
+    def test_propose_sh_guards_repo_root_and_cwd(self):
+        with open(os.path.join(REPO, "nightly", "propose.sh")) as fh:
+            code = [l for l in fh.read().splitlines() if not l.lstrip().startswith("#")]
+        self.assertEqual([l for l in code if l.startswith("guard_path ")],
+                         ['guard_path "$REPO" repo', 'guard_path "$(cd "$ROOT" 2>/dev/null && pwd -P || echo "$ROOT")" root', 'guard_path "$(pwd -P)" cwd'])
+        forbidden = os.path.expanduser("~/Projects/crypto-trading-system")
+        r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry", "--root", os.path.join(forbidden, "x")],
+                           capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 3)
+        self.assertIn("forbidden prefix (root)", r.stderr)
 
     def test_propose_sh_wires_the_cap_around_claude_under_caffeinate(self):
         with open(os.path.join(REPO, "nightly", "propose.sh")) as fh:

@@ -166,7 +166,8 @@ def health(rows, outs, bad=(), t0=None):
         f"  realised horizon, ts_rx to ts_rx of the row the join picked: mean {_f(hz['mean'], 1)} s, |offset from {config.HORIZON_S}| p95 {_f(hz['p95'], 0)} s,"
         f" max {_f(hz['max'], 0)} s (n {hz['n']}); isolated skipped minutes {hz['skips']}"
         + (" (a launchd StartInterval of 60 s runs a ~61 s grid: each skip costs the row 15 min earlier its outcome)" if hz["skips"] else ""),
-        "  HALT: PRESENT at " + config.HALT + " (nothing is sent; the feed, arm C, the join and this report go on)" if halt else "  HALT: absent",
+        ("  HALT: PRESENT since " + _halt_when() + " (the reason is the file's text; nothing is sent; the feed, arm C, the join and this"
+         " report go on; clearing it is a person's act, STEPS §7)") if halt else "  HALT: absent",
     ] + per_day["lines"]
     return {"lines": lines, "rows": len(rows), "ticks": len(ticks), "live": len(live), "dry": len(dry),
             "days": per_day["days"], "bad_days": per_day["bad"], "keys": dict(keys), "shared_key_rows": shared,
@@ -176,6 +177,13 @@ def health(rows, outs, bad=(), t0=None):
             "error_rate": _rate(sum(errors.values()), len(attempted)), "latency_mean": _mean(lat),
             "latency_p95": _p95(lat), "tokens": tokens, "usd": usd, "models": dict(models), "drift": drift,
             "versions": dict(versions), "skipped": len(bad)}
+
+
+def _halt_when():
+    try:
+        return datetime.datetime.fromtimestamp(os.path.getmtime(config.HALT), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+    except OSError:
+        return "?"
 
 
 def realised_horizon(rows):

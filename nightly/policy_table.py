@@ -34,7 +34,7 @@ when the API is slow -- nothing new is sent after it and the table says INCOMPLE
 Exit 0 complete or HALT present (nothing sent, no table), 4 INCOMPLETE (written, some
 states unanswered), 1 bad input, 2 usage.
 """
-import argparse, difflib, json, os, re, sys, time
+import hashlib, argparse, difflib, json, os, re, sys, time
 
 if __package__ in (None, ""):      # run as a script (CONTRACT §5 names `nightly/<file>.py`), not -m: sys.path[0]
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # is nightly/, so add the repo
@@ -45,10 +45,11 @@ DEADLINE_S = 900.0         # 81 x jev.py's worst case (45 s) is an hour; 15 min 
                            # a working API and short enough that a dead one costs one launchd slot
 MAX_CANDIDATES = 3         # CONTRACT §5: 1-3 entries
 CURRENT = "current"
-SOURCE = jev.SOURCE + "/nightly"   # the ledger names the nightly's 81 sends apart from the loop's (PROTOCOL §3.5)
 FATAL_KINDS = ("unsigned", "no-key", "ledger", "http-429")   # 80 more sends would repeat the refusal; a 429 is the
                                                  # limiter saying stop, and jev.py already retried it once
 TRANSIENT_KINDS = ("timeout", "http-5xx")
+MAX_OTHER_RUN = 3                         # ... and this many non-transient, non-fatal errors in a row (a 4xx other than
+                                          # 401/403/429, a parse): 78 more sends would repeat them
 MAX_TRANSIENT_RUN = 3                     # this many transient failures in a row end the night: one is
                                           # noise and the table goes on; three is an outage, not a blip
 HALT_STATUS = (401, 403)                  # the key is rejected: same rule as cycle.py's HALT
@@ -117,7 +118,7 @@ def run(qs, ask=None, deadline_s=DEADLINE_S, clock=time.monotonic):
     row stop the sending; the remaining rows carry that kind as their error. The deadline
     is checked before each send, never mid-send: jev.py's own timeout bounds a send."""
     ask = ask or jev.ask                 # resolved at call time so tests can patch loop.jev.ask
-    t0, stop, out, streak = clock(), None, [], 0
+    t0, stop, out, streak, other = clock(), None, [], 0, 0
     for s, rc in states():
         row = {"state": s, "rule_c": rc, "answers": None, "error": None, "model": None}
         if stop:
@@ -126,17 +127,18 @@ def run(qs, ask=None, deadline_s=DEADLINE_S, clock=time.monotonic):
             stop = row["error"] = "deadline"
         else:
             try:
-                r = ask(s, qs, source=SOURCE)
+                r = ask(s, qs)
                 row["answers"] = {qid: (r["answers"][qid].get("choice"), r["answers"][qid].get("confidence"))
                                   for qid in qs}
                 row["model"] = r.get("model")
-                streak = 0
+                streak = other = 0
             except jev.JevError as e:
                 row["error"] = e.kind
                 streak = streak + 1 if e.kind in TRANSIENT_KINDS else 0
+                other = other + 1 if e.kind not in TRANSIENT_KINDS else 0     # a 4xx or parse that repeats is not going to clear
                 if e.status in HALT_STATUS:
                     _halt(f"key rejected: {e.kind} {e.status} via {e.key_path} (nightly policy table)")
-                if e.kind in FATAL_KINDS or e.status in HALT_STATUS or streak >= MAX_TRANSIENT_RUN:
+                if e.kind in FATAL_KINDS or e.status in HALT_STATUS or streak >= MAX_TRANSIENT_RUN or other >= MAX_OTHER_RUN:
                     stop = e.kind
         out.append(row)
     return out
@@ -173,7 +175,14 @@ def _cell(a):
     return str(choice), f"{conf:.2f}" if isinstance(conf, (int, float)) and not isinstance(conf, bool) else "-"
 
 
-def render(date, cur_name, cur_sha, cands, cur_q, results):
+def sha256_of(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        h.update(fh.read())
+    return h.hexdigest()
+
+
+def render(date, cur_name, cur_sha, cands, cur_q, results, proposal_sha=None):
     n_err = sum(1 for r in results if r["error"])
     models = sorted({r["model"] for r in results if r["answers"] and r["model"]})
     drift = " -- DRIFT, requested " + config.MODEL if models and models != [config.MODEL] else ""
@@ -181,6 +190,7 @@ def render(date, cur_name, cur_sha, cands, cur_q, results):
            f"Eighty-one synthetic states, one request each, carrying {len(cands) + 1} questions. "
            "Nothing here is scored against a logged outcome: the table describes a wording, it does not backtest it.",
            "", f"CURRENT: {cur_name} sha {cur_sha}  ",
+           f"proposal sha256: {proposal_sha or '-'}  ",      # the json is not committed; this line, in the committed table, vouches for it
            f"requests: {len(results)}, answered: {len(results) - n_err}, errors: {n_err}"
            + (" -- INCOMPLETE" if n_err else "") + "  ",
            f"model answered: {', '.join(models) or 'none'}{drift}", ""]
@@ -240,7 +250,7 @@ def main(argv=None):
     out = a.out or os.path.join(config.PROPOSALS, f"{date}.md")
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     with open(out, "w", encoding="utf-8") as fh:
-        fh.write(render(date, cur_name, cur_sha, cands, cur_q, results))
+        fh.write(render(date, cur_name, cur_sha, cands, cur_q, results, sha256_of(a.proposal)))
     n_err = sum(1 for r in results if r["error"])
     print(f"{out}\t{len(results) - n_err}/{len(results)} answered" + (" INCOMPLETE" if n_err else ""))
     return EXIT_INCOMPLETE if n_err else 0

@@ -22,7 +22,7 @@ May not: touch data/, send anything, read the key, edit any existing prompt file
 pick k itself. N is the highest vN.json present, not CURRENT+1: after a rollback
 (CURRENT set back to v1 by hand) the next promote must still get a fresh number.
 """
-import argparse, datetime, difflib, json, os, re, subprocess, sys
+import hashlib, argparse, datetime, difflib, json, os, re, subprocess, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -69,6 +69,30 @@ def diff(cur_name, cur_action, new_name, new_action):
                                           tofile=f"{new_name}.action", lineterm="", n=4))
 
 
+_TABLE_SHA = re.compile(r"^proposal sha256: ([0-9a-f]{64})", re.M)
+
+
+def vouched(proposal):
+    """proposals/<date>.json is gitignored; the committed proposals/<date>.md carries its sha256
+    (policy_table.render). A mismatch is a refusal: the json was edited after the table was
+    made. No table, or a table without the line (made before 2026-09-26), is a warning: the
+    person at the terminal is promoting a file nothing vouches for."""
+    md = proposal[:-5] + ".md" if proposal.endswith(".json") else proposal + ".md"
+    try:
+        with open(md, encoding="utf-8") as fh:
+            m = _TABLE_SHA.search(fh.read())
+    except OSError:
+        print(f"promote: WARNING no policy table beside {proposal}: nothing vouches for this file", file=sys.stderr)
+        return
+    if not m:
+        print(f"promote: WARNING {md} carries no 'proposal sha256' line: nothing vouches for this file", file=sys.stderr)
+        return
+    with open(proposal, "rb") as fh:
+        have = hashlib.sha256(fh.read()).hexdigest()
+    if have != m.group(1):
+        raise RuntimeError(f"{proposal} sha256 {have[:12]} != {m.group(1)[:12]} in {md}: the file changed after its table was made")
+
+
 def build(v1, cand, version, source, k, today):
     """The new version document, key order as v1.json. The action is the candidate
     projected onto the wire keys (prompts.question refuses a wrong shape); the three
@@ -100,6 +124,7 @@ def main(argv=None):
         if not sealed(a.repo):
             raise RuntimeError(f"no git tag {PREREG_TAG}: PREREG.md §10 must be sealed before the first "
                                "promote (the first row with prompt_b != v1)")
+        vouched(a.proposal)                                # the committed table names this file's sha, or says so
         with open(a.proposal, encoding="utf-8") as fh:
             cands = json.load(fh).get("candidates")
         if not isinstance(cands, list) or not 0 <= a.k < len(cands):

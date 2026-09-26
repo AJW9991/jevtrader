@@ -29,6 +29,14 @@ GAP = {"mid_h": None, "ret_h_bps": None, "label": None, "absence": "gap"}
 _TICK = re.compile(r"^\d{8}T\d{6}Z$")     # parseable by every reader's clock; SPEC §2 floors it, a reader does not police that
 
 
+def _tick_ok(t):
+    """The same parse report.tick_epoch does; None when the digits are not a date (20261399T...)."""
+    try:
+        return datetime.datetime.strptime(t, "%Y%m%dT%H%M%SZ")
+    except ValueError:
+        return None
+
+
 def _num(x):
     """A finite positive number: bool is an int in Python and a null mid is None."""
     return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) and x > 0
@@ -119,7 +127,7 @@ def load(path, bad=None):
                 if bad is not None:
                     bad.append((n, "not a row: needs tick_id and ts_rx"))
                 continue
-            if not _TICK.match(r["tick_id"]) or ts_epoch(r["ts_rx"]) is None:
+            if not _TICK.match(r["tick_id"]) or _tick_ok(r["tick_id"]) is None or ts_epoch(r["ts_rx"]) is None:
                 if bad is not None:                    # a string that is not a minute would crash every reader's clock
                     bad.append((n, "not a row: tick_id is not YYYYMMDDTHHMMSSZ or ts_rx is not a time"))
                 continue
