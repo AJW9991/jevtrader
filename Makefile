@@ -3,7 +3,7 @@
 # to Jev once a minute: only after STEPS.md steps 0 (PROTOCOL signed) and 1 (loop key).
 PY := /opt/homebrew/bin/python3
 
-.PHONY: test dry run report
+.PHONY: test dry run report dash
 
 test:
 	$(PY) -m unittest discover -s tests
@@ -16,3 +16,7 @@ run:
 
 report:
 	$(PY) -m loop.report
+
+# health only (report §1-§3 + the nightly's synthetic tables) as one HTML file, data/dash.html
+dash:
+	$(PY) -m loop.dash
