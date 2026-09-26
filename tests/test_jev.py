@@ -346,6 +346,16 @@ class SignatureGateTest(unittest.TestCase):
         # the gate into a permanent "unsigned" (or, worse, match a second line).
         with open(os.path.join(config.REPO, "PROTOCOL.md"), encoding="utf-8") as fh:
             self.assertEqual(len(jev._SIG.findall(fh.read())), 1)
+        # and the gate says SIGNED on it: both fields carry text (a blanked line would still match)
+        with mock.patch.object(config, "PROTOCOL", os.path.join(config.REPO, "PROTOCOL.md")):
+            self.assertTrue(jev.signed())
+
+    def test_ledger_source_column_names_the_caller(self):
+        jev.ledger(STATE, Q)
+        jev.ledger(STATE, Q, source="jev-paper-loop/nightly")
+        with open(config.SENDS) as fh:
+            cols = [l.split("\t")[1] for l in fh.read().splitlines()[1:]]
+        self.assertEqual(cols[-2:], ["jev-paper-loop", "jev-paper-loop/nightly"])
 
     def test_unsigned_forms_refuse_before_key_ledger_or_socket(self):
         for line in ("In force from: `____________`  Signed: `____________`",

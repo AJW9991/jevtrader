@@ -268,7 +268,7 @@ class PolicyTableTest(unittest.TestCase):
     def test_run_writes_table_with_counts(self):
         by = _by_state()
 
-        def fake(s, qs):                                  # current follows rule_c exactly; cand_0 always holds
+        def fake(s, qs, **kw):                                  # current follows rule_c exactly; cand_0 always holds
             rc = state.rule_c(by[s])
             return {"answers": {"cand_0": _answer("hold", 0.7), "current": _answer(rc, 0.9)},
                     "model": config.MODEL, "input_tokens": 100, "latency_ms": 5, "key_path": "env:X"}
@@ -344,7 +344,7 @@ class PolicyTableTest(unittest.TestCase):
         by = _by_state()
         calls = []
 
-        def fake(s, qs):
+        def fake(s, qs, **kw):
             calls.append(s)
             if len(calls) == 3:
                 raise jev.JevError("timeout", "x", None, "env:X")

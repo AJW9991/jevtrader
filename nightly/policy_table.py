@@ -45,6 +45,7 @@ DEADLINE_S = 900.0         # 81 x jev.py's worst case (45 s) is an hour; 15 min 
                            # a working API and short enough that a dead one costs one launchd slot
 MAX_CANDIDATES = 3         # CONTRACT §5: 1-3 entries
 CURRENT = "current"
+SOURCE = jev.SOURCE + "/nightly"   # the ledger names the nightly's 81 sends apart from the loop's (PROTOCOL §3.5)
 FATAL_KINDS = ("unsigned", "no-key", "ledger", "http-429")   # 80 more sends would repeat the refusal; a 429 is the
                                                  # limiter saying stop, and jev.py already retried it once
 TRANSIENT_KINDS = ("timeout", "http-5xx")
@@ -125,7 +126,7 @@ def run(qs, ask=None, deadline_s=DEADLINE_S, clock=time.monotonic):
             stop = row["error"] = "deadline"
         else:
             try:
-                r = ask(s, qs)
+                r = ask(s, qs, source=SOURCE)
                 row["answers"] = {qid: (r["answers"][qid].get("choice"), r["answers"][qid].get("confidence"))
                                   for qid in qs}
                 row["model"] = r.get("model")

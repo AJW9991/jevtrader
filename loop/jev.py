@@ -82,7 +82,7 @@ def _utc():
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def ledger(state, questions):
+def ledger(state, questions, source=SOURCE):
     """One row per ATTEMPT, on disk (fsync) before it. Returns sha12 of the state, or None
     when the row could not be written -- ask() then refuses to send. `paths` is always
     '-': a state is four words from a closed alphabet and cannot name a file; the column
@@ -90,7 +90,7 @@ def ledger(state, questions):
     empty: the reference checks existence only and so never writes one after its own
     `open(LEDGER, "a").close()` on a fresh clone (jev:152)."""
     sha12 = hashlib.sha256(state.encode()).hexdigest()[:12]
-    row = "\t".join((_utc(), SOURCE, str(len(state)), str(len(json.dumps(questions))), sha12, "-")) + "\n"
+    row = "\t".join((_utc(), source, str(len(state)), str(len(json.dumps(questions))), sha12, "-")) + "\n"
     try:
         d = os.path.dirname(config.SENDS)
         if d:
@@ -173,7 +173,7 @@ def signed():
     return bool(m) and all(f.strip().strip("_").strip() for f in m.groups())
 
 
-def ask(state, questions):
+def ask(state, questions, source=SOURCE):
     """One state, one question set, one answer set. Order is fixed: key, body, then per
     attempt: ledger row -> request. Two attempts at most; the second only after a 429
     (Retry-After, capped), a 5xx or a transport failure, never after another 4xx --
@@ -187,7 +187,7 @@ def ask(state, questions):
         "Authorization": "Bearer " + k, "Content-Type": "application/json"})
     err = None
     for attempt in (1, 2):
-        if ledger(state, questions) is None:
+        if ledger(state, questions, source) is None:
             raise JevError("ledger", f"cannot append to {config.SENDS}; nothing sent", key_path=kpath)
         t0 = time.monotonic()
         try:

@@ -164,5 +164,21 @@ class Clock(unittest.TestCase):
         self.assertIsNone(outcomes.ts_epoch(1758621600))
 
 
+class LoadGuards(unittest.TestCase):
+    def test_a_tick_id_that_is_not_a_minute_is_skipped_not_crashed(self):
+        import tempfile
+        p = os.path.join(tempfile.mkdtemp(), "d.jsonl")
+        with open(p, "w") as fh:
+            fh.write('{"tick_id": "20260923T100000Z", "ts_rx": "2026-09-23T10:00:00.100Z", "mid": 1.0}\n')
+            fh.write('{"tick_id": "nonsense", "ts_rx": "2026-09-23T10:01:00.100Z", "mid": 1.0}\n')
+            fh.write('{"tick_id": "20260923T100230Z", "ts_rx": "2026-09-23T10:02:30.100Z", "mid": 1.0}\n')   # not floored: parseable, kept
+            fh.write('{"tick_id": "20260923T100300Z", "ts_rx": "not a time", "mid": 1.0}\n')
+        bad = []
+        rows = outcomes.load(p, bad)
+        self.assertEqual([r["tick_id"] for r in rows], ["20260923T100000Z", "20260923T100230Z"])
+        self.assertEqual([n for n, _ in bad], [2, 4])
+        self.assertTrue(all("not a row" in why for _, why in bad))
+
+
 if __name__ == "__main__":
     unittest.main()

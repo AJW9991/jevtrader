@@ -19,13 +19,14 @@ instant), so |horizon - 900| <= 30 s, and a missing t+15 row is a gap because
 its neighbours are 60 s away. Ties (two rows exactly 30 s either side) go to the
 earlier row. Everything here is forward-only: t sees t+h, never the reverse.
 """
-import bisect, datetime, json, math
+import bisect, datetime, json, math, re
 
 from loop import config
 
 JOIN_TOL_S = config.CADENCE_S / 2   # 30.0: half a cadence either side of t+h (docstring)
 DEAD_BAND_BPS = config.DEAD_BAND_BPS   # |ret| below this is "flat"; at the band it is a move
 GAP = {"mid_h": None, "ret_h_bps": None, "label": None, "absence": "gap"}
+_TICK = re.compile(r"^\d{8}T\d{6}Z$")     # parseable by every reader's clock; SPEC §2 floors it, a reader does not police that
 
 
 def _num(x):
@@ -117,6 +118,10 @@ def load(path, bad=None):
                     and isinstance(r.get("ts_rx"), str)):
                 if bad is not None:
                     bad.append((n, "not a row: needs tick_id and ts_rx"))
+                continue
+            if not _TICK.match(r["tick_id"]) or ts_epoch(r["ts_rx"]) is None:
+                if bad is not None:                    # a string that is not a minute would crash every reader's clock
+                    bad.append((n, "not a row: tick_id is not YYYYMMDDTHHMMSSZ or ts_rx is not a time"))
                 continue
             rows.append(r)
     return rows
