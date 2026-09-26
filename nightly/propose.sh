@@ -149,4 +149,10 @@ if [ $DRY -eq 1 ]; then DRYFLAG="--dry"; else DRYFLAG=""; fi
 rc=$?
 [ $rc -eq 0 ] || fail "policy_table exit $rc"
 log "OK proposals/$DATE.json"
+
+# 5. the health page (report sections 1-3 only, loop/dash.py): rebuilt after every night so the
+#    file is never older than a day. Non-fatal: a dash failure is one log line, never a FAIL.
+#    Decided by Alex 2026-09-26 ("rebuild it at the end of every nightly").
+"$PY" -m loop.dash --log "$ROOT/data/decisions.jsonl" --out "$ROOT/data/dash.html" >>"$LOG" 2>&1 \
+  || log "dash: loop.dash exit $? (non-fatal; the night is OK)"
 exit 0
