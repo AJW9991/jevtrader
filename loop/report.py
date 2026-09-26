@@ -529,6 +529,26 @@ def _live(r):
     return r.get("mode") == "live" and r.get("absence") is None
 
 
+def h2_units(live, outs, anchor):
+    """PREREG §5's units: the first live row of each 900 s block k from `anchor`, that row's
+    (lean, ret) pair with k, or the block is dropped ("gap": no outcome; "noul": a direction
+    noul missing). `live` is the live rows (mode live, absence null) in tick order; anchor is
+    T0 in epoch seconds (or the log's first tick, descriptive). Returns (units, drop, firsts).
+    loop/inference.py takes the same units, so the statistic and the test read one function."""
+    units, drop, firsts = [], collections.Counter(), {}
+    if anchor is None:
+        return units, drop, firsts
+    for r in live:
+        firsts.setdefault(int((tick_epoch(r["tick_id"]) - anchor) // BLOCK_S), r)
+    for k in sorted(firsts):
+        p = _h2_pair(firsts[k], outs)
+        if isinstance(p, dict):
+            units.append(dict(p, k=k))
+        else:
+            drop[p] += 1
+    return units, drop, firsts
+
+
 def _h2_pair(r, outs):
     """One tick's (lean, ret) with what Brier and the tails need, or the reason it is not one:
     "noul" (either direction noul missing or not a number) or "gap" (no outcome at t + h)."""
@@ -584,21 +604,13 @@ def h2(rows, outs, t0=None):
             every.append(p)
         else:
             drop_every[p] += 1
-    units, drop, firsts = [], collections.Counter(), {}
     anchor = where = None
     if live:                                                         # the table's anchor: the log's first tick, any row
         first = min(r["tick_id"] for r in rows)
         anchor = t0 if t0 is not None else tick_epoch(first)
         where = (f"T0 {_iso_minute(t0)} (--t0)" if t0 is not None
                  else f"the log's first tick {first}; no --t0, so descriptive only")
-        for r in live:
-            firsts.setdefault(int((tick_epoch(r["tick_id"]) - anchor) // BLOCK_S), r)
-        for k in sorted(firsts):
-            p = _h2_pair(firsts[k], outs)
-            if isinstance(p, dict):
-                units.append(dict(p, k=k))
-            else:
-                drop[p] += 1
+    units, drop, firsts = h2_units(live, outs, anchor)
     su, se = _h2_stats(units), _h2_stats(every)
     lines = [
         "  lean_t = up15.noul - down15.noul, in [-1, 1]: Jev's own direction probabilities, asked from v1 once per tick"

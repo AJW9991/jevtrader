@@ -3,7 +3,7 @@
 # to Jev once a minute: only after STEPS.md steps 0 (PROTOCOL signed) and 1 (loop key).
 PY := /opt/homebrew/bin/python3
 
-.PHONY: test dry run report dash
+.PHONY: test dry run report dash inference-smoke
 
 test:
 	$(PY) -m unittest discover -s tests
@@ -20,3 +20,8 @@ report:
 # health only (report §1-§3 + the nightly's synthetic tables) as one HTML file, data/dash.html
 dash:
 	$(PY) -m loop.dash
+
+# PREREG §4-§5's inference on the rows BEFORE T0 (the shakedown): a smoke of the procedure, never a
+# result. The sample form, `python3 -m loop.inference --sample --out RESULTS.md`, refuses until day 28.
+inference-smoke:
+	$(PY) -m loop.inference --pre-t0
