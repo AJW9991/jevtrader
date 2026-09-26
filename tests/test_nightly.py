@@ -8,6 +8,7 @@ import datetime, importlib.util, io, json, os, shutil, subprocess, sys, tempfile
 from contextlib import redirect_stdout
 from unittest import mock
 
+from fixture_prompts import pin_v1
 from loop import config, jev, prompts, rules, state
 from nightly import digest, policy_table
 
@@ -85,6 +86,7 @@ class DigestTest(unittest.TestCase):
         self.tmp = self.enterContext(tempfile.TemporaryDirectory())
         self.log = os.path.join(self.tmp, "data", "decisions.jsonl")
         _write_log(self.log, synthetic_log())
+        pin_v1(self)                                                 # the digest quotes CURRENT: pin it to v1
 
     def test_disagreement_rows_and_order(self):
         text, n = digest.build(DAY, self.log)
@@ -208,6 +210,7 @@ class PolicyTableTest(unittest.TestCase):
         self.urlopen = self.enterContext(mock.patch("urllib.request.urlopen"))
         self.halt = os.path.join(self.tmp, "HALT")                  # never the repo's data/HALT
         self.enterContext(mock.patch.object(config, "HALT", self.halt))
+        pin_v1(self)                                                 # current_action() reads CURRENT: pin it to v1
         self.prop = os.path.join(self.tmp, "2026-09-22.json")
         with open(self.prop, "w") as fh:
             json.dump({"candidates": [CAND]}, fh)
@@ -398,8 +401,9 @@ class PromoteTest(unittest.TestCase):
         self.tmp = self.enterContext(tempfile.TemporaryDirectory())
         self.root = os.path.join(self.tmp, "prompts")
         os.makedirs(self.root)
-        for f in ("v1.json", "CURRENT"):
-            shutil.copy(os.path.join(REPO, "prompts", f), self.root)
+        shutil.copy(os.path.join(REPO, "prompts", "v1.json"), self.root)
+        with open(os.path.join(self.root, "CURRENT"), "w") as fh:  # v1, not the live CURRENT (v2 since 2026-09-26)
+            fh.write("v1\n")
         self.prop = os.path.join(self.tmp, "2026-09-22.json")
         with open(self.prop, "w") as fh:
             json.dump({"candidates": [CAND, {**CAND, "instructions": "Second candidate."}]}, fh)
@@ -601,6 +605,25 @@ class Capped(unittest.TestCase):
         self.assertEqual(self._run("5", "true").returncode, 2)
         self.assertEqual(self._run("0", "--", "true").returncode, 2)
         self.assertEqual(self._run("5", "--", "/nonexistent-cmd").returncode, 127)
+
+    def test_propose_sh_rebuilds_the_dash_after_the_table_non_fatally(self):
+        with open(os.path.join(REPO, "nightly", "propose.sh")) as fh:
+            src = fh.read()
+        code = [l for l in src.splitlines() if not l.lstrip().startswith("#")]
+        dash = [l for l in code if "-m loop.dash" in l]
+        self.assertEqual(len(dash), 1)
+        self.assertIn('--log "$ROOT/data/decisions.jsonl" --out "$ROOT/data/dash.html"', dash[0])
+        self.assertIn('|| log "dash:', code[code.index(dash[0]) + 1])
+        # the table's OK line comes BEFORE the dash, so a dash failure can never hide a good night
+        self.assertLess(code.index([l for l in code if 'log "OK proposals/$DATE.json"' in l][0]), code.index(dash[0]))
+        # and a --dry run against a temp root writes the page there, never into the repo's data/
+        tmp = tempfile.mkdtemp()
+        with open(os.path.join(tmp, "decisions.jsonl"), "w") as fh:
+            pass
+        r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry", "--date", "2026-09-22", "--root", tmp],
+                           capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 0)
+        self.assertTrue(os.path.exists(os.path.join(tmp, "data", "dash.html")))
 
     def test_propose_sh_wires_the_cap_around_claude_under_caffeinate(self):
         with open(os.path.join(REPO, "nightly", "propose.sh")) as fh:

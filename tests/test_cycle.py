@@ -8,6 +8,7 @@ to the fixture's ts_rx so tick_id is known. main() installs and restores its own
 SIGTERM/SIGALRM handlers; the two signal tests raise the signal in-process."""
 import email.message, io, fcntl, hashlib, json, os, re, signal, tempfile, time, unittest, urllib.error
 from unittest import mock
+from fixture_prompts import pin_v1
 from loop import book, config, cycle, feed, jev, outcomes, prompts, rules
 
 _SLEEP = time.sleep                                  # the real one: time.sleep is mocked in setUp
@@ -83,6 +84,7 @@ class CycleTest(unittest.TestCase):
         with open(self.protocol, "w") as fh:
             fh.write("In force from: `2026-09-24`  Signed: `test`\n")
         self.enterContext(mock.patch.object(config, "PROTOCOL", self.protocol))
+        self.prompts_root = pin_v1(self)                        # never the live prompts/: CURRENT moves with bin/promote
         self.urlopen = self.enterContext(mock.patch("urllib.request.urlopen",
                                                     side_effect=AssertionError("urlopen was reached")))
         self.snapshot = self.enterContext(mock.patch.object(feed, "snapshot", return_value=SNAP))

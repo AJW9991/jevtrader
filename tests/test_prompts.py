@@ -1,6 +1,7 @@
 """loop.prompts, offline: the committed prompts/ tree plus temp copies of it.
 Nothing here writes under prompts/ -- bin/promote is the only writer."""
 import json, os, tempfile, unittest
+from fixture_prompts import pin_v1
 from loop import config, prompts
 
 ORDER = ["a_action", "b_action", "skip", "up15", "down15"]
@@ -22,11 +23,26 @@ class PromptsTest(unittest.TestCase):
 
     # --- CONTRACT §6: CURRENT = v1 gives identical a/b questions ---------------
     def test_current_is_v1_and_a_equals_b(self):
-        self.assertEqual(prompts.current(), "v1")
-        cur = prompts.load(prompts.current())
+        root = pin_v1(self)                                          # a v1-only root, not the live prompts/
+        self.assertEqual(prompts.current(root), "v1")
+        cur = prompts.load(prompts.current(root), root)
         q = prompts.build(self.v1, cur)
         self.assertEqual(q["a_action"], q["b_action"])
-        self.assertEqual(prompts.sha("v1"), prompts.sha(prompts.current()))
+        self.assertEqual(prompts.sha("v1", root), prompts.sha(prompts.current(root), root))
+
+    def test_live_current_loads_and_builds_whatever_it_is(self):
+        # the repo's own prompts/: CURRENT names one version that exists and builds four wire
+        # questions with v1's skip/up15/down15 byte-identical (bin/promote's promise), whatever N is
+        cur = prompts.current()
+        live = prompts.load(cur)
+        q = prompts.build(prompts.load("v1"), live)
+        self.assertEqual(sorted(q), ["a_action", "b_action", "down15", "skip", "up15"])
+        for k in prompts.CARRIED:
+            self.assertEqual(live[k], self.v1[k])
+        if cur == "v1":
+            self.assertEqual(q["a_action"], q["b_action"])
+        else:
+            self.assertNotEqual(q["a_action"], q["b_action"])
 
     # --- CONTRACT §6: sha is stable ---------------------------------------------
     def test_sha_stable_across_reserialisation(self):
