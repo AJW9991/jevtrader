@@ -1,4 +1,5 @@
-data/
+data/*
+!data/exclusions.tsv
 logs/
 proposals/*.json
 .env
@@ -7,4 +8,3 @@ proposals/*.json
 __pycache__/
 .DS_Store
 *.bak-*
-!data/exclusions.tsv
