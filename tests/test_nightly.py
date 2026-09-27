@@ -644,6 +644,91 @@ class ProposeDryTest(unittest.TestCase):
 
 
 
+class LiveBranch(unittest.TestCase):
+    """propose.sh's live branch, driven end to end with a stub claude (JEVLOOP_CLAUDE), a temp token
+    file (JEVLOOP_TOKEN_FILE) and a short cap (JEVLOOP_CLAUDE_CAP_S). data/HALT in the temp root
+    keeps policy_table from sending (PROTOCOL §3.8), so nothing here reaches api.typesafe.ai."""
+    TOKEN = "sekrit-token-value-never-printed"
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        _write_log(os.path.join(self.tmp, "data", "decisions.jsonl"), synthetic_log())
+        with open(os.path.join(self.tmp, "data", "HALT"), "w") as fh:
+            fh.write("test: no sends\n")
+        self.token = os.path.join(self.tmp, "token")
+        with open(self.token, "w") as fh:
+            fh.write(self.TOKEN + "\n")
+        self.saw = os.path.join(self.tmp, "saw")
+        pin_v1(self)
+
+    def _stub(self, body):
+        p = os.path.join(self.tmp, "claude")
+        with open(p, "w") as fh:
+            fh.write("#!/bin/bash\n" + body)
+        os.chmod(p, 0o755)
+        return p
+
+    def _run(self, stub, cap="2700"):
+        env = dict(os.environ, JEVLOOP_CLAUDE=stub, JEVLOOP_TOKEN_FILE=self.token, JEVLOOP_CLAUDE_CAP_S=cap)
+        return subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--date", DAY.isoformat(), "--root", self.tmp],
+                              capture_output=True, text=True, timeout=120, env=env, cwd=REPO)
+
+    def _everything_written(self):
+        out = []
+        for d in ("logs", "proposals", "data"):
+            for f in os.listdir(os.path.join(self.tmp, d)):
+                with open(os.path.join(self.tmp, d, f), errors="replace") as fh:
+                    out.append(fh.read())
+        return "\n".join(out)
+
+    def test_live_branch_end_to_end_token_set_never_printed(self):
+        stub = self._stub('[ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] && echo TOKEN_SET >"%s"\n'
+                          'case " $* " in *" --tools  "*|*"--tools \"\""*) : ;; esac\n'
+                          'printf "%%s\\n" "$@" | grep -q -- "--output-format" || exit 9\n'
+                          'cat <<"EOF"\nreply\n\n```json\n{"candidates": [{"rationale": "t", "instructions": "Decide.",'
+                          ' "criteria": {"buy": "pumping", "sell": "dumping", "hold": "else"}}]}\n```\nEOF\n' % self.saw)
+        r = self._run(stub)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(os.path.exists(self.saw), "the stub never saw the token in its environment")
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, "proposals", f"{DAY.isoformat()}.json")))
+        with open(os.path.join(self.tmp, "logs", "propose.log")) as fh:
+            log = fh.read()
+        self.assertIn("claude exit 0 after", log)
+        self.assertIn("(cap 2700 s awake)", log)
+        self.assertIn("HALT present", log)                                    # policy_table never ran: no send
+        self.assertNotIn("OK proposals/", log)
+        for blob in (r.stdout, r.stderr, self._everything_written()):
+            self.assertNotIn(self.TOKEN, blob)
+
+    def test_a_hung_claude_is_one_fail_line_and_the_night_ends_clean(self):
+        stub = self._stub("sleep 30\n")
+        t = time.monotonic()
+        r = self._run(stub, cap="1")
+        self.assertEqual(r.returncode, 0)
+        self.assertLess(time.monotonic() - t, 25)
+        with open(os.path.join(self.tmp, "logs", "propose.log")) as fh:
+            log = fh.read()
+        self.assertIn("claude exit 124 after", log)
+        self.assertIn("FAIL claude capped at 1 s awake", log)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "proposals", f"{DAY.isoformat()}.json")))
+
+    def test_a_failing_claude_is_one_fail_line(self):
+        stub = self._stub("echo boom >&2; exit 7\n")
+        r = self._run(stub)
+        self.assertEqual(r.returncode, 0)
+        with open(os.path.join(self.tmp, "logs", "propose.log")) as fh:
+            self.assertIn("FAIL claude exit 7", fh.read())
+        with open(os.path.join(self.tmp, "logs", f"claude-{DAY.isoformat()}.err")) as fh:
+            self.assertIn("boom", fh.read())
+
+    def test_a_reply_without_one_json_block_is_invalid(self):
+        stub = self._stub('echo "no block here"\n')
+        r = self._run(stub)
+        self.assertEqual(r.returncode, 0)
+        with open(os.path.join(self.tmp, "logs", "propose.log")) as fh:
+            self.assertIn("FAIL invalid proposal", fh.read())
+
+
 class Capped(unittest.TestCase):
     """nightly/capped.py: the claude call's cap on awake seconds (propose.sh wires it in)."""
     PY = "/opt/homebrew/bin/python3"
@@ -707,7 +792,7 @@ class Capped(unittest.TestCase):
         call = [l for l in code if '"$CAFFEINATE" -i' in l]
         self.assertEqual(len(call), 1)
         self.assertIn('"$PY" -m nightly.capped "$CLAUDE_CAP_S" --', call[0])
-        self.assertIn('CLAUDE_CAP_S=2700', src)
+        self.assertIn('CLAUDE_CAP_S="${JEVLOOP_CLAUDE_CAP_S:-2700}"', src)
         self.assertIn('[ $rc -eq 124 ] && fail "claude capped', src)
 
 if __name__ == "__main__":
