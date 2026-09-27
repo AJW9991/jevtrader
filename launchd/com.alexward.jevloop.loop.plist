@@ -25,13 +25,18 @@
   <key>WorkingDirectory</key>
   <string>/Users/alexanderward/Projects/jev-paper-loop</string>
 
-  <!-- 60 s of elapsed time, not a calendar minute: StartInterval drifts and
-       is coalesced after sleep, which is why tick_id is ts_rx floored to the
-       minute and the outcome join takes the row nearest t+900 within +-30 s (config.py,
-       outcomes.py). A tick is ~1 s of feed plus one 20 s-timeout request,
+  <!-- Every calendar minute, at :00 (an empty dictionary is all wildcards).
+       Until 2026-09-26 this was StartInterval 60, which is 60 s of ELAPSED
+       time and ran a ~61.2 s grid: about 28 minutes a day got no row, and
+       each one cost the row 15 minutes earlier its outcome (~2 % of fill
+       before any sleep). Changed by Alex's decision of 2026-09-26; rows stay
+       one a minute, tick_id is still ts_rx floored to the minute, and the
+       join still takes the row nearest t+900 within +-30 s (config.py,
+       outcomes.py). A missed slot (asleep) is coalesced into one run at
+       wake, as before. A tick is ~1 s of feed plus one 20 s-timeout request,
        under the 50 s watchdog, so ticks never overlap on a healthy host. -->
-  <key>StartInterval</key>
-  <integer>60</integer>
+  <key>StartCalendarInterval</key>
+  <dict/>
 
   <!-- The first tick fires at bootstrap and at every login: a live send.
        That is intended (the heartbeat proves the install), and it is why

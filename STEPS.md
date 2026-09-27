@@ -239,11 +239,22 @@ second 28-day block (PREREG §8.5).
 ## 7. Install the two plists  (~3 min; only after steps 0 and 1)
 
 **Why.** PROTOCOL.md §3.10: hand-installed, never by a script, same as the
-canary. The loop plist runs `python3 -m loop.cycle --once` every 60 s with
+canary. The loop plist runs `python3 -m loop.cycle --once` every calendar
+minute at :00 (`StartCalendarInterval`, since 2026-09-26; it was
+`StartInterval 60`, a ~61 s grid that skipped ~28 minutes a day) with
 `RunAtLoad`, so the first tick — a live send — fires the moment it is
 bootstrapped; the nightly runs `nightly/propose.sh` at 03:30 local. Stop the
 attended run first: the `flock` would turn every launchd tick into an
 `absence: "lock"` row until you did.
+
+**Swapping an installed loop plist (2026-09-26, the cadence change).** One
+bootout, one copy, one bootstrap; the gap is under a minute and the first
+tick fires at bootstrap. Then watch two minutes of `tick_id`s land on
+consecutive minutes:
+
+```bash
+cd ~/Projects/jev-paper-loop && plutil -lint launchd/com.alexward.jevloop.loop.plist && launchctl bootout gui/$(id -u)/com.alexward.jevloop.loop; cp launchd/com.alexward.jevloop.loop.plist ~/Library/LaunchAgents/ && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.alexward.jevloop.loop.plist && sleep 130 && tail -3 logs/loop-launchd.log | cut -c1-60 && launchctl print gui/$(id -u)/com.alexward.jevloop.loop | grep -E 'state|last exit'
+```
 
 ```bash
 cd ~/Projects/jev-paper-loop && mkdir -p logs && plutil -lint launchd/com.alexward.jevloop.loop.plist launchd/com.alexward.jevloop.nightly.plist && cp launchd/com.alexward.jevloop.loop.plist launchd/com.alexward.jevloop.nightly.plist ~/Library/LaunchAgents/ && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.alexward.jevloop.loop.plist && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.alexward.jevloop.nightly.plist && launchctl list | grep jevloop
