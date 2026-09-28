@@ -132,12 +132,21 @@ def read_exclusions(path):
     return days, lines
 
 
+def kept_tick(tick_id, anchor, excluded=(), n_blocks=BLOCKS_PER_DAY * N_DAYS):
+    """True when the tick's block k is in [0, n_blocks) and its day (day_of_block, T0-anchored)
+    is not excluded: the rows every number of the output reads, the descriptive ones included."""
+    k = int((report.tick_epoch(tick_id) - anchor) // report.BLOCK_S)
+    return 0 <= k < n_blocks and day_of_block(k) not in excluded
+
+
 # ---- H1 ----------------------------------------------------------------------------------------
 def h1_series(rows, outs, x, y, anchor, excluded=(), n_blocks=BLOCKS_PER_DAY * N_DAYS):
     """[(k, S_k)] for every block k in [0, n_blocks) whose day is not excluded, S_k = 0 where no
     row (PREREG §3), from book.replay on the sample rows at (argmax, FEE_BPS_PRIMARY). n_blocks is
-    96 x 28 for the sample; --pre-t0 passes the shakedown's own span. Also the descriptive
-    pieces: disagreement blocks, trades per side."""
+    96 x 28 for the sample; --pre-t0 passes the shakedown's own span. The replay runs over every
+    sample row, excluded days included, exactly as pre-registered (a day is dropped from the
+    series, the book is not re-run without it). Also the descriptive pieces, each over the
+    kept days only: disagreement blocks, every-tick d_t, trades and forced holds per side."""
     col, fee = "argmax", config.FEE_BPS_PRIMARY
     px, py = book.replay(rows, outs, x, col, fee), book.replay(rows, outs, y, col, fee)
     dis = report._disagreement(px, py)
@@ -152,6 +161,14 @@ def h1_series(rows, outs, x, y, anchor, excluded=(), n_blocks=BLOCKS_PER_DAY * N
     series = [(k, S.get(k, 0.0)) for k in range(n_blocks) if day_of_block(k) not in excluded]
     kept = [v for _, v in series]
     on_dis = [v for k, v in series if k in hot]
+    keep = lambda t: kept_tick(t, anchor, excluded, n_blocks)
+    d_kept = [v for t, v in cell["d"] if keep(t)]
+    tx, ty = (sum(1 for tr in p["trades"] if keep(tr["tick_id"])) for p in (px, py))
+    if excluded:                                            # a forced hold is row-local, so a replay of the kept rows counts them
+        kept_rows = [r for r in rows if keep(r["tick_id"])]
+        fx, fy = (book.replay(kept_rows, outs, a, col, fee)["forced_hold"] for a in (x, y))
+    else:
+        fx, fy = px["forced_hold"], py["forced_hold"]
     # descriptive: blocks on which a gap longer than the horizon lands (SPEC §10 carries the position
     # across a gap and marks the whole move on the first priced tick after it; PREREG-v2 material)
     priced = sorted(t for t, _ in cell["d"])
@@ -162,8 +179,8 @@ def h1_series(rows, outs, x, y, anchor, excluded=(), n_blocks=BLOCKS_PER_DAY * N
             if 0 <= k < n_blocks and day_of_block(k) not in excluded:
                 absorbing.add(k)
     return {"series": series, "S": kept, "dis_blocks": len(on_dis), "mean_dis": mean(on_dis), "gap_blocks": len(absorbing),
-            "trades_x": len(px["trades"]), "trades_y": len(py["trades"]), "forced_x": px["forced_hold"], "forced_y": py["forced_hold"],
-            "ticks": cell["n"], "mean_tick": cell["mean"]}
+            "trades_x": tx, "trades_y": ty, "forced_x": fx, "forced_y": fy, "ticks": len(d_kept), "mean_tick": mean(d_kept),
+            "days": len(series) / BLOCKS_PER_DAY}
 
 
 def h1(rows, outs, anchor, excluded=(), resamples=RESAMPLES, n_blocks=BLOCKS_PER_DAY * N_DAYS):
@@ -175,15 +192,27 @@ def h1(rows, outs, anchor, excluded=(), resamples=RESAMPLES, n_blocks=BLOCKS_PER
         out.append({"pair": f"{x.upper()} - {y.upper()}", "title": title, "n": len(s["S"]), "mean": m,
                     "lower": bs["lower"] if bs else None, "reject": bs["reject"] if bs else None,
                     "dis_blocks": s["dis_blocks"], "mean_dis": s["mean_dis"], "gap_blocks": s["gap_blocks"], "ticks": s["ticks"], "mean_tick": s["mean_tick"],
-                    "trades_x": s["trades_x"], "trades_y": s["trades_y"], "forced_x": s["forced_x"], "forced_y": s["forced_y"]})
+                    "trades_x": s["trades_x"], "trades_y": s["trades_y"], "forced_x": s["forced_x"], "forced_y": s["forced_y"], "days": s["days"]})
     return out
 
 
 # ---- H2 ----------------------------------------------------------------------------------------
 def h2(rows, outs, anchor, excluded=(), resamples=RESAMPLES, n_blocks=BLOCKS_PER_DAY * N_DAYS):
-    live = sorted((r for r in rows if report._live(r)), key=lambda r: r["tick_id"])
+    """PREREG §5 on the kept days' live rows only: the units (report.h2_units; blocks nest in days,
+    so they are the units of every live row with the excluded days' units removed), the statistic
+    and its bootstrap, and the descriptive side numbers (report._h2_stats) on the kept units and on
+    every kept live tick with an outcome."""
+    live = sorted((r for r in rows if report._live(r) and kept_tick(r["tick_id"], anchor, excluded, n_blocks)),
+                  key=lambda r: r["tick_id"])
     units, drop, firsts = report.h2_units(live, outs, anchor)
-    units = [u for u in units if 0 <= u["k"] < n_blocks and day_of_block(u["k"]) not in excluded]
+    units = [u for u in units if 0 <= u["k"] < n_blocks and day_of_block(u["k"]) not in excluded]   # a no-op now; kept as the rule
+    every, drop_every = [], {}
+    for r in live:
+        p = report._h2_pair(r, outs)
+        if isinstance(p, dict):
+            every.append(p)
+        else:
+            drop_every[p] = drop_every.get(p, 0) + 1
     ps = [(u["lean"], u["ret"]) for u in units]
     xs, ys = [x for x, _ in ps], [y for _, y in ps]
     degenerate = None
@@ -195,7 +224,44 @@ def h2(rows, outs, anchor, excluded=(), resamples=RESAMPLES, n_blocks=BLOCKS_PER
     rho = report.spearman(xs, ys) if ps else None
     bs = bootstrap(ps, pearson_pairs, resamples=resamples) if ps and degenerate is None else None
     return {"n": len(ps), "blocks_with_row": len(firsts), "dropped": dict(drop), "r": r, "rho": rho, "degenerate": degenerate,
-            "lower": bs["lower"] if bs else None, "reject": bs["reject"] if bs else False}
+            "lower": bs["lower"] if bs else None, "reject": bs["reject"] if bs else False,
+            "units": [(u["k"], u["lean"], u["ret"]) for u in units],
+            "side_units": report._h2_stats(units), "side_every": report._h2_stats(every), "dropped_every": drop_every}
+
+
+def _rv(s, what="r"):
+    """A correlation from report._h2_stats, or why it is undefined."""
+    return _f(s[what]) if s[what] is not None else f"undefined ({s.get('why') or 'fewer than 2 pairs'})"
+
+
+def side_lines(h):
+    """PREREG §5's numbers beside the statistic, on the kept units and every kept live tick: all
+    descriptive, never claimed (§6). Spearman rho; r and rho on every tick (overlapping horizons);
+    Brier of up15 and down15 against the base rate's; the measured-tail counts; the `trend` word as
+    a no-model comparator (+1 pumping, 0 flat, -1 dumping)."""
+    su, se = h["side_units"], h["side_every"]
+
+    def brier(s):
+        bu, bd = s["brier_up"], s["brier_down"]
+        return (f"up15 {_f(bu[0])} vs base {_f(bu[1])} (p(up) {_f(bu[2], 3)}); down15 {_f(bd[0])} vs base {_f(bd[1])}"
+                f" (p(down) {_f(bd[2], 3)})")
+
+    def tails(s):
+        t = s["tails"]
+        return f"up15 {t['up'][0]}/{t['up'][1]}, down15 {t['down'][0]}/{t['down'][1]}"
+
+    def word(s):
+        w = s["word"]
+        return (f"r(lean, trend) {_rv(w['lean_trend'])}; r(trend, ret_h_bps) {_rv(w['trend_ret'])};"
+                f" r(lean, ret_h_bps | trend flat) {_rv(w['flat'])} over {w['flat']['n']}")
+
+    de = h["dropped_every"]
+    return [f"  descriptive (PREREG §5, never claimed): Spearman rho {_rv(su, 'rho')} over the {su['n']} units;"
+            f" every kept live tick (overlapping horizons): r {_rv(se)}, rho {_rv(se, 'rho')} over {se['n']} ticks"
+            f" (dropped: gap {de.get('gap', 0)}, missing noul {de.get('noul', 0)})",
+            f"  descriptive: Brier on the units {brier(su)}; on every tick {brier(se)}",
+            f"  descriptive: measured tails (>= {report.NOUL_HIGH:g} / < {report.NOUL_LOW:g}) on the units {tails(su)}; on every tick {tails(se)}",
+            f"  descriptive: the trend word (no model): units {word(su)}; every tick {word(se)}"]
 
 
 def pending_units(rows, scope, outs, anchor, excluded=(), n_blocks=BLOCKS_PER_DAY * N_DAYS):
@@ -327,8 +393,11 @@ def render(mode, t0, now, log, log_sha, n_rows, excluded, excl_lines, kept_days,
         lines.append(f"  {h['pair']}: {h['title']}")
         verdict = ("REJECT H0: the arm beats the other" if h["reject"] else "not rejected") if h["reject"] is not None else "no test (point estimate)"
         lines.append(f"    n blocks {h['n']}; mean S_k {_f(h['mean'])} bps; lower bound {_f(h['lower'])} bps -> {v}{verdict}")
-        lines.append(f"    descriptive: disagreement blocks {h['dis_blocks']} ({100.0 * h['dis_blocks'] / h['n']:.1f}%), mean S_k on them {_f(h['mean_dis'])};"
-                     f" every tick mean d_t {_f(h['mean_tick'])} over {h['ticks']}; trades {h['trades_x']} vs {h['trades_y']};"
+        days = h["days"]
+        per_day = (f" ({h['trades_x'] / days:.2f} vs {h['trades_y'] / days:.2f} per day over {days:g}"
+                   f" {'kept days' if mode == 'sample' else 'days of the span'})") if days else ""
+        lines.append(f"    descriptive, kept days only: disagreement blocks {h['dis_blocks']} ({100.0 * h['dis_blocks'] / h['n']:.1f}%), mean S_k on them {_f(h['mean_dis'])};"
+                     f" every tick mean d_t {_f(h['mean_tick'])} over {h['ticks']}; trades {h['trades_x']} vs {h['trades_y']}{per_day};"
                      f" forced holds {h['forced_x']} vs {h['forced_y']}")
     lines.append("")
     lines.append("H2 -- Pearson r(lean, ret_h_bps) over the units (first live row of each block), alpha 0.025")
@@ -339,7 +408,7 @@ def render(mode, t0, now, log, log_sha, n_rows, excluded, excl_lines, kept_days,
     else:
         verdict = "REJECT H0: r > 0" if h["reject"] else "not rejected"
         lines.append(f"{units}; r {_f(h['r'])}; lower bound {_f(h['lower'])} -> {v}{verdict}")
-        lines.append(f"  descriptive: Spearman rho {_f(h['rho'])}")
+    lines.extend(side_lines(h))
     lines.append("")
     lines.extend(reading(h1s, h2s, void, mode == "pre-t0"))
     lines.append("")

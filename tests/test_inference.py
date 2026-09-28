@@ -402,6 +402,78 @@ class Reading(unittest.TestCase):
                       inference.reading(h1s(False, False, 0.0), {"reject": False}, pre_t0=True))
 
 
+class ExcludedDays(unittest.TestCase):
+    """An excluded day leaves every number, not only S_k and the units: the log is day 1 (16 blocks of
+    B trading) plus day 2 (4 more, a live row missing a noul, an outage row); excluding d02 must
+    read exactly as the log of day 1 alone."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp()
+        d2 = T0 + 86400
+        outage = _at(d2 + 900 * 11, absence="feed")
+        outage.update(bid=None, ask=None, mid=None, answers=None, columns={"a": None, "b": None})
+        cls.day1 = _edge_rows()
+        cls.both = cls.day1 + _edge_rows(blocks=4, day=2) + [_at(d2 + 900 * 10, up=None), outage]
+        cls.log = os.path.join(cls.tmp, "two-days.jsonl")
+        _write(cls.log, cls.both, garbage=False)
+        cls.ex = _exclusions(os.path.join(cls.tmp, "ex.tsv"), [2])
+
+    def _load(self, rows):
+        path = os.path.join(self.tmp, "x.jsonl")
+        _write(path, rows, garbage=False)
+        rows = outcomes.load(path, [])
+        return rows, outcomes.join(rows)
+
+    def test_h1_descriptive_numbers_read_the_kept_days_only(self):
+        both, ob = self._load(self.both)
+        one, o1 = self._load(self.day1)
+        for x, y in (("b", "c"), ("a", "c"), ("b", "a")):
+            e = inference.h1_series(both, ob, x, y, T0, excluded={2})
+            s = inference.h1_series(one, o1, x, y, T0)
+            for key in ("ticks", "mean_tick", "trades_x", "trades_y", "forced_x", "forced_y", "dis_blocks", "mean_dis", "gap_blocks"):
+                self.assertEqual(e[key], s[key], (x, y, key))
+            self.assertEqual(e["series"], [(k, v) for k, v in s["series"] if inference.day_of_block(k) != 2])
+            self.assertEqual(e["days"], 27)
+        full = inference.h1_series(both, ob, "b", "c", T0)                  # the same log with nothing excluded counts day 2
+        self.assertEqual((full["trades_x"], full["forced_x"]), (32 + 8, 2 + 2 + 1))
+        self.assertEqual((e["trades_x"], e["forced_x"]), (32, 2))
+
+    def test_h2_units_and_side_numbers_read_the_kept_days_only(self):
+        both, ob = self._load(self.both)
+        one, o1 = self._load(self.day1)
+        e = inference.h2(both, ob, T0, excluded={2}, resamples=20)
+        s = inference.h2(one, o1, T0, resamples=20)
+        for key in ("n", "blocks_with_row", "dropped", "r", "rho", "lower", "units", "side_units", "side_every", "dropped_every"):
+            self.assertEqual(e[key], s[key], key)
+        full = inference.h2(both, ob, T0, resamples=20)
+        self.assertEqual((full["blocks_with_row"], full["dropped"]), (16 + 4 + 1, {"noul": 1}))
+        self.assertEqual((e["blocks_with_row"], e["dropped"]), (16, {}))
+
+    def test_units_of_the_kept_rows_are_the_units_of_every_row_less_the_excluded_days(self):
+        both, ob = self._load(self.both)
+        live = sorted((r for r in both if report._live(r)), key=lambda r: r["tick_id"])
+        kept = [r for r in live if inference.kept_tick(r["tick_id"], T0, {2})]
+        all_units, _, _ = report.h2_units(live, ob, T0)
+        kept_units, _, _ = report.h2_units(kept, ob, T0)
+        self.assertEqual(kept_units, [u for u in all_units if inference.day_of_block(u["k"]) != 2])   # blocks nest in days
+        self.assertLess(len(kept_units), len(all_units))
+
+    def test_trades_per_day_and_the_side_numbers_are_printed(self):
+        code, out, err = _main(["--sample", "--log", self.log, "--t0", T0S, "--now", "2026-10-21T10:00", "--resamples", "40",
+                                "--exclusions", self.ex])
+        self.assertEqual(code, 0, err)
+        self.assertIn("trades 32 vs 0 (1.19 vs 0.00 per day over 27 kept days)", out)       # PREREG §4: trades/day each side
+        self.assertIn("every tick mean d_t 8.7977 over 242", out)                          # day 1's 242 rows, not day 2's
+        one, o1 = self._load(self.day1)
+        s = inference.h2(one, o1, T0, resamples=20)["side_units"]
+        self.assertIn(f"  descriptive (PREREG §5, never claimed): Spearman rho {inference._f(s['rho'])} over the 16 units;", out)
+        bu = s["brier_up"]
+        self.assertIn(f"  descriptive: Brier on the units up15 {inference._f(bu[0])} vs base {inference._f(bu[1])}", out)
+        self.assertIn("  descriptive: measured tails (>= 0.99 / < 0.15) on the units up15 0/0, down15 0/0;", out)
+        self.assertIn("  descriptive: the trend word (no model): units r(lean, trend) undefined (no variance in trend)", out)
+
+
 class Pending(unittest.TestCase):
     """The clock lifts at T0 + 28 d, but the last block's unit needs the row at t + 900 s +- 30 s:
     a run in between would count that outcome as a gap and drop the unit for good."""
