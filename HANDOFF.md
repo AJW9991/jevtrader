@@ -10,7 +10,7 @@ options below). Nothing here reaches the Mac until Alex pulls (below). Supersede
 - The Mac's loop is untouched by this session (no `data/` here). Sample: `prereg-v1`, T0
   2026-09-25 21:40Z, ends 2026-10-23 21:40Z; day 3 of 28 on 2026-09-28. Arm B is v2 since
   2026-09-26 22:21Z. Spend ≈ $0.05 to date.
-- The merge (`git log 09e867f..origin/main`): `make test` green (825 tests) under 3.11-3.13 here, and in CI on
+- The merge (`git log 09e867f..origin/main`): `make test` green (834 tests) under 3.11-3.13 here, and in CI on
   every push (`.github/workflows/test.yml`): Linux 3.11-3.14, macOS 3.14, and six modes on 3.14 that were hand runs
   until 2026-09-28: warnings as errors, a C locale with UTF-8 mode off, a shuffled order, and the clock moved to the
   day-28 run, to 2026-11-15 and to 2027 (`make test-modes` runs them here, ~7 min). Reviewed by five code reviews, a
