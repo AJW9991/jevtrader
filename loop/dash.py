@@ -131,14 +131,26 @@ def _hour_cell(n, start, now):
     return "cell" + (f" b{b}" if b >= 0 else ""), f"{n}/{begun} priced ticks so far, the hour in progress"
 
 
-def spend_by_day(rows, t0=None):
+def spend_by_day(rows, t0=None, over=None):
+    """day label -> dollars: the input tokens the rows logged, at config.USD_PER_MTOK. A count past a
+    float's range is left out (report._num). A day whose counts, each in range, sum past it is left out
+    too, and its label goes on `over` (a list) when one is given, so the page can name it: until
+    2026-09-28 two rows of int(1e308) on one day raised OverflowError here and the page was not built."""
     c = collections.Counter()
     for r in rows:
         j = r.get("jev")
         tok = j.get("input_tokens") if isinstance(j, dict) else None     # a foreign row's jev may not be a dict
         if report._num(tok) and tok > 0:                                     # a count past a float's range is not charted
             c[report.day_of(r.get("tick_id"), t0)] += tok
-    return {d: t * config.USD_PER_MTOK / 1e6 for d, t in c.items()}
+    out, past = {}, []
+    for d, t in c.items():
+        try:
+            out[d] = t * config.USD_PER_MTOK / 1e6                           # the int sum becomes a float here
+        except OverflowError:
+            past.append(d)
+    if over is not None:
+        over.extend(sorted(past))
+    return out
 
 
 def latency_by_day(rows, t0=None):
@@ -382,7 +394,9 @@ def render(rows, outs, t0=None, now=None, hb=None, halt=False, props=(), current
     cov_since = None
     if t0 is not None and now.timestamp() > t0:
         cov_since = min(1.0, h["priced"] / max(1.0, (min(now.timestamp(), t0 + report.SAMPLE_DAYS * 86400) - t0) / config.CADENCE_S))
-    spend = spend_by_day(rows, t0)
+    spend_over = []                                                      # days whose summed tokens are past a float's range
+    spend = spend_by_day(rows, t0, over=spend_over)
+    usd_all = h_all.get("usd")                                           # a whole-log sum past a float's range may come back as no number
     lat = latency_by_day(sample, t0)
     abs_day = absence_by_day(sample, t0)
     days_seen = sorted({d["day"] for d in h_all["days"]})
@@ -427,7 +441,9 @@ def render(rows, outs, t0=None, now=None, hb=None, halt=False, props=(), current
              _tile("latency p95", f"{h['latency_p95']:.0f} ms" if h["latency_p95"] is not None else "-", f"mean {h['latency_mean']:.0f} ms" if h["latency_mean"] else ""),
              _tile("realised horizon", f"{hz['mean']:.0f} s" if hz["mean"] is not None else "-",
                    (f"|offset| p95 {hz['p95']:.0f} s, max {hz['max']:.0f} s; " if hz["p95"] is not None else "") + f"isolated skips {hz['skips']}"),
-             _tile("spend, whole log", f"${h_all['usd']:.4f}", f"${h_all['usd'] / max(1, len(days_seen)):.4f} per logged day; tripwire ${config.DAILY_SPEND_HALT_USD:g}/day"),
+             (_tile("spend, whole log", f"${usd_all:.4f}", f"${usd_all / max(1, len(days_seen)):.4f} per logged day; tripwire ${config.DAILY_SPEND_HALT_USD:g}/day")
+              if report._num(usd_all) else
+              _tile("spend, whole log", "past range", f"the logged input tokens sum past a float's range; tripwire ${config.DAILY_SPEND_HALT_USD:g}/day", "crit")),
              _tile("drift", str(h["drift"]), ", ".join(f"{k} {v}" for k, v in sorted(h["models"].items())) or "no answers", "crit" if h["drift"] else ""),
              _tile("key answering", "loop key" if keys and not h["shared_key_rows"] else "SHARED KEY" if h["shared_key_rows"] else "-",
                    key_txt, "crit" if h["shared_key_rows"] else ""),
@@ -503,10 +519,11 @@ def render(rows, outs, t0=None, now=None, hb=None, halt=False, props=(), current
                else f"{d['day'][:4]}-{d['day'][4:6]}-{d['day'][6:]}")
         ab = abs_day.get(d["day"])
         p95 = (lat.get(d["day"]) or (None, None, 0))[1]
+        usd = "past range" if d["day"] in spend_over else f"${spend.get(d['day'], 0.0):.4f}"
         t.append(f"<tr><td>{lab}</td><td>{d['ticks']}</td><td>{_mbar(d['cov'])}{_pc(d['cov'])}</td><td>{d['live']}</td>"
                  f"<td>{_mbar(d['fill'], report.BAD_FILL)}{_pc(d['fill'])}</td><td>{d['pending']}</td><td>{d['skips']}</td>"
                  f"<td>{_pc(d['jev_err'])}</td><td class='l'>{_esc(', '.join(f'{k} {v}' for k, v in sorted(ab.items())) if ab else '')}</td>"
-                 f"<td>{f'{p95:.0f} ms' if p95 is not None else ''}</td><td>${spend.get(d['day'], 0.0):.4f}</td><td class='l'>{flag}</td></tr>")
+                 f"<td>{f'{p95:.0f} ms' if p95 is not None else ''}</td><td>{usd}</td><td class='l'>{flag}</td></tr>")
     if not h["days"]:
         t.append("<tr><td colspan='12'>no rows in the sample yet</td></tr>")
     t.append("</table></div>")
@@ -515,13 +532,17 @@ def render(rows, outs, t0=None, now=None, hb=None, halt=False, props=(), current
     # -- spend and latency per day
     days = [d["day"] for d in h["days"]]
     if days:
-        items = [(_short(d), spend.get(d, 0.0), f"{d}: ${spend.get(d, 0.0):.4f} of the ${config.DAILY_SPEND_HALT_USD:g} tripwire", False) for d in days]
-        mx = max(v for _, v, _, _ in items)
+        left_out = [d for d in days if d in spend_over]                  # no bar: their summed tokens are past a float's range
+        items = [(_short(d), None, f"{d}: input tokens summed past a float's range, not charted", False) if d in spend_over else
+                 (_short(d), spend.get(d, 0.0), f"{d}: ${spend.get(d, 0.0):.4f} of the ${config.DAILY_SPEND_HALT_USD:g} tripwire", False) for d in days]
+        mx = max((v for _, v, _, _ in items if v is not None), default=0.0)
         parts.append(f"<h2>spend per day &middot; max ${mx:.4f}, tripwire ${config.DAILY_SPEND_HALT_USD:g}</h2>"
                      "<p class='sub'>input tokens the rows logged, at the configured rate; the top of the chart is the tripwire's dollar amount. The guard"
                      " itself counts per UTC day and charges a send with no logged count at 2,000 tokens, so it can trip on a day whose bar"
-                     " stays lower (make status shows its count).</p>"
-                     + _vbars(items, config.DAILY_SPEND_HALT_USD, max(1, len(items) // 14)))
+                     " stays lower (make status shows its count)."
+                     + (f" <span class='badge crit'>{len(left_out)} day(s) not charted</span> {_esc(', '.join(left_out))}: the input tokens"
+                        " logged that day sum past a float's range." if left_out else "")
+                     + "</p>" + _vbars(items, config.DAILY_SPEND_HALT_USD, max(1, len(items) // 14)))
         items = []
         for d in days:
             m, p95, n = lat.get(d) or (None, None, 0)

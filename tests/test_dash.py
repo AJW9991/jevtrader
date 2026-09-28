@@ -155,6 +155,33 @@ class Dash(unittest.TestCase):
         self.assertIn("<div class='cell b0' title='2026-09-25 03:00Z: 1/60 priced ticks'></div>", strip)
         self.assertIn("<div class='cell future' title='2026-09-25 04:00Z: not yet'></div>", strip)
 
+    def test_a_days_tokens_summed_past_a_floats_range_are_not_charted_and_the_page_says_so(self):
+        # 2026-09-28 (round 4): each count passes report._num, but two of int(1e308) on one day sum past a
+        # float's range, and `t * rate` raised OverflowError: spend_by_day, and with it the page, died
+        rows = [dict(_row(m)) for m in range(20, 30)]
+        for i in (3, 4):
+            rows[i] = dict(rows[i], jev=dict(rows[i]["jev"], input_tokens=int(1e308)))
+        self.assertTrue(report._num(int(1e308)))
+        self.assertEqual(dash.spend_by_day(rows), {})                      # the day is left out, never a crash
+        nxt = dict(_row(20), tick_id="20260924T100000Z", ts_rx="2026-09-24T10:00:00.100Z")   # a day with an ordinary count
+        over = []
+        self.assertEqual(dash.spend_by_day(rows + [nxt], None, over), {"20260924": 1000 * config.USD_PER_MTOK / 1e6})
+        self.assertEqual(over, ["20260923"])
+        # the page. report.health's own whole-log sum is report's to guard; here a stand-in leaves the two
+        # counts out of it and answers usd None, so what is tested is the dash's own spend sections
+        real = report.health
+
+        def health(rs, *a, **k):
+            rs = [dict(r, jev=dict(r["jev"], input_tokens=None)) if r["jev"]["input_tokens"] == int(1e308) else r for r in rs]
+            return dict(real(rs, *a, **k), usd=None)
+        with mock.patch.object(report, "health", health):
+            page = dash.render(rows + [nxt], outcomes.join(rows + [nxt]), now=datetime.datetime(2026, 9, 24, 12, 0, tzinfo=datetime.timezone.utc))
+        self.assertIn("<span class='badge crit'>1 day(s) not charted</span> 20260923: the input tokens logged that day sum past a float's range.", page)
+        self.assertIn("title='20260923: input tokens summed past a float&#x27;s range, not charted'><div class='vbar' style='height:0%'>", page)
+        self.assertIn("title='20260924: $0.0000 of the $0.25 tripwire'", page)                # the other day keeps its bar
+        self.assertIn("<td>past range</td>", page)                                            # the per-day table
+        self.assertIn('<div class="tile crit"><div class="k">spend, whole log</div><div class="v">past range</div>', page)
+
     def test_skipped_log_lines_show_on_the_page_as_in_report_health(self):
         # the dash never passed the log's skipped lines to report.health, so its "skipped log lines"
         # text could not render: the one count of rows lost to torn lines was missing from the page
