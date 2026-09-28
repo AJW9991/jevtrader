@@ -305,8 +305,8 @@ def _run(row, dry, halt=False):
         row["absence"] = "guard"
         _err(f"prompts: {e}")
     except ValueError as e:
-        if stage == "columns":               # a choice outside buy/sell/hold: the answer is logged,
-            row["absence"], row["jev"]["error"] = "jev", "parse"   # the columns are not
+        if stage == "columns":               # a choice outside buy/sell/hold, a bool or non-finite
+            row["absence"], row["jev"]["error"] = "jev", "parse"   # field: the answer is logged, the columns are not
         elif stage == "ask":                 # past the ledger row: the request may have left
             row["absence"], row["jev"]["error"] = "jev", "unexpected"
         else:
@@ -318,7 +318,13 @@ def _run(row, dry, halt=False):
         else:
             row["absence"] = "feed" if stage == "feed" else "guard"
         _err(f"watchdog: {WATCHDOG_S} s passed during {stage}")
-    except Exception:
+    except Exception as e:
+        if stage == "columns" and isinstance(e, (TypeError, AttributeError)):
+            # a field of the wrong type (a null confidence, probabilities "x"): jev._parse checks
+            # only that the fields exist, so the rules refuse it here, exactly as a bad choice
+            row["absence"], row["jev"]["error"] = "jev", "parse"
+            _err(f"columns: {type(e).__name__}: {e}")
+            return
         if stage in ("ask", "columns"):      # the send had begun: "guard" would bill it $0 (billed_tokens)
             row["absence"], row["jev"]["error"] = "jev", "unexpected"
         else:

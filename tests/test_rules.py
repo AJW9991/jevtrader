@@ -59,6 +59,44 @@ class Shape(unittest.TestCase):
         with self.assertRaises(ValueError):
             rules.columns({"choice": "long", "probabilities": {}, "confidence": 0.9}, QUIET, NO_UP, NO_DOWN)
 
+    def test_a_bool_or_non_finite_reading_is_refused(self):
+        # float(True) is 1.0 (it would pass c99); NaN fails every cut (a silent hold); inf passes
+        # every cut. None of them is a reading: ValueError, which cycle.py logs as jev/parse.
+        for bad in (True, False, math.nan, math.inf, -math.inf, "nan", "inf", 10 ** 400):
+            with self.subTest(bad=bad):
+                a = action("buy", 0.9)
+                a["confidence"] = bad
+                with self.assertRaises(ValueError):
+                    rules.columns(a, QUIET, NO_UP, NO_DOWN)
+                for side in ("buy", "sell"):
+                    a = action("buy", 0.9)
+                    a["probabilities"][side] = bad
+                    with self.assertRaises(ValueError):
+                        rules.columns(a, QUIET, NO_UP, NO_DOWN)
+                for i in range(1, 4):                                     # skip, up15, down15
+                    args = [action("buy", 0.9), QUIET, NO_UP, NO_DOWN]
+                    args[i] = noul(bad)
+                    with self.assertRaises(ValueError):
+                        rules.columns(*args)
+
+    def test_a_wrong_typed_field_raises_and_a_missing_one_is_no_signal(self):
+        a = action("buy", 0.9)
+        a["confidence"] = None
+        with self.assertRaises(TypeError):
+            rules.columns(a, QUIET, NO_UP, NO_DOWN)
+        a = action("buy", 0.9)
+        a["probabilities"] = "x"
+        with self.assertRaises(AttributeError):
+            rules.columns(a, QUIET, NO_UP, NO_DOWN)
+        with self.assertRaises(TypeError):
+            rules.columns(action("buy", 0.9), noul(None), NO_UP, NO_DOWN)
+        # missing, as before: no signal
+        out = rules.columns({"choice": "buy"}, {}, {}, {})
+        self.assertEqual(out, {"argmax": "buy", **{k: "hold" for k in KEYS[1:]}})
+        # an int is a number, and 1 passes every cut, as 1.0 does
+        out = rules.columns({"choice": "sell", "probabilities": {"sell": 1}, "confidence": 1}, noul(0), noul(0), noul(1))
+        self.assertEqual((out["c99"], out["pbuy60"], out["noultail"]), ("sell", "sell", "sell"))
+
 
 class HandBuilt(unittest.TestCase):
     def test_buy_at_072(self):

@@ -502,6 +502,35 @@ class CycleTest(unittest.TestCase):
         self.assertEqual(row["columns"], {"a": None, "b": None})
         self.assertEqual(row["jev"]["input_tokens"], 480)
 
+    def test_a_wrong_typed_bool_or_non_finite_answer_field_is_parse_with_the_answer_logged(self):
+        # jev._parse checks only that the fields exist; the rules refuse what no cut can read.
+        # SPEC §2 keeps answers only on a `parse` row, so none of these may log "unexpected"
+        # (answers kept on a row that says the rules never saw them) or reach the columns.
+        cases = {"confidence null": ("a_action", "confidence", None),
+                 "skip.noul null": ("skip", "noul", None),
+                 "probabilities x": ("b_action", "probabilities", "x"),
+                 "confidence true": ("a_action", "confidence", True),     # float(True) = 1.0 would pass c99
+                 "confidence NaN": ("b_action", "confidence", float("nan")),
+                 "up15.noul Infinity": ("up15", "noul", float("inf")),
+                 "probabilities.buy true": ("a_action", "probabilities", {"buy": True, "sell": 0.0, "hold": 0.0})}
+        self.urlopen.side_effect = None
+        for i, (name, (qid, field, value)) in enumerate(cases.items()):
+            with self.subTest(name):
+                bad = json.loads(json.dumps(GOOD))
+                bad["answers"][qid][field] = value
+                self.urlopen.return_value = _Resp(bad)
+                with mock.patch("time.time", return_value=NOW + 60 * i):
+                    self.assertEqual(cycle.main(["--once"]), 0)
+                row = self.rows()[-1]
+                self.assertEqual((row["absence"], row["jev"]["error"]), ("jev", "parse"))
+                self.assertEqual(row["answers"]["a_action"]["choice"], "buy")     # paid for: kept
+                got = row["answers"][qid][field]
+                self.assertTrue(got == value or (got != got and value != value), (got, value))
+                self.assertEqual(row["columns"], {"a": None, "b": None})
+                self.assertEqual(row["jev"]["input_tokens"], 480)
+                self.assertNotIn("Traceback", self.err.getvalue())
+        self.assertEqual(len(self.rows()), len(cases))
+
     def test_an_unexpected_failure_after_the_send_began_is_billed(self):
         # "guard" rows are charged $0 by the spend guard; an exception once the request may
         # have left must not be one. usage.input_tokens = Infinity is jev's own `parse`.
