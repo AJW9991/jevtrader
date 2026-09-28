@@ -407,6 +407,15 @@ class CycleTest(unittest.TestCase):
                                                   " counts) is past a float's range"), reason)
                 self.assertNotIn("cannot be read", reason)
 
+    def test_contract_s3_says_todays_sum_past_a_floats_range_trips_the_guard_too(self):
+        # CONTRACT §3's guard step said only "a count past a float's range" counts as over the limit, while the
+        # guard also trips on counts that each fit a float and sum past one (the test above), and its HALT and
+        # status's line both name the sum: the contract a module is written to must say what the guard does
+        with open(os.path.join(config.REPO, "CONTRACT.md"), encoding="utf-8") as fh:
+            text = " ".join(fh.read().split())                                  # the paragraph is wrapped
+        guards = text.split("1. **Guards.**", 1)[1].split("**HALT stops sends only**", 1)[0]
+        self.assertIn("or a count, or today's sum of them, past a float's range, counts as over the limit", guards)
+
     def test_spend_widens_when_the_tail_starts_after_today(self):
         # rows stamped later than today (a clock that ran ahead, then stepped back) fill the tail, so
         # its first row is not today's: the read used to stop there and miss today's earlier rows

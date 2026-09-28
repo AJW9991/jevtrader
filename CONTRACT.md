@@ -253,8 +253,9 @@ Order, every time:
    live row that reached the model, SPEC §13.3; × `config.USD_PER_MTOK` / 1e6) ≥
    `config.DAILY_SPEND_HALT_USD` → write
    `data/HALT` with the reason; this tick is HALTED. A log that exists but cannot be read (a
-   0200 mode, a directory, EIO), or a count past a float's range, counts as over the limit: the
-   guard cannot count, so it trips (2026-09-28); a missing log is $0. `fcntl.flock` on
+   0200 mode, a directory, EIO), or a count, or today's sum of them, past a float's range,
+   counts as over the limit: the guard cannot count, so it trips (2026-09-28); a missing log
+   is $0. `fcntl.flock` on
    `data/loop.lock` non-blocking; if held → `absence: "lock"`, exit 0.
    **HALT stops sends only** (PROTOCOL §3.8, SPEC §13.2): a HALTED tick runs
    steps 2–4 as usual and then writes its row with `absence: "halt"` in place
