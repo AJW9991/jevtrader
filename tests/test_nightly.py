@@ -4,7 +4,7 @@ in --dry; promote refuses on a dirty tree and carries v1's three nouls byte for 
 propose.sh --dry turns the fixture reply into a proposals json. Offline: loop.jev.ask
 is mocked wherever the table is run, subprocess.run is mocked for git, and every
 write lands in a temp dir. Nothing here opens a socket."""
-import ast, datetime, hashlib, importlib.util, io, json, os, shutil, signal, subprocess, sys, tempfile, time, unittest, urllib.request
+import ast, datetime, hashlib, importlib.util, io, json, os, plistlib, re, shutil, signal, subprocess, sys, tempfile, time, unittest, urllib.request
 from contextlib import redirect_stdout
 from unittest import mock
 
@@ -1720,6 +1720,67 @@ class Capped(unittest.TestCase):
         self.assertEqual([l for l in code if "-m nightly.capped" in l], [])
         self.assertIn('CLAUDE_CAP_S="${JEVLOOP_CLAUDE_CAP_S:-2700}"', src)
         self.assertIn('[ $rc -eq 124 ] && fail "claude capped', src)
+
+
+class LaunchdPlists(unittest.TestCase):
+    """Both launchd/*.plist files are well-formed XML and parse to exactly the keys and values
+    STEPS.md installs. A '--' inside a comment (XML 1.0 §2.5 forbids it) made expat and xmllint
+    refuse the whole loop plist, though the installed copy loads on the Mac (Apple's reader looks
+    only for a comment's end), and nothing parsed either file, so a real break, a missing
+    </string>, would have reached a hand install unseen. The pinned dicts are the whole of each
+    file: a comment may change, a key or a value may not without this test changing with it.
+    plistlib never fetches the DOCTYPE's DTD; nothing here opens a socket."""
+    HOME = "/Users/alexanderward/Projects/jev-paper-loop"
+    PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+    EXPECTED = {
+        "com.alexward.jevloop.loop.plist": {
+            "Label": "com.alexward.jevloop.loop",
+            "ProgramArguments": ["/opt/homebrew/bin/python3", "-m", "loop.cycle", "--once"],
+            "WorkingDirectory": HOME,
+            "StartCalendarInterval": {},
+            "RunAtLoad": True,
+            "EnvironmentVariables": {"PATH": PATH},
+            "StandardOutPath": HOME + "/logs/loop-launchd.log",
+            "StandardErrorPath": HOME + "/logs/loop-launchd.log"},
+        "com.alexward.jevloop.nightly.plist": {
+            "Label": "com.alexward.jevloop.nightly",
+            "ProgramArguments": ["/bin/bash", HOME + "/nightly/propose.sh"],
+            "WorkingDirectory": HOME,
+            "StartCalendarInterval": {"Hour": 3, "Minute": 30},
+            "EnvironmentVariables": {"PATH": PATH},
+            "StandardOutPath": HOME + "/logs/nightly-launchd.log",
+            "StandardErrorPath": HOME + "/logs/nightly-launchd.log",
+            "RunAtLoad": False},
+    }
+
+    @staticmethod
+    def _typed(v):
+        # assertEqual alone takes True for 1 and 3.0 for 3; a <true/> or an <integer> must stay one
+        if isinstance(v, dict):
+            return {k: LaunchdPlists._typed(x) for k, x in v.items()}
+        if isinstance(v, list):
+            return [LaunchdPlists._typed(x) for x in v]
+        return (type(v).__name__, v)
+
+    def test_every_plist_parses_to_its_pinned_keys_and_values(self):
+        here = os.path.join(REPO, "launchd")
+        names = sorted(n for n in os.listdir(here) if n.endswith(".plist"))
+        self.assertEqual(names, sorted(self.EXPECTED))                  # a new plist gets pinned here too
+        for name in names:
+            with self.subTest(plist=name):
+                with open(os.path.join(here, name), "rb") as fh:
+                    got = plistlib.load(fh, fmt=plistlib.FMT_XML)
+                self.assertEqual(self._typed(got), self._typed(self.EXPECTED[name]))
+
+    def test_no_comment_holds_a_double_hyphen(self):
+        # the same break as above, named by line: expat says only "not well-formed (invalid token)"
+        for name in sorted(self.EXPECTED):
+            with open(os.path.join(REPO, "launchd", name), encoding="utf-8") as fh:
+                text = fh.read()
+            bad = [text.count("\n", 0, m.start()) + 1 for m in re.finditer(r"<!--(.*?)-->", text, re.S)
+                   if "--" in m.group(1) or m.group(1).endswith("-")]
+            self.assertEqual(bad, [], f"{name}: a comment starting on these lines holds '--'")
+
 
 if __name__ == "__main__":
     unittest.main()

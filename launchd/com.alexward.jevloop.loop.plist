@@ -8,7 +8,7 @@
 
   <!-- One tick a minute: three public Coinbase GETs, one Jev request
        (~1.8 KB body, ~$0.04/day at $0.042/MTok), one row appended to
-       data/decisions.jsonl. `--once` exits every time; a launchd double-fire
+       data/decisions.jsonl. With the once flag below it exits every time; a launchd double-fire
        meets the flock on data/loop.lock and writes an absence "lock" row
        rather than a second send. Hand-installed only (PROTOCOL.md §3.10),
        after step 0 of STEPS.md; never by a script. -->
@@ -52,9 +52,10 @@
 
   <!-- launchd appends. Every tick writes ONE summary line to stderr
        (tick_id, mode, absence, state, rule_c, a/b argmax, latency, tokens,
-       error, key PATH -- never a value; ~200 B, ~0.3 MB/day), plus any
-       traceback or watchdog line. stdout stays empty: only --dry prints the
-       body. logs/ is gitignored. -->
+       error, key PATH, never a value; ~200 B, ~0.3 MB/day), plus any
+       traceback or watchdog line. stdout stays empty: only a dry run prints
+       the body. logs/ is gitignored. A comment here may not hold two hyphens
+       in a row (XML 1.0; tests/test_nightly.py parses this file). -->
   <key>StandardOutPath</key>
   <string>/Users/alexanderward/Projects/jev-paper-loop/logs/loop-launchd.log</string>
 
