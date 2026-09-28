@@ -235,6 +235,64 @@ class LiveLog(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("NOT the pre-registered run", out)
 
+    def test_now_is_refused_on_the_live_log_in_both_modes(self):
+        for mode in ("--sample", "--pre-t0"):
+            with mock.patch.object(outcomes, "load", side_effect=AssertionError("the log was opened")):
+                code, out, err = self._run([mode, "--now", "2026-10-24T00:00"], now=None)
+            self.assertEqual((code, out), (3, ""), mode)
+            self.assertIn("refusing: --now 2026-10-24T00:00 overrides the clock, and the live log is read on the real clock only", err)
+
+    def test_a_t0_other_than_prereg_section_11_is_refused_on_the_live_log_in_both_modes(self):
+        for mode, t0 in (("--sample", "2026-09-23T10:00"), ("--pre-t0", "2026-09-26T00:00"), ("--pre-t0", "2026-09-25T21:39")):
+            with mock.patch.object(outcomes, "load", side_effect=AssertionError("the log was opened")):
+                code, out, err = self._run([mode, "--t0", t0])
+            self.assertEqual((code, out), (3, ""), (mode, t0))
+            self.assertIn(f"refusing: --t0 {t0} is not PREREG §11's T0 2026-09-25T21:40Z", err)
+        with mock.patch.object(inference, "bootstrap", _fake_bootstrap):   # the sealed T0 itself, either spelling, is fine
+            for t0 in ("20260925T214000Z", "2026-09-25T21:40"):
+                code, out, err = self._run(["--sample", "--t0", t0])
+                self.assertEqual(code, 0, err)
+                self.assertIn("T0 2026-09-25T21:40Z", out)
+
+    def test_another_prereg_is_refused_on_the_live_log(self):
+        p = os.path.join(self.tmp, "PREREG.md")
+        with open(p, "w") as fh:
+            fh.write("T0 (first tick_id of day 1): `20260901T000000Z`\n")
+        code, out, err = self._run(["--pre-t0", "--prereg", p])
+        self.assertEqual((code, out), (3, ""))
+        self.assertIn(f"--prereg {p} is not the repository's PREREG.md", err)
+
+    def test_the_real_clock_still_refuses_the_live_sample_before_day_28(self):
+        code, out, err = self._run(["--sample"], now=datetime.datetime(2026, 10, 23, 21, 39, tzinfo=datetime.timezone.utc))
+        self.assertEqual((code, out), (3, ""))
+        self.assertIn("refusing to look: the sample ends 2026-10-23T21:40Z", err)
+
+
+class PreT0Cut(unittest.TestCase):
+    """--pre-t0 takes the rows before the EARLIER of --t0 and PREREG §11's T0 (2026-09-25T21:40Z)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp()
+        cls.log = os.path.join(cls.tmp, "copy.jsonl")                 # not the live log: --t0 is accepted
+        sealed = report._t0("2026-09-25T21:40")
+        _write(cls.log, _minutes(sealed - 10 * 60, sealed + 10 * 60), garbage=False)   # 21:30 .. 21:49, ten each side
+        cls.ex = os.path.join(cls.tmp, "exclusions.tsv")
+        with open(cls.ex, "w") as fh:
+            fh.write("day\tfill%\tjev-err%\treason\n")
+
+    def test_a_later_t0_still_cuts_at_the_sealed_t0(self):
+        code, out, err = _main(["--pre-t0", "--log", self.log, "--t0", "2026-09-26T00:00", "--resamples", "20", "--exclusions", self.ex])
+        self.assertEqual(code, 0, err)
+        self.assertIn("rows in scope 10\n", out)                      # 21:30 .. 21:39, never a sample row
+        self.assertIn("rows before 2026-09-25T21:40Z (the earlier of --t0 and PREREG §11's T0)", out)
+
+    def test_an_earlier_t0_cuts_there(self):
+        code, out, err = _main(["--pre-t0", "--log", self.log, "--t0", "2026-09-25T21:35", "--resamples", "20", "--exclusions", self.ex])
+        self.assertEqual(code, 0, err)
+        self.assertIn("rows in scope 5\n", out)
+        self.assertIn("rows before 2026-09-25T21:35Z", out)
+
 
 class Pending(unittest.TestCase):
     """The clock lifts at T0 + 28 d, but the last block's unit needs the row at t + 900 s +- 30 s:

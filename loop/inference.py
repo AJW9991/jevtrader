@@ -7,7 +7,11 @@
 Written 2026-09-26 (day 2 of 28), decided by Alex the same day: the code that will be run is
 committed while no sample number has been looked at, and it REFUSES the sample until
 T0 + 28 days (exit 3, before the log is opened). --now exists for the tests and is printed
-in the header, so a run that overrode the clock says so in its own output. The clock is not
+in the header, so a run that overrode the clock says so in its own output. On the live log
+(--log resolving to config.DECISIONS) nothing may move the clock or the anchor: --now, a --t0
+other than PREREG §11's and another --prereg are refused (exit 3) in both modes, and so is
+--sample at any --resamples but 10,000; --pre-t0 cuts at the EARLIER of --t0 and the sealed
+T0, so a later --t0 never pulls a sample row into the smoke. The clock is not
 the whole guard: the last block's H2 unit needs the row at t + 900 s +- 30 s, which is written
 up to ~15.5 min after T0 + 28 d, so --sample also refuses (exit 3) while any kept block's
 first live row has a gap outcome whose t + h the log has not reached (pending_units); a
@@ -234,8 +238,9 @@ def _iso_second(epoch):
     return datetime.datetime.fromtimestamp(math.ceil(epoch), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def render(mode, t0, now, log, log_sha, n_rows, excluded, excl_lines, kept_days, h1s, h2s, resamples, pending=None):
-    """pending: None when --accept-pending was not given, else the pending_units it overrode."""
+def render(mode, t0, now, log, log_sha, n_rows, excluded, excl_lines, kept_days, h1s, h2s, resamples, pending=None, cut=None):
+    """pending: None when --accept-pending was not given, else the pending_units it overrode.
+    cut: --pre-t0's end of scope, the earlier of --t0 and PREREG §11's T0."""
     lines = [f"jev-paper-loop inference (PREREG §4-§5), mode {mode}, run at {now.strftime('%Y-%m-%dT%H:%MZ')}",
              f"  log {log} sha256 {log_sha}; rows in scope {n_rows}",
              f"  T0 {report._iso_minute(t0)}; anchor for blocks and days {'T0' if mode == 'sample' else 'the log first tick (pre-T0, descriptive)'}",
@@ -251,7 +256,8 @@ def render(mode, t0, now, log, log_sha, n_rows, excluded, excl_lines, kept_days,
                      " (for a log that really stopped; without the flag the run is refused)"
                      + (": " + ", ".join(t for t, _ in pending) if pending else ""))
     if mode == "pre-t0":
-        lines.append("  PRE-T0: shakedown rows only (PREREG §2), never in the sample; every number here is a smoke of the procedure, not a result")
+        lines.append("  PRE-T0: shakedown rows only (PREREG §2), never in the sample; every number here is a smoke of the procedure, not a result;"
+                     f" rows before {report._iso_minute(cut if cut is not None else t0)} (the earlier of --t0 and PREREG §11's T0)")
     if mode == "sample" and kept_days < MIN_KEPT_DAYS:
         lines.append(f"  VOID (PREREG §8.3): fewer than {MIN_KEPT_DAYS} days kept; reported as void, a second block is a new pre-registration")
     lines.append("")
@@ -314,6 +320,19 @@ def main(argv=None, now=None):
         ap.error(f"--t0 wants YYYY-MM-DDTHH:MM (UTC) or a tick_id, got {args.t0!r}")
     if t0 is None:
         ap.error("no T0: PREREG.md §11 is unsealed and no --t0 given")
+    sealed = _read_t0(args.prereg)                          # PREREG §11's T0 (None before sealing)
+    if live_log:                                            # the clock and T0 of the live log are the real ones, in both modes
+        why = None
+        if args.now:
+            why = f"--now {args.now} overrides the clock, and the live log is read on the real clock only (tests use a temporary log)"
+        elif os.path.realpath(args.prereg) != os.path.realpath(os.path.join(config.REPO, "PREREG.md")):
+            why = f"--prereg {args.prereg} is not the repository's PREREG.md, whose §11 anchors the live log"
+        elif args.t0 and t0 != sealed:
+            why = (f"--t0 {args.t0} is not PREREG §11's T0 {report._iso_minute(sealed) if sealed is not None else '(unsealed)'};"
+                   " the live log's blocks and days are anchored at the sealed T0 only")
+        if why:
+            sys.stderr.write(f"inference: refusing: {why} (PREREG §2, §8.4-§8.5)\n")
+            return EXIT_REFUSED
     if args.now:
         try:
             now = datetime.datetime.strptime(args.now, "%Y-%m-%dT%H:%M").replace(tzinfo=datetime.timezone.utc)
@@ -333,13 +352,15 @@ def main(argv=None, now=None):
     bad = []
     rows = outcomes.load(args.log, bad)
     outs = outcomes.join(rows)
+    cut = None
     if args.sample:
         mode, anchor = "sample", t0
         scope = report.in_sample(rows, t0)
         kept = N_DAYS - len(excluded)
     else:
         mode = "pre-t0"
-        scope = [r for r in rows if report.tick_epoch(r["tick_id"]) < t0]
+        cut = t0 if sealed is None else min(t0, sealed)     # a later --t0 never pulls a sample row into the smoke
+        scope = [r for r in rows if report.tick_epoch(r["tick_id"]) < cut]
         anchor = report.tick_epoch(min(r["tick_id"] for r in scope)) if scope else t0
         excluded, excl_lines = set(), []                    # exclusions name sample days; none apply before T0
         kept = N_DAYS
@@ -358,7 +379,7 @@ def main(argv=None, now=None):
         pending = pend if args.accept_pending else None
     text = render(mode, t0, now, args.log, sha256_of(args.log) if os.path.exists(args.log) else "-", len(scope), excluded, excl_lines,
                   kept, h1(scope, outs, anchor, excluded, args.resamples, n_blocks), h2(scope, outs, anchor, excluded, args.resamples, n_blocks),
-                  args.resamples, pending)
+                  args.resamples, pending, cut)
     if args.now:
         text = text.replace("\n", f" (clock overridden with --now {args.now})\n", 1)
     sys.stdout.write(text)
