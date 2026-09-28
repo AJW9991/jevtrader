@@ -193,6 +193,91 @@ class ReadersDiff(unittest.TestCase):
                 self.assertEqual(os.listdir(tmpdir), [])
                 self.assertIs(signal.getsignal(sig), signal.SIG_IGN)
 
+    def _stand_ins(self):
+        """{signal: handler} for SIGTERM and SIGHUP: a handler that fails the test, in place of the default
+        action (which would end the whole run) until the test ends."""
+        got = {}
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            def unguarded(signum, frame, name=sig.name):
+                raise AssertionError(f"readers-diff installed no {name} handler")
+            self.addCleanup(signal.signal, sig, signal.signal(sig, unguarded))
+            got[sig] = unguarded
+        return got
+
+    def _removing_amid(self, *sigs):
+        """shutil.rmtree for the tool, sending `sigs` to this process first: signals that land while the
+        copy is being removed."""
+        real = shutil.rmtree
+
+        def rmtree(path, *a, **k):
+            for sig in sigs:
+                os.kill(os.getpid(), sig)
+            return real(path, *a, **k)
+        return rmtree
+
+    def test_a_burst_of_signals_during_the_unwind_still_removes_the_copy(self):
+        # _stop raised on every signal, so one landing in the unwind (`while kill -TERM $pid; do :; done`)
+        # cut it short: in the finally it left the copy, 20 runs out of 20, and before it the probe's own
+        # cleanup (subprocess.run kills and waits for the probe). Only the first signal unwinds now: a run
+        # stopped by SIGTERM mid-probe exits 143 and every cleanup runs, though a SIGHUP lands in the
+        # probe's and three SIGTERMs and three SIGHUPs land while the copy is removed
+        mod, handlers = self._module(), self._stand_ins()
+        tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmpdir, ignore_errors=True)
+        cleaned = []
+
+        def killed(tree, log):
+            try:
+                os.kill(os.getpid(), signal.SIGTERM)
+            finally:
+                os.kill(os.getpid(), signal.SIGHUP)
+                cleaned.append(tree)                                       # the probe's cleanup ran to its end
+            return {}, None
+        burst = self._removing_amid(*[signal.SIGTERM, signal.SIGHUP] * 3)
+        with mock.patch.object(mod, "read_with", killed), mock.patch.object(mod.tempfile, "tempdir", tmpdir), \
+                mock.patch.object(mod.shutil, "rmtree", burst):
+            with self.assertRaises(SystemExit) as cm:
+                mod.main([REPO, REPO, "--log", self.log])
+        self.assertEqual(cm.exception.code, 128 + signal.SIGTERM)                 # the first signal's
+        self.assertEqual(cleaned, [REPO])
+        self.assertEqual(os.listdir(tmpdir), [])
+        self.assertEqual({s: signal.getsignal(s) for s in handlers}, handlers)      # both put back
+
+    def test_a_signal_during_a_finished_runs_removal_still_stops_it(self):
+        # a first signal that lands only while a finished run removes its copy is neither lost (the report
+        # printed, exit 0) nor allowed to cut the removal short: the copy goes, then the run stops with
+        # 128 + the signal and no report
+        mod, handlers = self._module(), self._stand_ins()
+        tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmpdir, ignore_errors=True)
+        out = io.StringIO()
+        with mock.patch.object(mod.tempfile, "tempdir", tmpdir), mock.patch.object(mod.shutil, "rmtree", self._removing_amid(signal.SIGHUP)), \
+                contextlib.redirect_stdout(out):
+            self.assertEqual(mod.main([REPO, REPO, "--log", self.log]), 128 + signal.SIGHUP)
+        self.assertEqual(out.getvalue(), "")
+        self.assertEqual(os.listdir(tmpdir), [])
+        self.assertEqual({s: signal.getsignal(s) for s in handlers}, handlers)
+
+    def test_a_signal_the_moment_the_handler_is_set_still_removes_the_directory(self):
+        # the handlers are set inside the try: a SIGTERM that lands as soon as the tool's handler is in
+        # place unwinds through the finally, so no readers-diff-* directory is left and both are put back
+        mod, handlers = self._module(), self._stand_ins()
+        tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmpdir, ignore_errors=True)
+        real = signal.signal
+
+        def setting(sig, handler):
+            before = real(sig, handler)
+            if sig == signal.SIGTERM and handler not in handlers.values():     # the tool's own, just set
+                os.kill(os.getpid(), signal.SIGTERM)
+            return before
+        with mock.patch.object(mod.tempfile, "tempdir", tmpdir), mock.patch.object(mod.signal, "signal", setting):
+            with self.assertRaises(SystemExit) as cm:
+                mod.main([REPO, REPO, "--log", self.log])
+        self.assertEqual(cm.exception.code, 128 + signal.SIGTERM)
+        self.assertEqual(os.listdir(tmpdir), [])
+        self.assertEqual({s: signal.getsignal(s) for s in handlers}, handlers)
+
     def test_a_copy_that_cannot_be_written_is_a_message(self):
         mod = self._module()
         real_open = open

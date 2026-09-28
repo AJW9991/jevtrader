@@ -94,13 +94,19 @@ def main(argv=None):
         where = f" in {os.path.dirname(e.filename)}" if e.filename else ""
         sys.stderr.write(f"readers-diff: cannot make a temporary directory{where}: {e.strerror or e} (set TMPDIR elsewhere)\n")
         return 2
-    def _stop(signum, frame):                               # a SIGTERM or SIGHUP mid-probe: unwind, so the copy
-        raise SystemExit(128 + signum)                      # of the decision log is removed below
+    stopped, removing = None, False
+
+    def _stop(signum, frame):                               # a SIGTERM or SIGHUP mid-probe: unwind, so the copy of the
+        nonlocal stopped                                    # decision log is removed below. The first signal only, and
+        if stopped is None:                                 # never once the removal has begun: a second one raised there
+            stopped = signum                                # (a burst, `while kill -TERM`) cut rmtree short
+            if not removing:
+                raise SystemExit(128 + signum)
     old = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGHUP)}
     caught = [s for s, h in old.items() if h is not signal.SIG_IGN]   # one the caller ignores (nohup, trap '') stays
-    for s in caught:                                                  # ignored, here and in the probes it starts
-        signal.signal(s, _stop)
-    try:
+    try:                                                              # ignored, here and in the probes it starts
+        for s in caught:                                    # set inside the try: a signal the moment one is set
+            signal.signal(s, _stop)                         # still reaches the finally
         copy = os.path.join(snap, "decisions.jsonl")
         try:
             with open(copy, "wb") as fh:
@@ -115,9 +121,12 @@ def main(argv=None):
                 sys.stderr.write(f"readers-diff: the {name} tree {tree} cannot read {args.log}: {why}\n")
                 return 2
     finally:
+        removing = True
         shutil.rmtree(snap, ignore_errors=True)
         for s in caught:
             signal.signal(s, old[s])
+    if stopped is not None:                                 # the first signal came while a finished run removed its
+        return 128 + stopped                                # copy: it still stops the run, without the report
     sys.stdout.write(f"log {args.log} ({len(data)} bytes, one copy read by both): read by old {os.path.abspath(args.old)}"
                      f" and new {os.path.abspath(args.new)}\n")
     sys.stdout.write("\n".join(lines(read["old"], read["new"])) + "\n")
