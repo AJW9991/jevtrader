@@ -332,7 +332,11 @@ def _calendar_run(days, now, max_days=STRIP_DAYS):
     older = [d for d in past if day(d) < floor]
     run = []
     if past:
-        a = day(recent[0]) if recent else today             # from the first logged day inside the window
+        # from the window's floor when the log ran up to shortly before it (its empty days are gaps, and
+        # an outage longer than the window is the whole window empty); else from the first logged day in
+        # it (a lone row from a clock stepped back to 1970 does not pad the window with false gaps)
+        ran_before = bool(older) and day(older[-1]) >= floor - datetime.timedelta(days=7)
+        a = floor if ran_before or not recent else day(recent[0])
         run = [(a + datetime.timedelta(days=i)).strftime("%Y%m%d") for i in range((today - a).days + 1)]
     return run + [d for d in days if day(d) > today], older
 

@@ -145,6 +145,12 @@ class Dash(unittest.TestCase):
         run, older = dash._calendar_run(logged, now)                    # the cap: 35 days ending today
         self.assertEqual((len(run), run[0], run[-1]), (dash.STRIP_DAYS, "20260827", "20260930"))
         self.assertEqual((len(older), older[0], older[-1]), (1 + 26, "19700101", "20260826"))
+        # the log ran until 08-26 and then stopped: the whole window is empty cells, not today alone
+        run, older = dash._calendar_run([f"202608{d:02d}" for d in range(1, 27)], now)
+        self.assertEqual((len(run), run[0], run[-1]), (dash.STRIP_DAYS, "20260827", "20260930"))
+        # it ran until 08-26, stopped, and came back on 09-20: the empty in-window days before 09-20 show
+        run, _ = dash._calendar_run([f"202608{d:02d}" for d in range(1, 27)] + ["20260920"], now)
+        self.assertEqual((len(run), run[0]), (dash.STRIP_DAYS, "20260827"))
         rows = []
         for tick in ("19700101T000000Z", "20260929T100000Z", "20260929T100100Z"):
             r = dict(_row(0))
