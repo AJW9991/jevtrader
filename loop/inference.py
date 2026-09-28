@@ -1,12 +1,18 @@
 """loop/inference.py -- PREREG §4-§5's inference, written before the data, run once at day 28.
 
     python3 -m loop.inference --sample [--now YYYY-MM-DDTHH:MM] [--exclusions data/exclusions.tsv] [--out FILE]
+                                       [--accept-pending]
     python3 -m loop.inference --pre-t0                       # the shakedown rows before T0: a smoke, never a claim
 
 Written 2026-09-26 (day 2 of 28), decided by Alex the same day: the code that will be run is
 committed while no sample number has been looked at, and it REFUSES the sample until
 T0 + 28 days (exit 3, before the log is opened). --now exists for the tests and is printed
-in the header, so a run that overrode the clock says so in its own output. --pre-t0 takes
+in the header, so a run that overrode the clock says so in its own output. The clock is not
+the whole guard: the last block's H2 unit needs the row at t + 900 s +- 30 s, which is written
+up to ~15.5 min after T0 + 28 d, so --sample also refuses (exit 3) while any kept block's
+first live row has a gap outcome whose t + h the log has not reached (pending_units); a
+pending unit would otherwise be counted as a gap and silently dropped. --accept-pending is
+for a log that really stopped, and the header says it was given. --pre-t0 takes
 the rows before T0 (PREREG §2: shakedown and day 0, never in the sample) with the log's
 first tick as the anchor, as a live check that the procedure runs end to end.
 
@@ -175,6 +181,28 @@ def h2(rows, outs, anchor, excluded=(), resamples=RESAMPLES, n_blocks=BLOCKS_PER
             "lower": bs["lower"] if bs else None, "reject": bs["reject"] if bs else False}
 
 
+def pending_units(rows, scope, outs, anchor, excluded=(), n_blocks=BLOCKS_PER_DAY * N_DAYS):
+    """The H2 units whose t + h the log has not reached yet: a kept block's first live row with
+    both nouls (report._h2_pair says "gap", not "noul") whose ts_rx + HORIZON_S + JOIN_TOL_S is
+    later than the last ts_rx of the whole log (`rows`), so a row inside its join window can still
+    be written. Counting such a unit as a gap would drop it for good (PREREG §5: the join is over
+    the whole log, the block is never refilled). Returns [(tick_id, the ts_rx epoch it waits for)]."""
+    last = max((outcomes.ts_epoch(r["ts_rx"]) for r in rows), default=None)
+    if last is None:
+        return []
+    live = sorted((r for r in scope if report._live(r)), key=lambda r: r["tick_id"])
+    _, _, firsts = report.h2_units(live, outs, anchor)
+    out = []
+    for k in sorted(firsts):
+        r = firsts[k]
+        if not 0 <= k < n_blocks or day_of_block(k) in excluded or report._h2_pair(r, outs) != "gap":
+            continue
+        until = outcomes.ts_epoch(r["ts_rx"]) + config.HORIZON_S + outcomes.JOIN_TOL_S
+        if until > last:
+            out.append((r["tick_id"], until))
+    return out
+
+
 # ---- the run -----------------------------------------------------------------------------------
 def sha256_of(path):
     h = hashlib.sha256()
@@ -188,7 +216,13 @@ def _f(x, nd=4):
     return "n/a" if x is None else f"{x:.{nd}f}"
 
 
-def render(mode, t0, now, log, log_sha, n_rows, excluded, excl_lines, kept_days, h1s, h2s, resamples):
+def _iso_second(epoch):
+    """epoch -> 'YYYY-MM-DDTHH:MM:SSZ', rounded UP to the second (a wait-until time is never early)."""
+    return datetime.datetime.fromtimestamp(math.ceil(epoch), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def render(mode, t0, now, log, log_sha, n_rows, excluded, excl_lines, kept_days, h1s, h2s, resamples, pending=None):
+    """pending: None when --accept-pending was not given, else the pending_units it overrode."""
     lines = [f"jev-paper-loop inference (PREREG §4-§5), mode {mode}, run at {now.strftime('%Y-%m-%dT%H:%MZ')}",
              f"  log {log} sha256 {log_sha}; rows in scope {n_rows}",
              f"  T0 {report._iso_minute(t0)}; anchor for blocks and days {'T0' if mode == 'sample' else 'the log first tick (pre-T0, descriptive)'}",
@@ -196,6 +230,10 @@ def render(mode, t0, now, log, log_sha, n_rows, excluded, excl_lines, kept_days,
               else "  days and exclusions: not applicable before T0; blocks run over the shakedown's own span"),
              f"  bootstrap: circular blocks of {BLOCK_LEN}, {resamples} resamples, seed {SEED}, one generator per statistic;"
              f" lower bound = sorted[{ALPHA_RANK}] (nearest-rank 2.5th percentile); reject iff > 0"]
+    if pending is not None:
+        lines.append(f"  --accept-pending given: {len(pending)} H2 unit(s) whose t + h the log has not reached are counted as gaps"
+                     " (for a log that really stopped; without the flag the run is refused)"
+                     + (": " + ", ".join(t for t, _ in pending) if pending else ""))
     if mode == "pre-t0":
         lines.append("  PRE-T0: shakedown rows only (PREREG §2), never in the sample; every number here is a smoke of the procedure, not a result")
     if mode == "sample" and kept_days < MIN_KEPT_DAYS:
@@ -215,12 +253,12 @@ def render(mode, t0, now, log, log_sha, n_rows, excluded, excl_lines, kept_days,
     lines.append("")
     lines.append("H2 -- Pearson r(lean, ret_h_bps) over the units (first live row of each block), alpha 0.025")
     h = h2s
+    units = f"  n units {h['n']} (blocks with a live row {h['blocks_with_row']}; dropped {h['dropped'] or 'none'})"
     if h["degenerate"]:
-        lines.append(f"  n units {h['n']}: not supported: {h['degenerate']} (PREREG §5 degenerate case)")
+        lines.append(f"{units}: not supported: {h['degenerate']} (PREREG §5 degenerate case)")
     else:
         verdict = "REJECT H0: r > 0" if h["reject"] else "not rejected"
-        lines.append(f"  n units {h['n']} (blocks with a live row {h['blocks_with_row']}; dropped {h['dropped'] or 'none'});"
-                     f" r {_f(h['r'])}; lower bound {_f(h['lower'])} -> {verdict}")
+        lines.append(f"{units}; r {_f(h['r'])}; lower bound {_f(h['lower'])} -> {verdict}")
         lines.append(f"  descriptive: Spearman rho {_f(h['rho'])}")
     lines.append("")
     lines.append("reading (PREREG §9): both primaries rejected -> 'the loop works as described'; either alone -> exactly that;"
@@ -243,6 +281,8 @@ def main(argv=None, now=None):
     ap.add_argument("--now", help="override the clock (tests). Printed in the header when used.")
     ap.add_argument("--resamples", type=int, default=RESAMPLES, help="tests only; the pre-registered number is 10000")
     ap.add_argument("--out", help="also write the text here")
+    ap.add_argument("--accept-pending", action="store_true",
+                    help="--sample on a log that really stopped: count the units whose t + h it never reached as gaps (printed)")
     args = ap.parse_args(argv)
     try:
         t0 = report._t0(args.t0) if args.t0 else _read_t0(args.prereg)
@@ -282,9 +322,19 @@ def main(argv=None, now=None):
     n_blocks = BLOCKS_PER_DAY * N_DAYS
     if mode == "pre-t0":                                    # the shakedown's own span, like report._blocks
         n_blocks = max((int((report.tick_epoch(r["tick_id"]) - anchor) // report.BLOCK_S) for r in scope), default=-1) + 1
+    pending = None
+    if mode == "sample":                                    # before any number: a pending unit would be dropped as a gap
+        pend = pending_units(rows, scope, outs, anchor, excluded, n_blocks)
+        if pend and not args.accept_pending:
+            sys.stderr.write(f"inference: refusing to run: {len(pend)} H2 unit(s) wait for a t + h the log has not reached"
+                             f" (first live row {pend[0][0]}; the log's last row is {rows[-1]['tick_id']}); counted now they would"
+                             f" be dropped as gaps. Run again once the log has a row with ts_rx at or after {_iso_second(max(u for _, u in pend))},"
+                             " or pass --accept-pending if the log really stopped (PREREG §5: the join is over the whole log)\n")
+            return EXIT_NOT_YET
+        pending = pend if args.accept_pending else None
     text = render(mode, t0, now, args.log, sha256_of(args.log) if os.path.exists(args.log) else "-", len(scope), excluded, excl_lines,
                   kept, h1(scope, outs, anchor, excluded, args.resamples, n_blocks), h2(scope, outs, anchor, excluded, args.resamples, n_blocks),
-                  args.resamples)
+                  args.resamples, pending)
     if args.now:
         text = text.replace("\n", f" (clock overridden with --now {args.now})\n", 1)
     sys.stdout.write(text)
