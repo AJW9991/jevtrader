@@ -789,6 +789,51 @@ class ProposeDryTest(unittest.TestCase):
         code = [l for l in src.splitlines() if not l.lstrip().startswith("#")]
         self.assertEqual([l for l in code if "prompts/" in l or "/prompts" in l], [])
 
+    def test_a_trailing_date_or_root_is_a_usage_error_not_a_hang(self):
+        # `shift 2` with one argument left fails and the loop never advanced: this used to spin
+        for args in (["--date"], ["--root"], ["--dry", "--date"], ["--date", "2026-09-22", "--root"]):
+            r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), *args],
+                               capture_output=True, text=True, timeout=10, env=_sh_env())
+            self.assertEqual(r.returncode, 2, args)
+            self.assertIn("usage:", r.stderr, args)
+
+    def _dry(self, tmp):
+        return subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry",
+                               "--date", "2026-09-22", "--root", tmp],
+                              cwd=tmp, capture_output=True, text=True, timeout=120, env=_sh_env())
+
+    def test_a_second_run_for_the_same_date_is_refused(self):
+        # a missed slot that fires after 00:00Z and the regular slot digest the same day: the second
+        # run must neither spend a Claude call nor overwrite the json (gitignored: gone for good)
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        _write_log(os.path.join(tmp, "data", "decisions.jsonl"), synthetic_log())
+        self.assertEqual(self._dry(tmp).returncode, 0)
+        paths = [os.path.join(tmp, "proposals", "2026-09-22.json"), os.path.join(tmp, "data", "digest-2026-09-22.md"),
+                 os.path.join(tmp, "logs", "claude-2026-09-22.txt")]
+        before = []
+        for p in paths:
+            with open(p, "rb") as fh:
+                before.append((fh.read(), os.stat(p).st_mtime_ns))
+        r = self._dry(tmp)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stderr.count("FAIL"), 1, r.stderr)
+        self.assertIn("FAIL proposals/2026-09-22.json exists: one run per day", r.stderr)
+        self.assertNotIn("dry: 81 payloads", r.stderr)
+        for p, (data, mtime) in zip(paths, before):
+            with open(p, "rb") as fh:
+                self.assertEqual(fh.read(), data, p)
+            self.assertEqual(os.stat(p).st_mtime_ns, mtime, p)                 # not even rewritten in place
+
+    def test_the_missed_slot_note_sees_a_table_under_the_root(self):
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        _write_log(os.path.join(tmp, "data", "decisions.jsonl"), synthetic_log())
+        os.makedirs(os.path.join(tmp, "proposals"))
+        with open(os.path.join(tmp, "proposals", "2026-09-21.md"), "w") as fh:
+            fh.write("# policy table 2026-09-21\n")
+        self.assertEqual(self._dry(tmp).returncode, 0)
+        with open(os.path.join(tmp, "logs", "propose.log")) as fh:
+            self.assertNotIn("note: no proposal exists", fh.read())
+
 
 
 class LiveBranch(unittest.TestCase):
@@ -923,6 +968,31 @@ class LiveBranch(unittest.TestCase):
         self.assertEqual(r.returncode, 0)
         with open(os.path.join(self.tmp, "logs", "propose.log")) as fh:
             self.assertIn("FAIL invalid proposal", fh.read())
+
+    def test_a_reply_that_cannot_be_written_leaves_no_json(self):
+        # "\ud800" parses to a lone surrogate, which UTF-8 cannot encode: the write fails. Dumped
+        # into the target directly, that left a truncated json for a table or a promote to read.
+        stub = self._stub('cat <<"EOF"\n```json\n{"candidates": [{"rationale": "\\ud800", "instructions": "Decide.",'
+                          ' "criteria": {"buy": "pumping", "sell": "dumping", "hold": "else"}}]}\n```\nEOF\n')
+        r = self._run(stub)
+        self.assertEqual(r.returncode, 0)
+        with open(os.path.join(self.tmp, "logs", "propose.log")) as fh:
+            self.assertIn("FAIL invalid proposal", fh.read())
+        self.assertEqual([f for f in os.listdir(os.path.join(self.tmp, "proposals")) if f.startswith(DAY.isoformat())], [])
+
+    def test_a_day_that_has_a_json_spends_no_claude_call(self):
+        prop = os.path.join(self.tmp, "proposals", f"{DAY.isoformat()}.json")
+        os.makedirs(os.path.dirname(prop))
+        with open(prop, "w") as fh:
+            fh.write('{"candidates": "the first run\'s, which a table may vouch for"}\n')
+        stub = self._stub('echo called >"%s/called"\n' % self.saw)
+        r = self._run(stub)
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(os.listdir(self.saw), [])                                 # not even --version
+        with open(prop) as fh:
+            self.assertIn("the first run's", fh.read())
+        with open(os.path.join(self.tmp, "logs", "propose.log")) as fh:
+            self.assertIn(f"FAIL proposals/{DAY.isoformat()}.json exists", fh.read())
 
 
 class Capped(unittest.TestCase):

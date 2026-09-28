@@ -14,6 +14,7 @@
 # unset after); exit non-zero on a failure -- launchd throttles a failing job and
 # hides why, so every failure is one line in logs/propose.log and exit 0. The two
 # non-zero exits are the usage error (2) and the path guard (3), both before any work.
+# One run per date: a DATE whose proposals/<date>.json exists is refused (one FAIL line).
 #
 # Usage: nightly/propose.sh [--date YYYY-MM-DD] [--dry] [--root DIR]
 #   --date  the UTC day to digest; default: yesterday
@@ -36,12 +37,13 @@ TOKEN_FILE="${JEVLOOP_TOKEN_FILE:-$HOME/.secondbrain-secrets/oauth_token}"
 CLAUDE_CAP_S="${JEVLOOP_CLAUDE_CAP_S:-2700}"   # 45 min awake: the first two nights took 52 s and 51 s
 ROOT="$REPO"; DATE=""; DRY=0
 
+usage() { echo "usage: $0 [--date YYYY-MM-DD] [--dry] [--root DIR]" >&2; exit 2; }
 while [ $# -gt 0 ]; do
   case "$1" in
-    --date) DATE="${2:-}"; shift 2 ;;
+    --date) [ $# -ge 2 ] || usage; DATE="$2"; shift 2 ;;    # a trailing --date: `shift 2` would fail and loop forever
     --dry)  DRY=1; shift ;;
-    --root) ROOT="${2:-}"; shift 2 ;;
-    *) echo "usage: $0 [--date YYYY-MM-DD] [--dry] [--root DIR]" >&2; exit 2 ;;
+    --root) [ $# -ge 2 ] || usage; ROOT="$2"; shift 2 ;;
+    *) usage ;;
   esac
 done
 
@@ -72,11 +74,16 @@ case "$DATE" in
 esac
 cd "$REPO" || fail "cd $REPO"
 log "start date=$DATE dry=$DRY root=$ROOT"
-# A slot the Mac slept through and launchd fired after 00:00Z digests a later "yesterday" and the
-# intended day gets no proposal; nothing is processed twice here (one claude call a night), but the
-# hole is named so a person sees it in the log.
+# One run per DATE. A slot the Mac slept through fires at the next wake; after the next 00:00Z that
+# run digests a later "yesterday", and the regular slot that night would digest that day again. A
+# second run would spend a second Claude call and overwrite proposals/<date>.json, which a
+# committed table's sha or a promote may already point at -- and the json is gitignored, so an
+# overwrite is gone for good. To rerun a day, a person moves the json aside first.
+[ -e "$ROOT/proposals/$DATE.json" ] && fail "proposals/$DATE.json exists: one run per day, nothing overwritten, no claude call (move it aside to rerun)"
+# The day before gets no proposal when its slot was missed that way: the hole is named in the log.
 PREV="$("$PY" -c 'import datetime as d, sys; print((d.date.fromisoformat(sys.argv[1]) - d.timedelta(days=1)).isoformat())' "$DATE")"
-[ -e "$ROOT/proposals/$PREV.json" ] || [ -e "$REPO/proposals/$PREV.md" ] || log "note: no proposal exists for $PREV (a missed slot?); this run is for $DATE only"
+[ -e "$ROOT/proposals/$PREV.json" ] || [ -e "$ROOT/proposals/$PREV.md" ] || [ -e "$REPO/proposals/$PREV.md" ] \
+  || log "note: no proposal exists for $PREV (a missed slot?); this run is for $DATE only"
 
 # 1. digest: exit 4 = the day has no rows, so there is nothing for the model to read.
 DIGEST="$ROOT/data/digest-$DATE.md"
@@ -153,7 +160,7 @@ fi
 #    A digit anywhere in a candidate's text fails the whole reply: PROMPT.md says so,
 #    and policy_table.py would refuse it anyway.
 "$PY" -c '
-import json, re, sys
+import json, os, re, sys
 raw = open(sys.argv[1], encoding="utf-8", errors="replace").read()
 blocks = re.findall(r"^```json[ \t]*\n(.*?)\n```[ \t]*$", raw, re.S | re.M)
 if len(blocks) != 1: sys.exit("expected exactly one fenced json block, found %d" % len(blocks))
@@ -170,8 +177,17 @@ for i, x in enumerate(c):
     if any(ch.isdigit() for ch in x["instructions"] + "".join(x["criteria"].values())): sys.exit("candidate %d: carries a digit" % i)
     out.append({"rationale": x.get("rationale", ""), "instructions": x["instructions"],
                 "criteria": {k: x["criteria"][k] for k in ("buy", "sell", "hold")}})
-with open(sys.argv[2], "w", encoding="utf-8") as fh:
-    json.dump({"candidates": out}, fh, indent=2, ensure_ascii=False); fh.write("\n")
+# serialized whole first, written beside the target, renamed over it: a failure never leaves a
+# truncated json for a table or a promote to read
+text = json.dumps({"candidates": out}, indent=2, ensure_ascii=False) + "\n"
+tmp = sys.argv[2] + ".tmp"
+try:
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    os.replace(tmp, sys.argv[2])
+except BaseException:
+    if os.path.exists(tmp): os.unlink(tmp)
+    raise
 ' "$RAW" "$ROOT/proposals/$DATE.json" >>"$LOG" 2>&1 || fail "invalid proposal (see $RAW)"
 log "wrote proposals/$DATE.json"
 

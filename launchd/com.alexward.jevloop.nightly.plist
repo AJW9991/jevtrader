@@ -24,8 +24,12 @@
 
   <!-- 03:30 local: after the UTC day has closed for the digest and clear of
        the brain's 07:00 canary and 07:30 digest. A missed slot (asleep,
-       logged out) runs once at the next login, which is fine: the digest is
-       dated and a second run the same day overwrites its own files. -->
+       logged out) runs once at the next wake or login. If that is after the
+       next 00:00Z, it digests a later day, and the log names the day left
+       without a proposal.
+       A run for a day that already has proposals/<date>.json is refused in
+       one FAIL line: no second Claude call, and nothing is overwritten (the
+       json is gitignored, and a table or a promote may point at it). -->
   <key>StartCalendarInterval</key>
   <dict>
     <key>Hour</key>
