@@ -1080,6 +1080,31 @@ class PerDay(unittest.TestCase):
         self.assertIn("BAD days 1: d28", buf.getvalue())
         self.assertNotIn("d29", buf.getvalue())                                  # the two hours after the sample are not a sample day
 
+    def test_since_cuts_the_view_not_the_sample_days(self):
+        # --since is a display cut: the per-day table used to pre-list every T0 day from d01, so the
+        # days before it read 0 ticks and NO LIVE ROWS (a false stop-rule-3 prompt), and the day it
+        # falls inside was judged on part of its rows. Now: not listed, and partial, not judged.
+        t0 = report.tick_epoch("20260925T214000Z")
+        rows = []
+        for m in range(0, 4 * 1440 + 60):                              # d01..d04 full, then an hour of d05
+            r = dict(_row(7))
+            e = t0 + 60 * m
+            r["tick_id"] = report._tick_of(e)
+            r["ts_rx"] = datetime.datetime.fromtimestamp(e, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.100Z")
+            rows.append(r)
+        log = os.path.join(self.enterContext(tempfile.TemporaryDirectory()), "since.jsonl")
+        _write(log, rows, garbage=False)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(report.main(["--log", log, "--health", "--t0", "20260925T214000Z", "--since", "2026-09-28"],
+                                         now=t0 + 5 * 86400), 0)
+        out = buf.getvalue()
+        self.assertNotIn("NO LIVE ROWS", out.split("per day from T0", 1)[1].split("\n2.", 1)[0].replace("flagged NO LIVE ROWS", ""))
+        self.assertNotIn("    d01 ", out)
+        self.assertNotIn("    d02 ", out)
+        self.assertRegex(out, r"    d03 .*partial \(--since\), not judged")                 # 2026-09-27 21:40 .. 09-28 21:40
+        self.assertIn("BAD days 0", out)
+
     def test_a_row_stamped_after_the_clock_closes_no_day(self):
         # a forward clock step (then back) leaves a row stamped in the future; `last` took it, so every
         # day before it closed: the open day turned BAD on its pending rows and the days between were

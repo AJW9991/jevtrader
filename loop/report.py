@@ -131,9 +131,9 @@ def answered(rows):
 
 
 # ---- §4.1 health ---------------------------------------------------------------------------
-def health(rows, outs, bad=(), t0=None, last=None, now=None):
+def health(rows, outs, bad=(), t0=None, last=None, now=None, since=None):
     """`last`: the epoch of the whole log's last tick when `rows` were cut to a sample (--t0), so
-    the sample's last day can close; None reads it from `rows`. `now` (epoch): see days_table."""
+    the sample's last day can close; None reads it from `rows`. `now`, `since` (epoch): see days_table."""
     live = [r for r in rows if r.get("mode") == "live" and r.get("absence") is None]
     dry = [r for r in rows if r.get("mode") == "dry"]
     absence = collections.Counter(r["absence"] for r in rows if r.get("absence") is not None)
@@ -151,7 +151,7 @@ def health(rows, outs, bad=(), t0=None, last=None, now=None):
     drift = sum(1 for r in rows if r.get("drift") is True)
     versions = collections.Counter(str(r.get("prompt_b")) for r in rows)
     span = f"{ticks[0]}..{ticks[-1]}" if ticks else "-"
-    per_day = days_table(rows, outs, t0, last, now)
+    per_day = days_table(rows, outs, t0, last, now, since)
     keys = collections.Counter(_jev(r, "key_path") for r in rows if isinstance(_jev(r, "key_path"), str))
     shared = sum(v for k, v in keys.items() if "loop" not in k.lower())      # PROTOCOL §3.6: the loop's own key, or it says so
     hz = realised_horizon(rows)
@@ -261,7 +261,7 @@ def _tick_of(epoch):
     return datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
-def days_table(rows, outs, t0=None, last=None, now=None):
+def days_table(rows, outs, t0=None, last=None, now=None, since=None):
     """Per day (day_of: T0-anchored 'dNN' with T0, else the UTC calendar day): distinct ticks,
     coverage of a full day, live rows, the share of them with a non-gap outcome, the Jev error
     share over rows that reached the ask, and the BAD flag of PREREG §8 stop rule 3. `outs` is the
@@ -271,6 +271,9 @@ def days_table(rows, outs, t0=None, last=None, now=None):
     only from rows after the cut. None reads it from `rows`. `now` (epoch), when given, caps it:
     a row stamped after the clock (a forward clock step) closes no day that has not happened, turns
     no pending row into a gap, and lists no future day as NO LIVE ROWS; it shows as an open day.
+    `since` (epoch), report's --since: a display cut, not a sample cut. No day that ends before it is
+    listed (it would read 0 ticks, NO LIVE ROWS, on a full day), and the day it falls inside is
+    marked partial and not judged: its coverage and fill are of a subset of its rows.
     With T0, every day from d01 to the day of `last` (at most d28) is listed, rows or not: a day
     the log has no row for is the worst health event and would otherwise be the one day the
     table never shows (2026-09-28). Its fill is 0/0, which PREREG §8.3 does not define, so it is
@@ -285,6 +288,8 @@ def days_table(rows, outs, t0=None, last=None, now=None):
         last = min(last, now)
     if t0 is not None and last is not None:
         for j in range(1, min(SAMPLE_DAYS, math.floor((last - t0) / 86400) + 1) + 1):
+            if since is not None and t0 + 86400 * j <= since:
+                continue                              # the day ended before --since: cut from view, not empty
             per.setdefault(f"d{j:02d}", {"ticks": set(), "live": 0, "filled": 0, "pending": 0, "attempted": 0, "errors": 0})
     all_ticks = sorted({r["tick_id"] for r in rows if isinstance(r.get("tick_id"), str)})
     skips = collections.Counter()
@@ -316,9 +321,10 @@ def days_table(rows, outs, t0=None, last=None, now=None):
         end = tick_epoch(span[1]) if span else tick_epoch(d + "T000000Z") + 86400
         is_open = last is None or end + config.HORIZON_S + outcomes.JOIN_TOL_S > last   # its last row can still fill
         fill, err = _rate(x["filled"], x["live"]), _rate(x["errors"], x["attempted"])
-        is_bad = not is_open and ((fill is not None and fill < BAD_FILL) or (err is not None and err > BAD_JEV_ERR))
+        partial = since is not None and span is not None and tick_epoch(span[0]) < since   # --since cuts into it
+        is_bad = not is_open and not partial and ((fill is not None and fill < BAD_FILL) or (err is not None and err > BAD_JEV_ERR))
         in_sample_day = span is not None and 1 <= int(d[1:]) <= SAMPLE_DAYS   # only a day the exclusions file could name
-        is_empty = in_sample_day and not is_open and x["live"] == 0 and x["pending"] == 0   # closed, and no live row reached
+        is_empty = in_sample_day and not is_open and not partial and x["live"] == 0 and x["pending"] == 0   # closed, and no live row reached
                                                                     # its t + h: no row at all, or absences (HALT, feed) or dry rows only
         why = []
         if fill is not None and fill < BAD_FILL:
@@ -327,7 +333,8 @@ def days_table(rows, outs, t0=None, last=None, now=None):
             why.append("jev-err")
         days.append({"day": d, "span": span, "ticks": len(x["ticks"]), "cov": _rate(len(x["ticks"]), DAY_TICKS), "live": x["live"],
                      "filled": x["filled"], "pending": x["pending"], "skips": skips.get(d, 0), "fill": fill, "attempted": x["attempted"],
-                     "errors": x["errors"], "jev_err": err, "open": is_open, "bad": is_bad, "empty": is_empty, "why": why})
+                     "errors": x["errors"], "jev_err": err, "open": is_open, "bad": is_bad, "empty": is_empty, "why": why,
+                     "partial": partial})
         if is_bad:
             bad.append(d)
         if is_empty:
@@ -340,7 +347,8 @@ def days_table(rows, outs, t0=None, last=None, now=None):
     for x in days:
         lines.append(f"    {x['day']:<9}{x['ticks']:>6}{_pc(x['cov']):>7}{x['live']:>6}{_pc(x['fill']):>7}{x['pending']:>6}{x['skips']:>6}{_pc(x['jev_err']):>9}"
                      + (f"  {x['span'][0]}..{x['span'][1]}" if x["span"] else "")
-                     + (f"  BAD ({', '.join(x['why'])})" if x["bad"] else "  NO LIVE ROWS" if x["empty"] else "  open" if x["open"] else ""))
+                     + (f"  BAD ({', '.join(x['why'])})" if x["bad"] else "  NO LIVE ROWS" if x["empty"] else "  open" if x["open"]
+                        else "  partial (--since), not judged" if x["partial"] else ""))
     if not days:
         lines.append("    no rows")
     lines.append(f"  BAD days {len(bad)}" + (": " + ", ".join(bad) if bad else "")
@@ -841,7 +849,8 @@ def render(rows, bad=(), log=None, since=None, missing=False, t0=None, outs=None
     health_only: sections 1-3 only (PREREG §8.4); 4-7 are neither computed nor printed, so the
     blind look cannot show an H1 or H2 number by accident."""
     outs = outcomes.join(rows) if outs is None else outs
-    secs = (health(rows, outs, bad, t0, last, now), occupancy(rows), retest(rows))
+    since_ep = tick_epoch(since.replace("-", "") + "T000000Z") if since else None
+    secs = (health(rows, outs, bad, t0, last, now, since_ep), occupancy(rows), retest(rows))
     if not health_only:
         secs += (agreement(rows), table(rows, outs, t0, last), h2(rows, outs, t0), calibration(rows, outs))
     lines = [f"jev-paper-loop report: {config.VENUE} {config.PRODUCT}, cadence {config.CADENCE_S} s, horizon {config.HORIZON_S} s"
