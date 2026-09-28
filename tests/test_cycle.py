@@ -638,6 +638,25 @@ class CycleTest(unittest.TestCase):
         with open(config.DECISIONS, "rb") as fh:
             self.assertEqual(fh.read().count(b"\n"), 4)
 
+    def test_an_unwritable_heartbeat_still_leaves_the_row_and_exit_0(self):
+        # The heartbeat is written after the row: its failure used to print "row NOT written;
+        # the tick is lost" about a row that was in the log.
+        os.makedirs(config.HEARTBEAT)                          # a directory where the file goes
+        with mock.patch("os.replace", wraps=os.replace) as rep:
+            self.assertEqual(cycle.main(["--dry", "--once"]), 0)
+        self.assertEqual((self.only_row()["absence"], self.only_row()["state"]), (None, STATE))
+        err = self.err.getvalue()
+        self.assertIn("heartbeat NOT written", err)
+        self.assertIn("the row is", err)
+        self.assertNotIn("row NOT written", err)
+        self.assertEqual(rep.call_args.args, (config.HEARTBEAT + ".tmp." + str(os.getpid()), config.HEARTBEAT))
+        self.assertEqual(sorted(os.listdir(self.data)), ["decisions.jsonl", "heartbeat", "loop.lock"])  # no temp left
+        os.rmdir(config.HEARTBEAT)
+        self.snapshot.side_effect = lambda: dict(SNAP, ts_rx=cycle.iso_ms(NOW + 60))
+        self.assertEqual(cycle.main(["--dry", "--once"]), 0)                   # and the next one lands again
+        self.assertEqual(self.heartbeat(), cycle.iso_ms(NOW + 60))
+        self.assertEqual(len(self.rows()), 2)
+
     def test_tick_id_floors_ts_rx_to_the_minute(self):
         self.assertEqual(cycle.tick_id("2026-09-24T02:28:49.000Z"), "20260924T022800Z")
         self.assertEqual(cycle.tick_id("2026-12-31T23:59:59.999Z"), "20261231T235900Z")

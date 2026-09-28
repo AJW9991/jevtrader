@@ -233,6 +233,25 @@ def _err(msg):
     print("cycle: " + msg, file=sys.stderr)
 
 
+def _heartbeat(ts_rx):
+    """data/heartbeat = ts_rx, replaced whole, so a watcher never reads a half-written one.
+    Called once the row is on disk, so a failure here is its own message and never the
+    row's: the row IS in the log. The temporary name is per pid: a lock-row writer and the
+    lock holder can both be here in the same second, and a shared name let one rename the
+    other's file away (or away from under it)."""
+    tmp = f"{config.HEARTBEAT}.tmp.{os.getpid()}"
+    try:
+        with open(tmp, "w") as fh:
+            fh.write(ts_rx + "\n")
+        os.replace(tmp, config.HEARTBEAT)
+    except OSError as e:
+        _err(f"heartbeat NOT written ({e}); the row is")
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
 def write_row(row):
     """Atomic append: the whole line in ONE os.write on an O_APPEND fd, then fsync. A
     reader (report, nightly) or a crash can therefore see at most one truncated line,
@@ -261,10 +280,7 @@ def write_row(row):
             os.fsync(fd)
         finally:
             os.close(fd)
-        tmp = config.HEARTBEAT + ".tmp"
-        with open(tmp, "w") as fh:
-            fh.write(row["ts_rx"] + "\n")
-        os.replace(tmp, config.HEARTBEAT)    # a watcher never reads a half-written heartbeat
+        _heartbeat(row["ts_rx"])
     finally:
         _SIG["critical"] = False
     if _SIG["term"]:
