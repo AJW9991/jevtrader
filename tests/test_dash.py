@@ -86,7 +86,7 @@ class Dash(unittest.TestCase):
         page = dash.render(self.rows, self.outs, t0=None, now=now, hb="2026-09-23T10:41:00.000Z", log=self.log)
         for needle in ("priced ticks per hour (UTC)", "PREREG §8 stop rule 3", "adjective occupancy", "the 81 states",
                        "test-retest", "the nightly", "Health only (PREREG §8.4)", "2026-09-23", "class='cell b",
-                       "<div class='lab'>2026-09-23 &middot; <b>42</b>/1440</div>",   # every fixture row has a mid: 42 priced ticks
+                       "<div class='lab'>2026-09-23 &middot; <b>42</b>/643</div>",    # 42 priced ticks of the 643 minutes begun by 10:42
                        "absence in the sample: jev 1", "spend per day", "jev latency p95 per day", "holes &middot;",
                        "realised horizon", "key answering", "prompt_b versions", "stop-rule fill"):
             self.assertIn(needle, page)
@@ -111,6 +111,49 @@ class Dash(unittest.TestCase):
         self.assertEqual(dash._bin(5, 0), 4)
         self.assertEqual([dash._bin_state(n, 1000) for n in (0, 1, 9, 10, 49, 50, 199, 200, 499, 500, 1000)], [-1, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4])
         self.assertEqual(dash._bin_state(3, 0), 4)
+
+    def test_hours_after_the_render_are_not_yet_and_today_counts_the_minutes_begun(self):
+        # 2026-09-28 (round 4): the strip drew every hour of today as a full hour, so a page rebuilt at 09:44Z
+        # drew 10:00-23:00 as empty 0/60 cells, the class and title of a real outage; today's label read
+        # 105/1440, and the hour in progress read 45/60, a 45-54 shortfall
+        def at(ticks):
+            out = []
+            for t in ticks:
+                r = dict(_row(20))
+                r["tick_id"], r["ts_rx"] = t, f"{t[:4]}-{t[4:6]}-{t[6:8]}T{t[9:11]}:{t[11:13]}:00.100Z"
+                out.append(r)
+            return out
+        yday = [f"20260922T{h:02d}{m:02d}00Z" for h in (12, 14) for m in range(60)]          # 13:00 is a real hole
+        today = [f"20260923T{h:02d}{m:02d}00Z" for h in (8, 9) for m in range(60) if h * 60 + m <= 9 * 60 + 44]   # 08:00 .. 09:44
+        now = datetime.datetime(2026, 9, 23, 9, 44, 30, tzinfo=datetime.timezone.utc)
+        rows = at(yday + today)
+        strip = _strip(dash.render(rows, outcomes.join(rows), now=now))
+        for hh in range(10, 24):
+            self.assertIn(f"<div class='cell future' title='2026-09-23 {hh:02d}:00Z: not yet'></div>", strip)
+        self.assertEqual(strip.count("cell future"), 14)
+        self.assertIn("<div class='cell' title='2026-09-22 13:00Z: 0/60 priced ticks'></div>", strip)   # the real hole reads as one
+        self.assertIn("<div class='cell' title='2026-09-23 07:00Z: 0/60 priced ticks'></div>", strip)   # and so does an hour of today that is over
+        self.assertIn("<div class='cell b4' title='2026-09-23 09:00Z: 45/45 priced ticks so far, the hour in progress'></div>", strip)
+        self.assertIn("<div class='lab'>2026-09-23 &middot; <b>105</b>/585</div>", strip)
+        self.assertIn("<div class='lab'>2026-09-22 &middot; <b>120</b>/1440</div>", strip)
+        # the minute under way may not have its row yet: no shortfall; ten missing minutes are one
+        strip = _strip(dash.render(rows[:-1], outcomes.join(rows[:-1]), now=now))
+        self.assertIn("<div class='cell b4' title='2026-09-23 09:00Z: 44/45 priced ticks so far, the hour in progress'></div>", strip)
+        short = [r for r in rows if not r["tick_id"].startswith("20260923T091")]            # 09:10 .. 09:19
+        strip = _strip(dash.render(short, outcomes.join(short), now=now))
+        self.assertIn("<div class='cell b2' title='2026-09-23 09:00Z: 35/45 priced ticks so far, the hour in progress'></div>", strip)
+        # no row in the hour in progress is a gap once a minute of it is over; before that it is not yet
+        early = [r for r in rows if not r["tick_id"].startswith("20260923T09")]
+        strip = _strip(dash.render(early, outcomes.join(early), now=now))
+        self.assertIn("<div class='cell' title='2026-09-23 09:00Z: 0/45 priced ticks so far, the hour in progress'></div>", strip)
+        self.assertEqual(dash._hour_cell(0, 3600, 3600 + 30), ("cell future", "not yet"))
+        self.assertEqual(dash._hour_cell(1, 3600, 3600 + 30), ("cell b4", "1/1 priced ticks so far, the hour in progress"))
+        self.assertEqual(dash._hour_cell(0, 3600, 3600 + 60), ("cell", "0/2 priced ticks so far, the hour in progress"))
+        # a row stamped after the clock is drawn as logged, beside the not-yet hours of its day
+        stray = at(["20260925T030000Z"])
+        strip = _strip(dash.render(rows + stray, outcomes.join(rows + stray), now=now))
+        self.assertIn("<div class='cell b0' title='2026-09-25 03:00Z: 1/60 priced ticks'></div>", strip)
+        self.assertIn("<div class='cell future' title='2026-09-25 04:00Z: not yet'></div>", strip)
 
     def test_skipped_log_lines_show_on_the_page_as_in_report_health(self):
         # the dash never passed the log's skipped lines to report.health, so its "skipped log lines"
@@ -159,7 +202,7 @@ class Dash(unittest.TestCase):
         page = dash.render(rows, outcomes.join(rows), now=now)
         self.assertLess(len(page), 200_000)
         self.assertIn("1 earlier logged day(s), the last 1970-01-01: not drawn", page)
-        self.assertIn("2026-09-30 &middot; <b>0</b>/1440", page)                                 # today, the loop stopped
+        self.assertIn("2026-09-30 &middot; <b>0</b>/721", page)                                  # today, the loop stopped (12:00: 721 minutes begun)
 
     def test_the_strip_starts_at_its_floor_when_the_log_ran_within_a_year_before_it(self):
         # 2026-09-28 (round 4): the lookback was 7 days. A loop that ran until 08-18 drew the whole window
@@ -468,6 +511,11 @@ class PinnedPrereg(unittest.TestCase):
         self.assertEqual(cm.exception.code, 2)
         code, out = run(status.main, ["--log", log, "--now", "2026-09-28T12:00"])
         self.assertIn("sample: no T0", out)
+
+
+def _strip(page):
+    """The hourly strip of a rendered page, its header row to its last cell."""
+    return page.split("<div class='strip'>", 1)[1].split("<div class='legend'>", 1)[0]
 
 
 def _capture(main, argv):

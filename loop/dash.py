@@ -113,6 +113,24 @@ def _bin_hour(n):
     return 4 if n >= 60 else 3 if n >= 55 else 2 if n >= 45 else 1 if n >= 30 else 0
 
 
+def _hour_cell(n, start, now):
+    """(css class, title tail) of the strip's cell for the UTC hour beginning at epoch `start`, with
+    `n` priced ticks, at render time `now` (epoch). An hour over is binned by _bin_hour. An hour not
+    begun with no row, or begun under a minute ago with none yet, is 'not yet' (a dashed cell), never
+    a gap. The hour in progress reads n of the minutes begun, and bins by its shortfall from the
+    minutes over, so the minute under way (its row may not be written yet) is no shortfall. Rows
+    stamped after the clock (a clock stepped forward) are drawn as logged. Until 2026-09-28 every
+    hour of today drew as a full hour, so the hours after the render read 0/60 like an outage."""
+    if now >= start + 3600 or (now < start and n):
+        b = _bin_hour(n)
+        return "cell" + (f" b{b}" if b >= 0 else ""), f"{n}/60 priced ticks"
+    begun = int((now - start) // 60) + 1 if now >= start else 0
+    if not n and begun <= 1:
+        return "cell future", "not yet"
+    b = _bin_hour(60 - max(0, begun - 1 - n)) if n else -1
+    return "cell" + (f" b{b}" if b >= 0 else ""), f"{n}/{begun} priced ticks so far, the hour in progress"
+
+
 def spend_by_day(rows, t0=None):
     c = collections.Counter()
     for r in rows:
@@ -238,6 +256,7 @@ tr:last-child td { border-bottom: 0; } td.l, th.l { text-align: left; white-spac
 .strip .lab b { font-weight: 600; color: var(--ink); }
 .strip .hr { color: var(--muted); font-size: 10px; text-align: center; }
 .cell { height: 18px; border-radius: 3px; background: var(--surface); border: 1px solid var(--grid); }
+.cell.future, .sw.future { background: transparent; border: 1px dashed var(--axis); }
 .b0 { background: var(--s1); border-color: var(--s1); } .b1 { background: var(--s2); border-color: var(--s2); }
 .b2 { background: var(--s3); border-color: var(--s3); } .b3 { background: var(--s4); border-color: var(--s4); } .b4 { background: var(--s5); border-color: var(--s5); }
 .legend { color: var(--ink2); font-size: 12px; margin-top: 8px; display:flex; gap: 10px; flex-wrap: wrap; align-items: center; }
@@ -441,29 +460,32 @@ def render(rows, outs, t0=None, now=None, hb=None, halt=False, props=(), current
 
     # -- hourly strip: every gap is a light cell; only priced ticks count
     parts.append("<h2>priced ticks per hour (UTC)</h2><p class='sub'>a full hour is 60 ticks with a mid; a pale or empty cell is a gap "
-                 "(the Mac asleep or logged out, the feed down, a HALT: absence rows do not count, hover for them). Calendar days; "
+                 "(the Mac asleep or logged out, the feed down, a HALT: absence rows do not count, hover for them). A dashed cell is an "
+                 "hour not yet begun at render; today's count and its hour in progress are out of the minutes begun. Calendar days; "
                  + ("T0 days start at " + report._iso_minute(t0)[11:] + ". " if t0 is not None else "")
                  + "Days before T0 are labelled.</p>")
     strip = ["<div class='wrap'><div class='strip'><div class='lab'>day &middot; <b>ticks</b></div>"] + [f"<div class='hr'>{hh:02d}</div>" for hh in range(HOURS)]
     if strip_older:
         strip.append(f"<div class='lab'>{len(strip_older)} earlier logged day(s), the last {strip_older[-1][:4]}-{strip_older[-1][4:6]}-{strip_older[-1][6:]}: not drawn</div>"
                      + "".join("<div class='cell'></div>" for _ in range(HOURS)))
+    now_s = now.timestamp()
     for d in strip_days:
-        pre = t0 is not None and report.tick_epoch(d + "T000000Z") + 86400 <= t0
+        d0 = report.tick_epoch(d + "T000000Z")
+        pre = t0 is not None and d0 + 86400 <= t0
         lab = f"{d[:4]}-{d[4:6]}-{d[6:]}" + (" (pre-T0)" if pre else "")
         total = sum(hourly_c.get((d, hh), 0) for hh in range(HOURS))
-        strip.append(f"<div class='lab'>{_esc(lab)} &middot; <b>{total}</b>/{DAY_TICKS}</div>")
+        of = int((now_s - d0) // 60) + 1 if d0 <= now_s < d0 + 86400 else DAY_TICKS   # today: out of the minutes begun
+        strip.append(f"<div class='lab'>{_esc(lab)} &middot; <b>{total}</b>/{of}</div>")
         for hh in range(HOURS):
             n = hourly_c.get((d, hh), 0)
-            b = _bin_hour(n)
-            cls = "cell" + (f" b{b}" if b >= 0 else "")
+            cls, tip = _hour_cell(n, d0 + 3600 * hh, now_s)
             ab = absent_c.get((d, hh))
             ab_txt = ("; absent " + ", ".join(f"{k} {v}" for k, v in sorted(ab.items()))) if ab else ""
-            strip.append(f"<div class='{cls}' title='{_esc(lab)} {hh:02d}:00Z: {n}/60 priced ticks{_esc(ab_txt)}'></div>")
+            strip.append(f"<div class='{cls}' title='{_esc(lab)} {hh:02d}:00Z: {_esc(tip)}{_esc(ab_txt)}'></div>")
     strip.append("</div></div>")
     strip.append("<div class='legend'><span>priced ticks/hour</span>"
                  + "".join(f"<span><i class='sw b{i}'></i>{lo}</span>" for i, lo in enumerate(("1-29", "30-44", "45-54", "55-59", "60")))
-                 + "<span><i class='sw'></i>0</span></div>")
+                 + "<span><i class='sw'></i>0</span><span><i class='sw future'></i>not yet</span></div>")
     parts.extend(strip)
 
     # -- per-day table (stop rule 3)
