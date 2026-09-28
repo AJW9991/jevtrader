@@ -1403,7 +1403,8 @@ class Capped(unittest.TestCase):
             code = [l for l in fh.read().splitlines() if not l.lstrip().startswith("#")]
         self.assertEqual([l for l in code if l.startswith("guard_path ")],
                          ['guard_path "$REPO" repo', 'guard_path "$ROOT_REAL" root', 'guard_path "$(pwd -P)" cwd'])
-        self.assertLess([i for i, l in enumerate(code) if l.startswith('ROOT_REAL="$("$PY" -c ')][0], code.index('guard_path "$ROOT_REAL" root'))
+        self.assertLess(code.index('ROOT_REAL="$(realpath_py "$ROOT")"'), code.index('guard_path "$ROOT_REAL" root'))
+        self.assertTrue(any('"$PY" -I -B -c' in l and "cycle.forbidden" in l for l in code))   # isolated, no bytecode
         self.assertTrue(any("cycle.forbidden(sys.argv[2])" in l for l in code))          # the same guard as the tick's
         env = _sh_env(self)                                      # the guard reads $HOME: the forbidden prefix is under the run's HOME
         forbidden = os.path.join(env["HOME"], "Projects", "crypto-trading-system")
@@ -1446,6 +1447,33 @@ class Capped(unittest.TestCase):
             self.assertEqual(r.returncode, 3, (root, r.stderr))
             self.assertIn("forbidden prefix (root)", r.stderr)
         self.assertEqual(sorted(os.listdir(os.path.join(real, "Projects", "crypto-trading-system"))), ["x"])   # nothing created
+
+    def test_the_guard_never_imports_the_working_directory_and_refuses_when_it_cannot_answer(self):
+        # 2026-09-28 (second pre-merge pass): the guard's python had the cwd on sys.path, so started from
+        # inside another tree it ran that tree's loop/ (and wrote bytecode there) before refusing; and an
+        # interpreter that printed nothing and exited 0 read as "not forbidden"
+        env = _sh_env(self)
+        elsewhere = os.path.join(env["HOME"], "elsewhere")
+        os.makedirs(os.path.join(elsewhere, "loop"))
+        marker = os.path.join(elsewhere, "imported")
+        with open(os.path.join(elsewhere, "loop", "__init__.py"), "w", encoding="utf-8") as fh:
+            fh.write(f"open({marker!r}, 'w').close()\n")
+        root = os.path.join(env["HOME"], "root")
+        r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry", "--date", "2026-09-22", "--root", root],
+                           capture_output=True, text=True, timeout=60, env=env, cwd=elsewhere)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(os.path.exists(marker), "the guard imported the working directory's loop/")
+        self.assertFalse(os.path.exists(os.path.join(elsewhere, "loop", "__pycache__")))
+        silent = os.path.join(env["HOME"], "silent-python")
+        with open(silent, "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/sh\nexit 0\n")                              # runs, answers nothing, exits 0
+        os.chmod(silent, 0o755)
+        env["JEVLOOP_PY"] = silent
+        r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry", "--date", "2026-09-22",
+                            "--root", os.path.join(env["HOME"], "root2")], capture_output=True, text=True, timeout=30, env=env)
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertIn("refusing", r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(env["HOME"], "root2")))
 
     def test_propose_sh_defaults_are_the_mac_paths_and_launchd_sets_no_knob(self):
         # The JEVLOOP_* variables are for the suite (here, and on a host without Homebrew or

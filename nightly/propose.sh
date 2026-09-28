@@ -12,7 +12,8 @@
 # May not: write under prompts/ (only bin/promote, run by a person); echo, log or
 # pass on argv the OAuth token (it is read into the environment for the one call and
 # unset after); exit non-zero on a failure -- launchd throttles a failing job and
-# hides why, so every failure is one line in logs/propose.log and exit 0. The two
+# hides why, so every failure is one line in logs/propose.log and exit 0 (except a missing python:
+# nothing may be written before the path guard, which needs it, so that one is a stderr line launchd keeps). The two
 # non-zero exits are the usage error (2) and the path guard (3), both before any work.
 # One run per date: a DATE whose proposals/<date>.json or .md exists is refused (one FAIL line).
 #
@@ -58,16 +59,28 @@ done
 # The check IS cycle.forbidden (one guard, not two that can disagree): it realpaths the path, so a
 # symlinked HOME or ~/Projects, a '..', '//' or '.' in it, or a --root that does not exist yet (its
 # existing part resolved, the rest normalized) cannot hide the tree, and it matches each prefix and
-# its realpath on a '/' boundary. If the guard itself cannot run, the night stops (exit 3).
+# its realpath on a '/' boundary. Its python runs isolated (-I: no working directory on the path, so
+# a cwd inside another tree is never imported) and writes no bytecode (-B), and must answer "ok" or
+# "forbidden ...": anything else, an empty answer included, is a guard that did not run (exit 3).
 [ -x "$PY" ] || { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) propose FAIL no python at $PY (the path guard needs it; nothing written)" >&2; exit 0; }
 guard_path() {
-  hit="$("$PY" -c 'import sys; sys.path.insert(0, sys.argv[1]); from loop import cycle; print(cycle.forbidden(sys.argv[2]) or "")' \
-         "$REPO" "$1" 2>/dev/null)" || { echo "propose: the path guard could not run ($2); refusing" >&2; exit 3; }
-  [ -z "$hit" ] || { echo "propose: refusing to run under a forbidden prefix ($2)" >&2; exit 3; }
+  hit="$("$PY" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from loop import cycle; p = cycle.forbidden(sys.argv[2]); print("forbidden " + p if p else "ok")' \
+         "$REPO" "$1" 2>/dev/null)"
+  case "$hit" in
+    ok) ;;
+    forbidden*) echo "propose: refusing to run under a forbidden prefix ($2)" >&2; exit 3 ;;
+    *) echo "propose: the path guard could not run ($2); refusing" >&2; exit 3 ;;
+  esac
+}
+realpath_py() {   # the path as os.path.realpath spells it, or nothing (the caller refuses)
+  r="$("$PY" -I -B -c 'import os, sys; print("path:" + os.path.realpath(sys.argv[1]))' "$1" 2>/dev/null)"
+  case "$r" in path:/*) printf '%s\n' "${r#path:}" ;; esac
 }
 case "$ROOT" in /*) ;; *) ROOT="$(pwd -P)/$ROOT" ;; esac        # absolute now: the guard and every write see one path
-ROOT_REAL="$("$PY" -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$ROOT" 2>/dev/null)" \
-  || { echo "propose: cannot resolve --root $ROOT; refusing" >&2; exit 3; }
+ROOT_REAL="$(realpath_py "$ROOT")"
+[ -n "$ROOT_REAL" ] || { echo "propose: cannot resolve --root $ROOT; refusing" >&2; exit 3; }
+REPO_REAL="$(realpath_py "$REPO")"
+[ -n "$REPO_REAL" ] || { echo "propose: cannot resolve the repo $REPO; refusing" >&2; exit 3; }
 guard_path "$REPO" repo
 guard_path "$ROOT_REAL" root
 guard_path "$(pwd -P)" cwd
@@ -75,7 +88,7 @@ guard_path "$(pwd -P)" cwd
 # the day's proposal: a real night for the same date is refused (one run per date, below), no
 # Claude call is made, and bin/promote would accept the fixture with a warning. So --dry runs
 # only against a --root outside the repo (the suite passes a temp dir).
-if [ $DRY -eq 1 ] && [ "$ROOT_REAL" = "$REPO" ]; then
+if [ $DRY -eq 1 ] && [ "$ROOT_REAL" = "$REPO_REAL" ]; then      # both spelled by realpath ('//' and all)
   echo "usage: --dry writes fixture files; pass --root DIR outside the repo" >&2; exit 2
 fi
 
