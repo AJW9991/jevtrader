@@ -1613,6 +1613,29 @@ class Capped(unittest.TestCase):
         self.assertEqual(os.listdir(forbidden), ["x"])                                # no newdir inside the tree
         self.assertTrue(os.path.exists(os.path.join(env["HOME"], "Projects", "jevroot", "proposals", "2026-09-22.json")), r.stderr)
 
+    def test_a_root_with_a_newline_is_refused(self):
+        # `$(...)` strips trailing newlines: a --root ending in one reached the guard as its sibling
+        # without it (here a symlink out of the tree) while the night was written under the directory
+        # with it, inside the tree. A --root that names such a directory through a symlink, or has a
+        # newline anywhere, is refused too, before anything is written.
+        env = _sh_env(self)
+        forbidden = os.path.join(env["HOME"], "Projects", "crypto-trading-system")   # the forbidden tree, under the run's HOME
+        elsewhere = os.path.join(env["HOME"], "elsewhere")
+        os.makedirs(os.path.join(forbidden, "d\n"))
+        os.makedirs(elsewhere)
+        os.symlink(elsewhere, os.path.join(forbidden, "d"))                  # "d" leads out of the tree, "d\n" does not
+        os.symlink(os.path.join(forbidden, "d\n"), os.path.join(env["HOME"], "s"))   # no newline, but its realpath has one
+        for root, why in ((os.path.join(forbidden, "d\n"), "propose: --root contains a newline; refusing"),
+                          (os.path.join(env["HOME"], "a\nb"), "propose: --root contains a newline; refusing"),
+                          (os.path.join(env["HOME"], "s"), "propose: cannot resolve --root")):
+            r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry", "--date", "2026-09-22",
+                                "--root", root], capture_output=True, text=True, timeout=120, env=env)
+            self.assertEqual(r.returncode, 3, (root, r.stderr))
+            self.assertIn(why, r.stderr)
+        self.assertEqual(os.listdir(os.path.join(forbidden, "d\n")), [])
+        self.assertEqual(os.listdir(elsewhere), [])
+        self.assertFalse(os.path.exists(os.path.join(env["HOME"], "a\nb")))
+
     def test_the_guard_never_imports_the_working_directory_and_refuses_when_it_cannot_answer(self):
         # 2026-09-28 (second pre-merge pass): the guard's python had the cwd on sys.path, after the repo
         # (so loop/ always came from the repo) but before the standard library: started from inside

@@ -76,10 +76,16 @@ guard_path() {
     *) echo "propose: the path guard could not run ($2); refusing" >&2; exit 3 ;;
   esac
 }
-realpath_py() {   # the path as os.path.realpath spells it, or nothing (the caller refuses)
-  r="$("$PY" -I -B -c 'import os, sys; print("path:" + os.path.realpath(sys.argv[1]))' "$1" 2>/dev/null)"
+realpath_py() {   # the path as os.path.realpath spells it, or nothing (the caller refuses): nothing too
+  # for a realpath with a newline in it, which `$(...)` would hand on without its trailing ones
+  r="$("$PY" -I -B -c 'import os, sys; r = os.path.realpath(sys.argv[1]); print("" if "\n" in r else "path:" + r)' "$1" 2>/dev/null)"
   case "$r" in path:/*) printf '%s\n' "${r#path:}" ;; esac
 }
+# A --root with a newline in it is refused: `$(...)` strips trailing newlines, so the path the guard
+# checks and the night writes under would not be the one named (a sibling without the newline, say
+# a symlink, can lead anywhere).
+NL=$'\n'
+case "$ROOT" in *"$NL"*) echo "propose: --root contains a newline; refusing" >&2; exit 3 ;; esac
 case "$ROOT" in /*) ;; *) ROOT="$(pwd -P)/$ROOT" ;; esac        # absolute now: the guard and every write see one path
 ROOT_REAL="$(realpath_py "$ROOT")"
 [ -n "$ROOT_REAL" ] || { echo "propose: cannot resolve --root $ROOT; refusing" >&2; exit 3; }
