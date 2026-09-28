@@ -34,11 +34,15 @@ What it computes, and nothing else (PREREG §4, §5, §8; SPEC §10-§11):
 - H2: units = the first live row of each block (report.h2_units), (lean, ret_h_bps) in block
   order, dropped blocks leave no placeholder; statistic = Pearson r; same bootstrap with its
   own generator, r undefined on a resample -> 0; reject iff the 250th sorted r* is > 0.
-  Degenerate: all leans equal or all returns equal -> "not supported: no variance".
+  Degenerate: all leans equal or all returns equal -> "not supported: no variance"; one unit
+  -> "fewer than 2 units"; none -> "no units".
 Everything beside a statistic is descriptive and says so. No other cell is tested here: a
 claim from the 32 gross secondaries would take alpha 0.025 / 32 (§6) and is not made by code.
+The log is read once (read_log): the sha, the byte length and the last tick_id in the header
+are of the bytes the rows were parsed from, so a later copy of the growing log is checked with
+`head -c <bytes> <copy> | shasum -a 256`. --out writes a NEW file and never overwrites one.
 Standard library only. The output is meant to be committed beside PREREG.md (§10)."""
-import argparse, datetime, hashlib, math, os, random, sys
+import argparse, datetime, hashlib, math, os, random, sys, tempfile
 
 from . import book, config, outcomes, report
 
@@ -170,8 +174,10 @@ def h1_series(rows, outs, x, y, anchor, excluded=(), n_blocks=BLOCKS_PER_DAY * N
     else:
         fx, fy = px["forced_hold"], py["forced_hold"]
     # descriptive: blocks on which a gap longer than the horizon lands (SPEC §10 carries the position
-    # across a gap and marks the whole move on the first priced tick after it; PREREG-v2 material)
-    priced = sorted(t for t, _ in cell["d"])
+    # across a gap and marks the whole move on the first priced tick after it; PREREG-v2 material).
+    # "Priced" is book.replay's own test (bid, ask and mid all usable): a run of unpriced rows (a feed
+    # outage logs a row a minute with no mid) is a gap to the book as much as a run of missing rows.
+    priced = sorted({r["tick_id"] for r in rows if all(book._px(r.get(f)) for f in ("bid", "ask", "mid"))})
     absorbing = set()
     for a, b in zip(priced, priced[1:]):
         if report.tick_epoch(b) - report.tick_epoch(a) > config.HORIZON_S:
@@ -215,8 +221,10 @@ def h2(rows, outs, anchor, excluded=(), resamples=RESAMPLES, n_blocks=BLOCKS_PER
             drop_every[p] = drop_every.get(p, 0) + 1
     ps = [(u["lean"], u["ret"]) for u in units]
     xs, ys = [x for x, _ in ps], [y for _, y in ps]
-    degenerate = None
-    if ps and len(set(xs)) == 1:
+    degenerate = None                                       # n = 0 is "no units", printed as such, never a variance
+    if len(ps) == 1:
+        degenerate = "fewer than 2 units (n 1): r is undefined"
+    elif ps and len(set(xs)) == 1:
         degenerate = "no variance in lean"
     elif ps and len(set(ys)) == 1:
         degenerate = "no variance in ret"
@@ -293,16 +301,30 @@ def pending_units(rows, scope, outs, anchor, excluded=(), n_blocks=BLOCKS_PER_DA
 
 
 # ---- the run -----------------------------------------------------------------------------------
-def sha256_of(path):
-    h = hashlib.sha256()
+def read_log(path):
+    """The log read ONCE: its bytes are hashed and the rows are parsed from those same bytes, so
+    the sha printed is the sha of what was measured while launchd appends a row a minute. The
+    rows go through outcomes.load itself (on a private copy of the bytes), so a skipped line is
+    skipped exactly as every other reader skips it. Returns (rows, bad, sha256 hex, byte length)."""
     with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
+        data = fh.read()
+    fd, tmp = tempfile.mkstemp(prefix="inference-", suffix=".jsonl")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        bad = []
+        rows = outcomes.load(tmp, bad)
+    finally:
+        os.unlink(tmp)
+    return rows, bad, hashlib.sha256(data).hexdigest(), len(data)
 
 
 def _f(x, nd=4):
     return "n/a" if x is None else f"{x:.{nd}f}"
+
+
+def _share(k, n):
+    return f"{100.0 * k / n:.1f}%" if n else "n/a"
 
 
 def _iso_second(epoch):
@@ -373,6 +395,8 @@ def reading(h1s, h2s, void=False, pre_t0=False):
     elif h2r:
         h2 = ("H2 supported: Jev's up15 / down15 carry information about the next 15-minute return, in the four words as"
               " Jev maps them (mostly the `trend` word on the shakedown), not shown to go beyond the words (§5)")
+    elif not h2s.get("n"):
+        h2 = "no units: no block's first live row has both nouls and an outcome, so H2 is not read"
     else:
         h2 = ("H2 not supported: Jev's up15 / down15 carry no linear information about the next 15-minute return on this"
               " product over these 28 days; the noultail column is then noise around hold")
@@ -381,13 +405,18 @@ def reading(h1s, h2s, void=False, pre_t0=False):
     return lines
 
 
-def render(mode, t0, now, log, log_sha, n_rows, excluded, excl_lines, kept_days, h1s, h2s, resamples, pending=None, cut=None):
-    """pending: None when --accept-pending was not given, else the pending_units it overrode.
-    cut: --pre-t0's end of scope, the earlier of --t0 and PREREG §11's T0."""
+def render(mode, t0, now, log, excluded, excl_lines, kept_days, h1s, h2s, resamples, pending=None, cut=None, excl_path=None):
+    """log: {"path", "sha", "bytes", "last", "scope"} of the one read (read_log) and the rows in scope.
+    pending: None when --accept-pending was not given, else the pending_units it overrode.
+    cut: --pre-t0's end of scope, the earlier of --t0 and PREREG §11's T0. excl_path: the
+    exclusions file actually read (or looked for)."""
+    excl_path = excl_path or os.path.join(config.DATA, "exclusions.tsv")
     lines = [f"jev-paper-loop inference (PREREG §4-§5), mode {mode}, run at {now.strftime('%Y-%m-%dT%H:%MZ')}",
-             f"  log {log} sha256 {log_sha}; rows in scope {n_rows}",
+             f"  python {' '.join(sys.version.split())}",
+             f"  log {log['path']}: {log['bytes']} bytes, sha256 {log['sha']}, last tick_id {log['last']}"
+             f" (a later copy: head -c {log['bytes']} FILE | shasum -a 256); skipped lines {log['skipped']}; rows in scope {log['scope']}",
              f"  T0 {report._iso_minute(t0)}; anchor for blocks and days {'T0' if mode == 'sample' else 'the log first tick (pre-T0, descriptive)'}",
-             (f"  days kept {kept_days} of {N_DAYS}; excluded {sorted(excluded) or 'none'} (data/exclusions.tsv, reproduced below)" if mode == "sample"
+             (f"  days kept {kept_days} of {N_DAYS}; excluded {sorted(excluded) or 'none'} ({excl_path}, reproduced below)" if mode == "sample"
               else "  days and exclusions: not applicable before T0; blocks run over the shakedown's own span"),
              f"  bootstrap: circular blocks of {BLOCK_LEN}, {resamples} resamples, seed {SEED}, one generator per statistic;"
              f" lower bound = sorted[{alpha_rank(resamples)}] (nearest-rank 2.5th percentile); reject iff > 0"]
@@ -414,18 +443,22 @@ def render(mode, t0, now, log, log_sha, n_rows, excluded, excl_lines, kept_days,
     for h in h1s:
         lines.append(f"  {h['pair']}: {h['title']}")
         verdict = ("REJECT H0: the arm beats the other" if h["reject"] else "not rejected") if h["reject"] is not None else "no test (point estimate)"
+        if not h["n"]:
+            verdict = "no blocks: nothing to test"
         lines.append(f"    n blocks {h['n']}; mean S_k {_f(h['mean'])} bps; lower bound {_f(h['lower'])} bps -> {v}{verdict}")
         days = h["days"]
         per_day = (f" ({h['trades_x'] / days:.2f} vs {h['trades_y'] / days:.2f} per day over {days:g}"
                    f" {'kept days' if mode == 'sample' else 'days of the span'})") if days else ""
-        lines.append(f"    descriptive, kept days only: disagreement blocks {h['dis_blocks']} ({100.0 * h['dis_blocks'] / h['n']:.1f}%), mean S_k on them {_f(h['mean_dis'])};"
+        lines.append(f"    descriptive, kept days only: disagreement blocks {h['dis_blocks']} ({_share(h['dis_blocks'], h['n'])}), mean S_k on them {_f(h['mean_dis'])};"
                      f" every tick mean d_t {_f(h['mean_tick'])} over {h['ticks']}; trades {h['trades_x']} vs {h['trades_y']}{per_day};"
                      f" forced holds {h['forced_x']} vs {h['forced_y']}")
     lines.append("")
     lines.append("H2 -- Pearson r(lean, ret_h_bps) over the units (first live row of each block), alpha 0.025")
     h = h2s
     units = f"  n units {h['n']} (blocks with a live row {h['blocks_with_row']}; dropped {h['dropped'] or 'none'})"
-    if h["degenerate"]:
+    if not h["n"]:
+        lines.append(f"{units}: {v}no units: no block's first live row has both nouls and an outcome; nothing to test")
+    elif h["degenerate"]:
         lines.append(f"{units}: {v}not supported: {h['degenerate']} (PREREG §5 degenerate case)")
     else:
         verdict = "REJECT H0: r > 0" if h["reject"] else "not rejected"
@@ -437,8 +470,11 @@ def render(mode, t0, now, log, log_sha, n_rows, excluded, excl_lines, kept_days,
     if mode == "sample":
         lines.extend(day_lines(h2s["per_day"]))
         lines.append("")
-    lines.append("data/exclusions.tsv, verbatim:" if excl_lines else "data/exclusions.tsv: absent or empty")
-    lines.extend("  " + l for l in excl_lines)
+    if mode == "sample":
+        lines.append(f"{excl_path}, verbatim:" if excl_lines else f"{excl_path}: absent or empty")
+        lines.extend("  " + l for l in excl_lines)
+    else:
+        lines.append(f"{excl_path}: not applied before T0 (exclusions name sample days)")
     return "\n".join(lines) + "\n"
 
 
@@ -450,11 +486,12 @@ def main(argv=None, now=None):
     ap.add_argument("--log", default=config.DECISIONS)
     ap.add_argument("--t0", help="T0 (UTC minute or tick_id); default: PREREG.md §11")
     ap.add_argument("--prereg", default=os.path.join(config.REPO, "PREREG.md"))
-    ap.add_argument("--exclusions", default=os.path.join(config.DATA, "exclusions.tsv"))
+    ap.add_argument("--exclusions", help="stop rule 3's exclusions (default data/exclusions.tsv, which may be absent: no exclusions);"
+                                         " a path given here must exist")
     ap.add_argument("--now", help="override the clock (tests). Printed in the header when used.")
     ap.add_argument("--resamples", type=int, default=RESAMPLES,
                     help=f"tests only; the pre-registered number is {RESAMPLES}, and --sample on the live log refuses any other")
-    ap.add_argument("--out", help="also write the text here")
+    ap.add_argument("--out", help="also write the text to this NEW file (an existing file is never overwritten)")
     ap.add_argument("--accept-pending", action="store_true",
                     help="--sample on a log that really stopped: count the units whose t + h it never reached as gaps (printed)")
     args = ap.parse_args(argv)
@@ -495,13 +532,23 @@ def main(argv=None, now=None):
         sys.stderr.write(f"inference: refusing to look: the sample ends {report._iso_minute(end)} and it is {now.strftime('%Y-%m-%dT%H:%MZ')}"
                          f" (PREREG §8.4-§8.5; --pre-t0 runs the shakedown rows)\n")
         return EXIT_NOT_YET
+    excl_path = args.exclusions or os.path.join(config.DATA, "exclusions.tsv")
+    if args.exclusions and not os.path.exists(args.exclusions):      # only the default may be absent (no exclusions)
+        sys.stderr.write(f"inference: no exclusions file at {args.exclusions} (given with --exclusions; leave the flag out"
+                         " when there are none)\n")
+        return 2
     try:
-        excluded, excl_lines = read_exclusions(args.exclusions)
+        excluded, excl_lines = read_exclusions(excl_path)
     except ValueError as e:
         sys.stderr.write(f"inference: {e}\n")
         return 2
-    bad = []
-    rows = outcomes.load(args.log, bad)
+    if args.out and os.path.exists(args.out):               # before an hour of bootstrap, not after
+        sys.stderr.write(f"inference: --out {args.out} exists; refusing to overwrite it (the result is written once: name a new file)\n")
+        return 2
+    if not os.path.exists(args.log):
+        sys.stderr.write(f"inference: no log at {args.log}\n")
+        return 2
+    rows, bad, sha, nbytes = read_log(args.log)             # one read: the sha is of the bytes the rows came from
     outs = outcomes.join(rows)
     cut = None
     if args.sample:
@@ -528,15 +575,20 @@ def main(argv=None, now=None):
                              " or pass --accept-pending if the log really stopped (PREREG §5: the join is over the whole log)\n")
             return EXIT_NOT_YET
         pending = pend if args.accept_pending else None
-    text = render(mode, t0, now, args.log, sha256_of(args.log) if os.path.exists(args.log) else "-", len(scope), excluded, excl_lines,
-                  kept, h1(scope, outs, anchor, excluded, args.resamples, n_blocks), h2(scope, outs, anchor, excluded, args.resamples, n_blocks),
-                  args.resamples, pending, cut)
+    log = {"path": args.log, "sha": sha, "bytes": nbytes, "last": rows[-1]["tick_id"] if rows else "-", "skipped": len(bad), "scope": len(scope)}
+    text = render(mode, t0, now, log, excluded, excl_lines, kept,
+                  h1(scope, outs, anchor, excluded, args.resamples, n_blocks), h2(scope, outs, anchor, excluded, args.resamples, n_blocks),
+                  args.resamples, pending, cut, excl_path)
     if args.now:
         text = text.replace("\n", f" (clock overridden with --now {args.now})\n", 1)
     sys.stdout.write(text)
     if args.out:
-        with open(args.out, "w", encoding="utf-8") as fh:
-            fh.write(text)
+        try:
+            with open(args.out, "x", encoding="utf-8") as fh:
+                fh.write(text)
+        except FileExistsError:
+            sys.stderr.write(f"inference: --out {args.out} appeared during the run; refusing to overwrite it (the text is on stdout)\n")
+            return 2
     return 0
 
 

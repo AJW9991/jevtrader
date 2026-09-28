@@ -1,6 +1,6 @@
 """loop/inference.py: the pre-registered draw, the guard that refuses the sample before day 28,
 exclusions by T0-anchored day, and an end-to-end run on a synthetic log and on --pre-t0."""
-import contextlib, datetime, io, math, os, random, tempfile, unittest
+import contextlib, datetime, hashlib, io, json, math, os, random, sys, tempfile, unittest
 from unittest import mock
 
 from loop import book, inference, outcomes, report, rules
@@ -151,6 +151,7 @@ class Guard(unittest.TestCase):
         cls.log = os.path.join(cls.tmp, "decisions.jsonl")
         _write(cls.log, [_row(m) for m in range(42)])                # 2026-09-23 10:00 .. 10:41
         cls.t0 = "2026-09-23T10:00"
+        cls.ex = _exclusions(os.path.join(cls.tmp, "exclusions.tsv"))   # header only: no exclusions
 
     def test_sample_is_refused_before_day_28_without_opening_the_log(self):
         with mock.patch.object(outcomes, "load", side_effect=AssertionError("the log was opened")):
@@ -163,7 +164,7 @@ class Guard(unittest.TestCase):
     def test_sample_runs_at_day_28_and_says_the_clock_was_overridden(self):
         # the log stopped at 10:41: block 2's first live row (10:30) will never see its t + h
         code, out, err = _main(["--sample", "--log", self.log, "--t0", self.t0, "--now", "2026-10-21T10:00", "--resamples", "200",
-                                "--exclusions", os.path.join(self.tmp, "none.tsv"), "--accept-pending"])
+                                "--exclusions", self.ex, "--accept-pending"])
         self.assertEqual(code, 0, err)
         self.assertIn("--accept-pending given: 1 H2 unit(s)", out)
         self.assertIn("mode sample", out)
@@ -193,7 +194,7 @@ class Guard(unittest.TestCase):
 
     def test_pre_t0_runs_any_time_on_rows_before_t0_only(self):
         code, out, err = _main(["--pre-t0", "--log", self.log, "--t0", "2026-09-23T10:20", "--resamples", "100",
-                                "--exclusions", os.path.join(self.tmp, "none.tsv")])
+                                "--exclusions", self.ex])
         self.assertEqual(code, 0, err)
         self.assertIn("mode pre-t0", out)
         self.assertIn("rows in scope 20", out)                        # 10:00 .. 10:19
@@ -374,7 +375,7 @@ class Reading(unittest.TestCase):
 
     def test_21_kept_days_read_the_stop_rules_20_are_void_and_say_so_on_every_verdict(self):
         kept21 = self._run(self.edge, self.seven)
-        self.assertIn("  days kept 21 of 28; excluded [2, 3, 4, 5, 6, 7, 8] (data/exclusions.tsv, reproduced below)", kept21)
+        self.assertIn("  days kept 21 of 28; excluded [2, 3, 4, 5, 6, 7, 8] (" + self.seven + ", reproduced below)", kept21)
         self.assertFalse(any("VOID" in l for l in kept21))
         self.assertIn("  stop rule 1: B-C reject=True, A-C reject=False -> does not fire", kept21)
         void = self._run(self.edge, self.eight)
@@ -399,15 +400,15 @@ class Reading(unittest.TestCase):
             (False, False, False): ("fires", "neither primary holds", "neither A nor B beats C", "H2 not supported"),
         }
         for (b, a, h2), (sr1, prim, r1, r2) in cases.items():
-            lines = inference.reading(h1s(b, a, 0.5), {"reject": h2})
+            lines = inference.reading(h1s(b, a, 0.5), {"reject": h2, "n": 10})
             self.assertIn(f"  stop rule 1: B-C reject={b}, A-C reject={a} -> {sr1}", lines)
             self.assertIn(f"H2 reject={h2} -> {prim}", self._line(lines, "  primaries: "))
             self.assertTrue(self._line(lines, "  H1 (§9): ").startswith(f"  H1 (§9): {r1}"), (b, a, h2))
             self.assertTrue(self._line(lines, "  H2 (§9): ").startswith(f"  H2 (§9): {r2}"), (b, a, h2))
         for ba, sr2 in ((0.5, "does not fire"), (0.0, "fires"), (-0.25, "fires"), (-1e-9, "fires"), (None, "not read (no blocks)")):
-            self.assertIn(f"  stop rule 2: mean S_k(B-A) = {inference._f(ba)} -> {sr2}", inference.reading(h1s(True, True, ba), {"reject": True}))
+            self.assertIn(f"  stop rule 2: mean S_k(B-A) = {inference._f(ba)} -> {sr2}", inference.reading(h1s(True, True, ba), {"reject": True, "n": 10}))
         self.assertIn("  PRE-T0: a smoke of the procedure; no stop rule and no reading applies before T0",
-                      inference.reading(h1s(False, False, 0.0), {"reject": False}, pre_t0=True))
+                      inference.reading(h1s(False, False, 0.0), {"reject": False, "n": 10}, pre_t0=True))
 
 
 class ExcludedDays(unittest.TestCase):
@@ -708,6 +709,143 @@ class Pinned(unittest.TestCase):
         self.assertEqual(code, 3, err)
         code, out, err = _main(args + ["--log", stopped, "--now", "2026-10-21T10:00", "--accept-pending"])   # ... unless it stopped
         self.assertEqual(code, 0, err)
+
+
+class Robustness(unittest.TestCase):
+    """What the run prints about its own inputs, and the inputs that must stop it cleanly."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp()
+        cls.log = os.path.join(cls.tmp, "edge.jsonl")
+        _write(cls.log, _edge_rows(blocks=4))                        # with a torn last line, as a crash leaves it
+        cls.ex = _exclusions(os.path.join(cls.tmp, "ex.tsv"), [9])
+
+    def _run(self, *extra, log=None, ex=None):
+        argv = ["--sample", "--log", log or self.log, "--t0", T0S, "--now", "2026-10-21T10:00", "--resamples", "20"]
+        return _main(argv + (["--exclusions", ex] if ex else []) + list(extra))
+
+    def test_the_exclusions_path_read_is_printed_and_a_missing_one_given_explicitly_stops_the_run(self):
+        code, out, err = self._run(ex=self.ex)
+        self.assertEqual(code, 0, err)
+        self.assertIn(f"excluded [9] ({self.ex}, reproduced below)", out)
+        self.assertIn(f"{self.ex}, verbatim:\n  d09\t50.0%\t0.0%\tx\n", out)
+        missing = os.path.join(self.tmp, "no-such.tsv")
+        code, out, err = self._run(ex=missing)
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn(f"no exclusions file at {missing}", err)
+        data = tempfile.mkdtemp()                                    # the default may be absent: that is no exclusions
+        with mock.patch.object(inference.config, "DATA", data):
+            code, out, err = self._run()
+        self.assertEqual(code, 0, err)
+        self.assertIn(f"excluded none ({os.path.join(data, 'exclusions.tsv')}, reproduced below)", out)
+        self.assertIn(f"{os.path.join(data, 'exclusions.tsv')}: absent or empty", out)
+
+    def test_the_sha_is_of_the_bytes_the_rows_came_from_and_a_later_copy_can_be_checked(self):
+        with open(self.log, "rb") as fh:
+            before = fh.read()
+        path = os.path.join(self.tmp, "growing.jsonl")
+        with open(path, "wb") as fh:
+            fh.write(before)
+        real = outcomes.load
+
+        def appending(p, bad=None):                                  # launchd writes a row between the read and the parse
+            with open(path, "a") as fh:
+                fh.write("\n" + json.dumps(_at(T0 + 3 * 86400)) + "\n")
+            return real(p, bad)
+
+        with mock.patch.object(outcomes, "load", appending):
+            code, out, err = self._run(log=path, ex=self.ex)
+        self.assertEqual(code, 0, err)
+        sha = hashlib.sha256(before).hexdigest()
+        self.assertIn(f"  log {path}: {len(before)} bytes, sha256 {sha}, last tick_id 20260923T110100Z"
+                      f" (a later copy: head -c {len(before)} FILE | shasum -a 256); skipped lines 1; rows in scope 62\n", out)
+        with open(path, "rb") as fh:
+            later = fh.read()
+        self.assertGreater(len(later), len(before))
+        self.assertEqual(hashlib.sha256(later[:len(before)]).hexdigest(), sha)       # head -c N of the later copy
+        rows, bad, sha2, n = inference.read_log(self.log)
+        self.assertEqual((sha2, n), (sha, len(before)))
+        want_bad = []
+        self.assertEqual(rows, outcomes.load(self.log, want_bad))   # skipped exactly as outcomes.load skips
+        self.assertEqual(bad, want_bad)
+        self.assertEqual(len(bad), 1)
+
+    def test_the_header_says_which_python_ran(self):
+        code, out, err = self._run(ex=self.ex)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out.splitlines()[1], f"  python {' '.join(sys.version.split())}")
+
+    def test_out_is_a_new_file_and_an_existing_one_is_never_overwritten(self):
+        new = os.path.join(self.tmp, "RESULTS-new.md")
+        code, out, err = self._run("--out", new, ex=self.ex)
+        self.assertEqual(code, 0, err)
+        with open(new) as fh:
+            self.assertEqual(fh.read(), out)
+        old = os.path.join(self.tmp, "RESULTS-old.md")
+        with open(old, "w") as fh:
+            fh.write("the committed result\n")
+        with mock.patch.object(inference, "h1", side_effect=AssertionError("computed before refusing")):
+            code, out, err = self._run("--out", old, ex=self.ex)
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn(f"--out {old} exists; refusing to overwrite it", err)
+        with open(old) as fh:
+            self.assertEqual(fh.read(), "the committed result\n")
+        late = os.path.join(self.tmp, "RESULTS-late.md")               # a file that appears while the bootstrap runs
+        real = inference.render
+
+        def render_then_appear(*a, **k):
+            with open(late, "w") as fh:
+                fh.write("written meanwhile\n")
+            return real(*a, **k)
+
+        with mock.patch.object(inference, "render", render_then_appear):
+            code, out, err = self._run("--out", late, ex=self.ex)
+        self.assertEqual(code, 2)
+        self.assertIn(f"--out {late} appeared during the run; refusing to overwrite it", err)
+        with open(late) as fh:
+            self.assertEqual(fh.read(), "written meanwhile\n")
+
+    def test_a_missing_log_is_said_so_not_a_traceback(self):
+        missing = os.path.join(self.tmp, "no-such.jsonl")
+        for mode in (["--sample"], ["--pre-t0"]):
+            code, out, err = _main(mode + ["--log", missing, "--t0", T0S, "--now", "2026-10-21T10:00", "--exclusions", self.ex])
+            self.assertEqual((code, out, err), (2, "", f"inference: no log at {missing}\n"), mode)
+
+    def test_pre_t0_with_no_row_before_the_cut_prints_no_blocks_and_no_units(self):
+        code, out, err = _main(["--pre-t0", "--log", self.log, "--t0", T0S, "--resamples", "20"])   # every row is at or after T0
+        self.assertEqual(code, 0, err)
+        self.assertIn("rows in scope 0\n", out)
+        self.assertIn("    n blocks 0; mean S_k n/a bps; lower bound n/a bps -> no blocks: nothing to test", out)
+        self.assertIn("disagreement blocks 0 (n/a)", out)
+        self.assertIn("  n units 0 (blocks with a live row 0; dropped none): no units:", out)
+        self.assertNotIn("not rejected", out)
+        self.assertIn("  H2 (§9): no units:", out)
+
+    def test_one_unit_is_fewer_than_two_not_no_variance(self):
+        rows = _minutes(T0, T0 + 900, up=0.6, down=0.4) + [_at(T0 + 900 + 60 * m, mode="dry", mid=101.0) for m in (0, 1)]
+        path = os.path.join(self.tmp, "one-unit.jsonl")
+        _write(path, rows, garbage=False)
+        code, out, err = self._run(log=path, ex=self.ex)
+        self.assertEqual(code, 0, err)
+        self.assertIn("  n units 1 (blocks with a live row 1; dropped none): not supported: fewer than 2 units (n 1): r is undefined", out)
+        self.assertNotIn("no variance", [l for l in out.splitlines() if l.startswith("  n units ")][0])
+
+    def test_a_run_of_unpriced_rows_longer_than_the_horizon_is_a_gap_block(self):
+        def unpriced(e):
+            r = _at(e, absence="feed")
+            r.update(bid=None, ask=None, mid=None, answers=None, columns={"a": None, "b": None})
+            return r
+
+        for hole, want in ((21, 1), (15, 1), (14, 0)):               # minutes without a price after minute 9: > 900 s is 15 or more
+            rows = ([_at(T0 + 60 * m, mid=100.0 + m / 10, b="buy" if m == 0 else "hold") for m in range(10)]
+                    + [unpriced(T0 + 60 * m) for m in range(10, 10 + hole)]
+                    + [_at(T0 + 60 * m, mid=101.0) for m in range(10 + hole, 45)])
+            path = os.path.join(self.tmp, f"hole{hole}.jsonl")
+            _write(path, rows, garbage=False)
+            loaded = outcomes.load(path, [])
+            s = inference.h1_series(report.in_sample(loaded, T0), outcomes.join(loaded), "b", "c", T0)
+            self.assertEqual(s["gap_blocks"], want, hole)            # every minute has a row, so only the price shows the gap
 
 
 if __name__ == "__main__":
