@@ -6,10 +6,31 @@
 # CI) uses the python3 on PATH. `make PY=... test` overrides either.
 PY ?= $(shell test -x /opt/homebrew/bin/python3 && echo /opt/homebrew/bin/python3 || command -v python3)
 
-.PHONY: test dry run report health dash status inference-smoke results
+.PHONY: test test-mode test-modes dry run report health dash status inference-smoke results
 
 test:
 	$(PY) -m unittest discover -s tests
+
+# The suite under the conditions CI also runs it in, one MODE at a time (make test-modes runs all
+# six, ~6 min): warnings as errors; a C locale with UTF-8 mode off (ASCII file names and pipes);
+# a shuffled order (tests/modes/shuffled.py, seeds 1-3); and the wall clock moved to the day-28
+# run, to three weeks after the sample, and to next year (tests/modes/clock), so a test that reads
+# the real date fails before the calendar gets there.
+MODES = werror c-locale shuffled day-28 after-sample next-year
+CLOCK = PYTHONPATH="$(CURDIR)/tests/modes/clock" FAKE_NOW
+test-mode:
+	@case "$(MODE)" in \
+	  werror) $(PY) -W error -m unittest discover -s tests ;; \
+	  c-locale) LC_ALL=C LANG=C PYTHONUTF8=0 PYTHONCOERCECLOCALE=0 $(PY) -m unittest discover -s tests ;; \
+	  shuffled) $(PY) tests/modes/shuffled.py 1 2 3 ;; \
+	  day-28) $(CLOCK)=2026-10-23T21:56:30Z $(PY) -m unittest discover -s tests ;; \
+	  after-sample) $(CLOCK)=2026-11-15T12:00:00Z $(PY) -m unittest discover -s tests ;; \
+	  next-year) $(CLOCK)=2027-03-01T09:00:00Z $(PY) -m unittest discover -s tests ;; \
+	  *) echo "make test-mode MODE=<one of: $(MODES)>" >&2; exit 2 ;; \
+	esac
+
+test-modes:
+	@for m in $(MODES); do echo "== $$m"; $(MAKE) --no-print-directory test-mode MODE=$$m || exit 1; done
 
 dry:
 	$(PY) -m loop.cycle --dry --once

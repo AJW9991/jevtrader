@@ -30,6 +30,23 @@ jobs:
         run: make test
       - name: the interpreter the gate ran under
         run: python3 --version && make -n test
+  # The suite under the conditions a person otherwise runs by hand (Makefile test-mode): warnings
+  # as errors, a C locale with UTF-8 mode off, a shuffled order, and the wall clock moved to the
+  # day-28 run, after the sample and to next year. One interpreter, the Mac's.
+  modes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [werror, c-locale, shuffled, day-28, after-sample, next-year]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: make test-mode MODE=${{ matrix.mode }}
+        run: make PY="$(command -v python3)" test-mode MODE=${{ matrix.mode }}
   # The Mac's shape: bash 3.2, BSD userland, the real /usr/bin/caffeinate, a TMPDIR under /var
   # (a symlink into /private/var). PY is named because the runner's Homebrew python3 is not the
   # matrix interpreter.
