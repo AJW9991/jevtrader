@@ -200,14 +200,15 @@ class DaysAndExclusions(unittest.TestCase):
         # a first line with a digit is a data line whatever its first word, and one that is not a day says so
         for first, bad in (("day 16  80.0  0.0  no header", "'day 16'"), ("day06\t80.0\t0.0\ttypo", "'day06'"),
                            ("day fill% jev-err% reason 2", "'day fill% jev-err% reason 2'"),
-                           ("day\tfill%\tjev-err%\treason (PREREG \u00a78.3)", "'day'"),
+                           ("day\tfill%\tjev-err%\treason (PREREG \u00a78.3)", "'day\\tfill%\\tjev-err%\\treason (PREREG \u00a78.3)'"),
                            ("d29\t90.0\t0.0\tout of range", "'d29'"), ("day ٣\t80.0\t0.0\tx", "'day ٣'")):
             with open(p, "w", encoding="utf-8") as fh:
                 fh.write(first + "\nd06\t91.0\t0.1\tasleep\n")
             with self.assertRaises(ValueError, msg=first) as cm:
                 exclusions.read_exclusions(p)
+            why = f"; {exclusions.TAB_FORM}" if first.startswith("day\tfill%") else ""   # a tab line whose fill% is not a number
             self.assertEqual(str(cm.exception), f"{p}:1: line 1 is neither the header (day<TAB>fill%<TAB>jev-err%<TAB>reason) "
-                                                f"nor a day line: day {bad} is not d01..d28 (the line: {first!r})")
+                                                f"nor a day line: day {bad} is not d01..d28{why} (the line: {first!r})")
         with open(p, "w", encoding="utf-8") as fh:
             fh.write("d06\t91.0\t0.1\tno header at all\n")                    # a day line on line 1 is read as one
         self.assertEqual(exclusions.read_exclusions(p)[0], {6})
@@ -215,6 +216,40 @@ class DaysAndExclusions(unittest.TestCase):
             fh.write("day fill% jev-err% reason\nday fill% jev-err% reason\n")    # only line 1 can be the header
         with self.assertRaisesRegex(ValueError, rf"^{re.escape(p)}:2: day "):
             exclusions.read_exclusions(p)
+
+    def test_a_tab_typed_inside_the_day_is_refused_when_the_reason_is_left_out_or_follows_a_space(self):
+        # a tab typed inside the day shifts every column right: with the reason tab-separated it makes five
+        # fields (refused), but with the reason left out or typed after a space it made exactly four, and
+        # 'd1<TAB>6<TAB>80.0<TAB>0.0' was read as d01 while the line meant, 'd16<TAB>80.0<TAB>0.0', was
+        # refused (2026-09-28, round-4 verifier). A tab line's fill% and jev-err% are numbers (or n/a, as the
+        # report prints an undefined share), and its reason does not begin with one
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        p = os.path.join(tmp, "exclusions.tsv")
+        for bad in ("d1\t6\t80.0\t0.0", "d1\t6\t90.0%\t0.0%", "d1\t6\t80.0\t0.0 Mac asleep", "d1\t6\t80.0\t0.0 ",
+                    "d1\t6\t80.0\t0.0\t", "d1\t6\t80.0\t0.0, Mac asleep", "d1\t6\t80.0\t0.0 % asleep", "d1\t6\tn/a\tn/a",
+                    "d1\t6 80.0\t0.0\tasleep", "d1\t6\t80.0 0.0\tasleep", "d16\t\t0.0\tfill left empty",
+                    "d16\tMac asleep\t0.0\tx", "d16\t80.0\t0.0\t3 h asleep", "d16\t80.0\t0.0\t\t", "d1\t6\t80.0\t\t"):
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write("day\tfill%\tjev-err%\treason\n" + bad + "\n")
+            with self.assertRaisesRegex(ValueError, rf"^{re.escape(p)}:2: day .* is not d01..d28; a tab line is "
+                                                    r"day<TAB>fill%<TAB>jev-err%<TAB>reason, ", msg=bad):
+                exclusions.read_exclusions(p)
+            self.assertTrue(exclusions.status_line(p).startswith(f"exclusions: REFUSED, fix before day 28: {p}:2: day "), bad)
+        for good in ("d16\t80.0\t0.0\tMac asleep", "d16\t80.0\t0.0\t", "d16\t80.0\t0.0\t ",    # the reason may be empty
+                     "d16\t80.0\t0.0\tMac asleep\t", "d16\t80.0\t0.0\tMac asleep\t\t ",          # tabs after the reason
+                     "d16\tn/a\tN/A\tMac asleep all day", "d16\t0/0\tn/a\tNO LIVE ROWS", "16\t94.2%\t0.0%\t3h asleep",
+                     "d16\t80,0 %\t0.1;\tx", " d16 \t 80.0 \t 0.0 \t x "):
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write("day\tfill%\tjev-err%\treason\n" + good + "\n")
+            self.assertEqual(exclusions.read_exclusions(p), ({16}, [good]), repr(good))
+            self.assertEqual(exclusions.status_line(p), f"exclusions: 1 day(s) excluded: d16 ({p})", repr(good))
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write("d1\t6\t80.0\t0.0\n")                                      # on line 1 as well, with both messages
+        with self.assertRaisesRegex(ValueError, rf"^{re.escape(p)}:1: line 1 is neither the header .* is not d01..d28; a tab line is "):
+            exclusions.read_exclusions(p)
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write("day  fill%  jev-err%  reason\nd1  6  80.0  0.0  two spaces\n")   # the two-space typo it cannot catch
+        self.assertEqual(exclusions.read_exclusions(p)[0], {1})
 
 
 class Guard(unittest.TestCase):
