@@ -572,6 +572,20 @@ class PolicyTableTest(unittest.TestCase):
         self.assertEqual(counts, sorted(counts, reverse=True), got)
         self.assertEqual(sum(counts), sum(1 for r in results if r["answers"]["cand_0"][0] != r["answers"]["current"][0]))
 
+    def test_the_header_names_the_proposals_writer_when_given(self):
+        by = _by_state()
+        self.ask.side_effect = lambda s, qs, **kw: {"answers": {"cand_0": _answer("hold", 0.5), "current": _answer(state.rule_c(by[s]), 0.9)},
+                                                    "model": config.MODEL}
+        for argv, line in ((["--writer-model", "claude-test-1"], "proposal written by: claude-test-1  \n"),
+                           ([], "proposal written by: not given  \n")):
+            out = os.path.join(self.tmp, "w.md")
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(policy_table.main([self.prop, "--out", out, *argv]), 0)
+            with open(out, encoding="utf-8") as fh:
+                text = fh.read()
+            self.assertIn(line, text)
+            self.assertRegex(text, r"(?m)^proposal sha256: [0-9a-f]{64}  \nproposal written by: ")   # promote's line stays whole
+
     def test_transient_error_continues(self):
         by = _by_state()
         calls = []

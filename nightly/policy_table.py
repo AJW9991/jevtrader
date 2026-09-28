@@ -236,7 +236,7 @@ def _cell(a):
         return str(choice), "?"                # table was left empty
 
 
-def render(date, cur_name, cur_sha, cands, cur_q, results, proposal_sha=None):
+def render(date, cur_name, cur_sha, cands, cur_q, results, proposal_sha=None, writer=None):
     n_err = sum(1 for r in results if r["error"])
     answered = [r for r in results if r["answers"]]
     models = sorted({str(r["model"]) for r in answered if r["model"]})
@@ -251,6 +251,7 @@ def render(date, cur_name, cur_sha, cands, cur_q, results, proposal_sha=None):
            "Nothing here is scored against a logged outcome: the table describes a wording, it does not backtest it.",
            "", f"CURRENT: {cur_name} sha {cur_sha}  ",
            f"proposal sha256: {proposal_sha or '-'}  ",      # the json is not committed; this line, in the committed table, vouches for it
+           f"proposal written by: {writer or 'not given'}  ",  # propose.sh reads it from the CLI's transcript; the call names no model
            f"requests: {len(results)}, answered: {len(results) - n_err}, errors: {n_err}"
            + (" -- INCOMPLETE" if n_err else "") + "  ",
            f"model answered: {', '.join(models) or 'none'}{drift}", ""]
@@ -292,6 +293,8 @@ def main(argv=None):
                     help="default: <date>.md under the repo's proposals/ (config.PROPOSALS), wherever the json is; "
                          "propose.sh passes --out beside it")
     ap.add_argument("--prompts", default=None, help="prompts root (tests)")
+    ap.add_argument("--writer-model", default=None,
+                    help="the model that wrote the proposal, for the table's header (propose.sh passes it)")
     a = ap.parse_args(argv)
     try:
         with open(a.proposal, "rb") as fh:          # read ONCE: the candidates and the sha are of the same bytes
@@ -315,7 +318,7 @@ def main(argv=None):
     out = a.out or os.path.join(config.PROPOSALS, f"{date}.md")
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     with open(out, "w", encoding="utf-8") as fh:
-        fh.write(render(date, cur_name, cur_sha, cands, cur_q, results, hashlib.sha256(raw).hexdigest()))
+        fh.write(render(date, cur_name, cur_sha, cands, cur_q, results, hashlib.sha256(raw).hexdigest(), a.writer_model))
     n_err = sum(1 for r in results if r["error"])
     print(f"{out}\t{len(results) - n_err}/{len(results)} answered" + (" INCOMPLETE" if n_err else ""))
     return EXIT_INCOMPLETE if n_err else 0
