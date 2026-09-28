@@ -153,7 +153,12 @@ def health(rows, outs, bad=(), t0=None, last=None, now=None, since=None):
     lat = [_jev(r, "latency_ms") for r in rows if _num(_jev(r, "latency_ms"))]
     tokens = sum(_jev(r, "input_tokens") for r in rows if _num(_jev(r, "input_tokens")))
     uncounted = sum(1 for r in rows if isinstance(_jev(r, "input_tokens"), int) and not _num(_jev(r, "input_tokens")))
-    usd = tokens * config.USD_PER_MTOK / 1e6
+    try:
+        usd = tokens * config.USD_PER_MTOK / 1e6
+    except OverflowError:                   # counts that each fit a float can sum past one (two server replies of 1e308)
+        usd = math.inf                      # still a float: the dash's spend tile formats it
+    spent = (f"  input tokens {tokens} = ${usd:.6f} to date" if math.isfinite(usd)
+             else "  input tokens: their sum is past a float's range, so no dollar figure") + f" at ${config.USD_PER_MTOK}/Mtok"
     models = collections.Counter(r["model_answered"] for r in rows if isinstance(r.get("model_answered"), str))
     drift = sum(1 for r in rows if r.get("drift") is True)
     versions = collections.Counter(str(r.get("prompt_b")) for r in rows)
@@ -171,7 +176,7 @@ def health(rows, outs, bad=(), t0=None, last=None, now=None, since=None):
         f"  jev errors {_pct(sum(errors.values()), len(attempted))} of attempted sends"
         + (": " + ", ".join(f"{k} {v}" for k, v in sorted(errors.items())) if errors else ""),
         f"  latency ms: mean {_f(_mean(lat), 1)}, p95 {_f(_p95(lat), 0)} (n {len(lat)})",
-        f"  input tokens {tokens} = ${usd:.6f} to date at ${config.USD_PER_MTOK}/Mtok"
+        spent
         + (f"; {uncounted} row(s) report a count past a float's range, left out (the spend guard trips on one)" if uncounted else ""),
         f"  model_answered: " + (", ".join(f"{k} {v}" for k, v in sorted(models.items())) or "none")
         + f" ({len(models)} distinct); drift {drift}",

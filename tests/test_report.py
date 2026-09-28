@@ -1154,6 +1154,25 @@ class PerDay(unittest.TestCase):
         page = dash.render(rows, outcomes.join(rows), now=datetime.datetime(2026, 9, 23, 12, 0, tzinfo=datetime.timezone.utc))
         self.assertIn("JevTrader health", page)
 
+    def test_counts_that_fit_a_float_but_sum_past_one_are_named_not_a_crash(self):
+        # jev._parse int()s a server reply of 1e308, which fits a float, so _num lets two such counts into
+        # the sum; their int sum does not fit one, and `tokens * USD_PER_MTOK` raised OverflowError: the
+        # day-14 look died on the same error 064cc73 removed for a single count. It is named, not priced.
+        halt = os.path.join(self.enterContext(tempfile.TemporaryDirectory()), "no-HALT")
+        want = f"  input tokens: their sum is past a float's range, so no dollar figure at ${config.USD_PER_MTOK}/Mtok"
+        for big in (10 ** 308, 1e308):                                     # the loop's int; a foreign row's float (sums to inf)
+            with self.subTest(big=type(big).__name__):
+                rows = [dict(_row(m)) for m in range(20, 30)]
+                for i in (3, 4):
+                    rows[i] = dict(rows[i], jev=dict(rows[i]["jev"], input_tokens=big))
+                self.assertTrue(report._num(big))                          # each count on its own is in range
+                with mock.patch.object(config, "HALT", halt):
+                    h = report.health(rows, outcomes.join(rows))
+                    text = report.render(rows, [], health_only=True)
+                self.assertEqual([l for l in h["lines"] if l.startswith("  input tokens")], [want])
+                self.assertEqual(h["usd"], math.inf)                       # a float still: the dash's tile formats it
+                self.assertIn(want + "\n", text)
+
     def test_since_cuts_the_view_not_the_sample_days(self):
         # --since is a display cut: the per-day table used to pre-list every T0 day from d01, so the
         # days before it read 0 ticks and NO LIVE ROWS (a false stop-rule-3 prompt), and the day it
