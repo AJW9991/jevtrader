@@ -11,7 +11,7 @@ from test_report import _row, _write, no_live_halt
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # what a health page may call on report: section 1-3 functions and their constants, nothing that
 # replays a book, joins a return to an answer, or bins a confidence
-ALLOWED_REPORT = {"health", "days_table", "occupancy", "retest", "in_sample", "tick_epoch", "day_of", "_iso_minute", "_t0", "_tick_of",
+ALLOWED_REPORT = {"health", "days_table", "occupancy", "retest", "in_sample", "tick_epoch", "day_of", "_iso_minute", "_t0", "_tick_of", "last_reached",
                   "_num", "_mean", "_p95", "DAY_TICKS", "SAMPLE_DAYS", "BAD_FILL", "BAD_JEV_ERR", "BAD_DAYS_PAUSE", "OCCUPANCY_FLAG"}
 ALLOWED_IMPORTS = {"config", "outcomes", "report", "state"}
 
@@ -155,6 +155,25 @@ class Dash(unittest.TestCase):
         strip = _strip(dash.render(rows + stray, outcomes.join(rows + stray), now=now))
         self.assertIn("<div class='cell b0' title='2026-09-25 03:00Z: 1/60 priced ticks'></div>", strip)
         self.assertIn("<div class='cell future' title='2026-09-25 04:00Z: not yet'></div>", strip)
+
+    def test_after_the_sample_a_row_stamped_after_the_clock_does_not_hide_a_bad_d28(self):
+        # d28 and two hours after it, the first ten minutes of every hour missing (fill under 95 %: BAD), rendered
+        # after the sample ended; one more row stamped three hours after the clock (a clock stepped forward). The
+        # dash passed the whole log's max tick as the last tick, days_table dropped it as past the clock, and d28
+        # read open with 0 BAD days, while status and report --health said BAD (round-4c checker, 2026-09-28)
+        utc = datetime.timezone.utc
+        t0 = report.tick_epoch("20260925T214000Z")
+        end = t0 + report.SAMPLE_DAYS * 86400
+
+        def mk(e):
+            return dict(_row(7), tick_id=report._tick_of(e), ts_rx=datetime.datetime.fromtimestamp(e, utc).strftime("%Y-%m-%dT%H:%M:%S.100Z"))
+        rows = [mk(e) for e in range(int(end - 86400), int(end + 2 * 3600), 60) if (e - (end - 86400)) % 3600 >= 600]
+        now = datetime.datetime.fromtimestamp(end + 2 * 3600 + 30, utc)          # 2026-10-23T23:40:30Z, the sample over
+        tiles = []
+        for rs in (rows, rows + [mk(end + 5 * 3600)]):
+            page = dash.render(rs, outcomes.join(rs), t0=t0, now=now)
+            tiles.append(re.search(r"BAD days</[^>]+>\s*<[^>]+>(\d+)<", page).group(1))
+        self.assertEqual(tiles, ["1", "1"])
 
     def test_a_row_stamped_after_the_clock_never_puts_a_count_above_its_denominator(self):
         # 2026-09-28 (round 4b): today's label and its hour in progress count out of the minutes begun, and

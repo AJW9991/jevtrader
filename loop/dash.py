@@ -416,7 +416,10 @@ def _calendar_run(days, now, max_days=STRIP_DAYS):
 def render(rows, outs, t0=None, now=None, hb=None, halt=False, props=(), current=None, log=None, bad=()):
     now = now or datetime.datetime.now(datetime.timezone.utc)
     sample = report.in_sample(rows, t0) if t0 is not None else rows
-    last = max((report.tick_epoch(r["tick_id"]) for r in rows if isinstance(r.get("tick_id"), str)), default=None)
+    # the whole log's last tick REACHED on this clock, as status and report --health take it: a row stamped
+    # after the clock (a clock stepped forward) is not a row yet, and after the sample the days_table drops
+    # a `last` past the clock, so the whole log's max tick left d28 open on the dash alone (round-4c checker)
+    last = report.last_reached(rows, now.timestamp())
     h_all = report.health(rows, outs, now=now.timestamp())
     h = report.health(sample, outs, bad, t0=t0, last=last, now=now.timestamp())   # bad: the log's skipped lines, as report --health counts them                # last: the sample's last day closes on rows after the cut
     occ = report.occupancy(sample)
