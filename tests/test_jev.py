@@ -71,12 +71,20 @@ class JevTest(unittest.TestCase):
 
     # --- CONTRACT §6: the ledger row exists BEFORE the request --------------------
     def test_ledger_row_on_disk_before_urlopen(self):
-        seen = []
+        # "on disk" is the fsync, not the flush: reading the file back from this process sees a
+        # flushed row either way, so the order of the fsync of the ledger's own fd is pinned too.
+        seen, order, real_fsync = [], [], os.fsync
+        def fsync(fd):
+            order.append(("fsync", os.fstat(fd).st_ino == os.stat(self.sends).st_ino))
+            return real_fsync(fd)
         def fake(req, timeout=None):
+            order.append(("urlopen", None))
             seen.append((self.rows(), timeout))
             return _Resp(GOOD)
         self.urlopen.side_effect = fake
-        jev.ask(STATE, Q)
+        with mock.patch("os.fsync", side_effect=fsync):
+            jev.ask(STATE, Q)
+        self.assertEqual(order, [("fsync", True), ("urlopen", None)])
         self.assertEqual(len(seen), 1)
         lines, timeout = seen[0]
         self.assertEqual(timeout, config.JEV_TIMEOUT_S)

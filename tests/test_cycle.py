@@ -272,6 +272,45 @@ class CycleTest(unittest.TestCase):
         self.assertAlmostEqual(cycle.spend_today(NOW), 20_000 * config.USD_PER_MTOK / 1e6)
         self.assertEqual(cycle.spend_today(NOW, os.path.join(self.tmp, "missing")), 0.0)
 
+    def _days(self, fh, day, n, tokens, pad):
+        """n rows of `day`, one a minute from 00:00, each padded to about a real row's size."""
+        for i in range(n):
+            r = _row("%sT%02d%02d00Z" % (day, i // 60 % 24, i % 60), tokens)
+            r["features"] = pad
+            fh.write(json.dumps(r) + "\n")
+
+    def test_spend_with_the_tail_cut_in_earlier_days_reads_the_tail_only(self):
+        # The production case: two full days of ~2.6 KB rows behind today's 10 hours, so the
+        # 8 MiB tail starts inside an earlier day, today fits in it, and nothing widens.
+        self.assertEqual(cycle.TAIL_BYTES, 8 << 20)
+        os.makedirs(self.data)
+        with open(config.DECISIONS, "w") as fh:
+            self._days(fh, "20260922", 1440, 50_000_000, "x" * 2500)
+            self._days(fh, "20260923", 1440, 50_000_000, "x" * 2500)
+            self._days(fh, DAY, 600, 1000, "x" * 2500)
+        self.assertGreater(os.path.getsize(config.DECISIONS), cycle.TAIL_BYTES)
+        buf, cut = cycle._tail(config.DECISIONS, cycle.TAIL_BYTES)
+        self.assertTrue(cut)
+        self.assertTrue(json.loads(buf.split(b"\n", 1)[0])["tick_id"].startswith("20260922"))   # the tail's first row
+        with mock.patch.object(cycle, "_tail", wraps=cycle._tail) as tail:
+            self.assertAlmostEqual(cycle.spend_today(NOW), 600 * 1000 * config.USD_PER_MTOK / 1e6)
+        self.assertEqual([c.args for c in tail.call_args_list], [(config.DECISIONS, cycle.TAIL_BYTES)])
+
+    def test_spend_with_today_overflowing_the_tail_widens_to_the_whole_file(self):
+        # Rows three times the usual size: today alone no longer fits in 8 MiB, the tail's first
+        # row is today's, and the guard reads the whole file rather than miss today's first hours.
+        os.makedirs(self.data)
+        with open(config.DECISIONS, "w") as fh:
+            self._days(fh, "20260923", 200, 50_000_000, "x" * 2500)
+            self._days(fh, DAY, 1440, 100, "x" * 6500)
+        buf, cut = cycle._tail(config.DECISIONS, cycle.TAIL_BYTES)
+        self.assertTrue(cut)
+        self.assertTrue(json.loads(buf.split(b"\n", 1)[0])["tick_id"].startswith(DAY))
+        with mock.patch.object(cycle, "_tail", wraps=cycle._tail) as tail:
+            self.assertAlmostEqual(cycle.spend_today(NOW), 1440 * 100 * config.USD_PER_MTOK / 1e6)
+        self.assertEqual([c.args for c in tail.call_args_list],
+                         [(config.DECISIONS, cycle.TAIL_BYTES), (config.DECISIONS, 0)])
+
     def test_spend_charges_a_send_with_unknown_tokens_at_the_ceiling(self):
         # jev.ask logs input_tokens 0 when the reply has no `usage` (null when the send failed);
         # read as free, the tripwire would never fire. A live row that reached the model with 0
@@ -821,12 +860,17 @@ class CycleTest(unittest.TestCase):
 
     # ---- SIGTERM -----------------------------------------------------------------------------------
     def test_sigterm_during_the_write_finishes_the_row_and_exits_0(self):
-        real = os.fsync
+        real, real_term, got = os.fsync, cycle._on_term, []
         def fsync(fd):
             signal.raise_signal(signal.SIGTERM)                # arrives inside the critical section
             real(fd)
-        with mock.patch("os.fsync", side_effect=fsync):
+        def on_term(signum, frame):                            # main() installs this one
+            got.append((signum, cycle._SIG["critical"]))
+            return real_term(signum, frame)
+        with mock.patch("os.fsync", side_effect=fsync), mock.patch.object(cycle, "_on_term", on_term):
             self.assertEqual(cycle.main(["--dry", "--once"]), 0)
+        self.assertEqual(got, [(signal.SIGTERM, True)])        # it did fire, and mid-write
+        self.assertTrue(cycle._SIG["term"])
         row = self.only_row()                                  # complete, parseable, single line
         self.assertEqual((row["absence"], row["state"]), (None, STATE))
         self.assertEqual(self.heartbeat(), TS_RX)
