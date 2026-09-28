@@ -340,7 +340,10 @@ Print, plain text, in this order:
 `--health` on rows of the sealed sample prints §1–§3 and a WITHHELD line until
 T0 + 28 d (2026-10-23 21:40Z); the T0 for that is read from the repo's own PREREG.md
 whatever `--prereg` says; `--unblind` prints §4–§7 and says so on stderr.
-No p-values in `make report`. Inference lives in PREREG.md and is run once.
+No p-values in `make report`. Inference lives in PREREG.md and is run once: `loop.inference
+--sample` refuses (exit 3) before T0 + 28 d on any log holding a row of the repository's
+sealed sample, whatever `--now`, `--t0` or `--prereg` say (a copy of the live log is the live
+log), and `--pre-t0` cuts at the repository's seal too (2026-09-28).
 
 ## 5. Nightly
 

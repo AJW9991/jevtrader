@@ -25,8 +25,10 @@ Written 2026-09-28 by Claude (Fable 5.1) in a CLOUD session on branch `claude/co
    version and the user-memory sha each night. Note: the CLI's own per-machine context (cwd,
    git status, memory paths) differs between the repo and an empty non-git directory, so the
    night this is deployed is itself a change of the model's context; record the date. (a) merge
-   and `git pull` on the Mac before 08:30Z (recommended); (b) leave it and record the deviation
-   date here; (c) for prereg-v2, `--safe-mode` so the model sees PROMPT.md + digest only.
+   and `git pull` on the Mac before 08:30Z (recommended; merging the branch IS this option, and
+   the CLI's per-project state for the repo path no longer reaches the night either); (b) leave it
+   and record the deviation date here; (c) for prereg-v2, `--safe-mode` so the model sees
+   PROMPT.md + digest only.
 2. **A day with no live rows** (the Mac off all day, or all-HALT): stop rule 3's fill is 0/0,
    undefined. The report and dash now list every T0 day and flag such a day NO LIVE ROWS, never
    BAD by code. Decide before day 28: excluded whole, or kept (96 blocks of S_k = 0, no H2 unit).
@@ -36,12 +38,33 @@ Written 2026-09-28 by Claude (Fable 5.1) in a CLOUD session on branch `claude/co
 4. **Model pin for the nightly.** Nothing pins or records which Claude model writes the
    proposals; the CLI version is now logged per night. `--model` is a spending/treatment call.
 5. **120 bps taker fee** still unverified in-account (`config.FEE_BPS_VENUE`).
-6. **Counts to take on the Mac after merging** (numbers, never a statistic; no §4-§7 look): the
-   `skipped lines` figure of `make health` (a glued torn line is now read back as a row: if it
-   is 0 nothing moved); duplicate priced tick_ids (item 3); dry rows inside [T0, ...); and how
-   many ticks' outcomes differ between the old and new `outcomes.join` (the whole-millisecond
-   tie rule can move an exact tie to the earlier row, as SPEC §11 says; on a one-row-a-minute
-   log that needs an off-grid row, so expect 0). Record them here.
+6. **Counts to take on the Mac BEFORE merging** (numbers, never a statistic; no §4-§7 look), with
+   the branch's `bin/readers-diff`, which reads the log with two trees and prints counts and
+   tick_ids only:
+   ```bash
+   cd ~/Projects/jev-paper-loop && git fetch origin && rm -rf /tmp/old /tmp/new && mkdir /tmp/old /tmp/new && git archive origin/main loop | tar -x -C /tmp/old && git archive origin/claude/cool-lamport-7sirtw loop | tar -x -C /tmp/new && git show origin/claude/cool-lamport-7sirtw:bin/readers-diff > /tmp/readers-diff && /opt/homebrew/bin/python3 /tmp/readers-diff /tmp/old /tmp/new --log data/decisions.jsonl
+   ```
+   It prints rows read by each tree (a difference = a whole row glued onto a torn line, now
+   kept), lines skipped, priced tick_ids with more than one row (item 3), live answered rows
+   with both columns null, and the ticks whose joined outcome differs. Also: dry rows inside
+   [T0, ...) (`grep -c '"mode": "dry"' data/decisions.jsonl` against the pre-T0 rows), the
+   `parse`/`unexpected` jev-error counts in `make health`, and that sample rows since
+   2026-09-26 22:21Z carry `prompt_b_sha` b3291ca4a550 (v2 read as UTF-8; another sha would
+   mean the Mac read the file in another encoding, and the merge would change the question
+   sent). Record them here. If every count is 0, the merge changes no existing reading.
+
+## Merging and pulling on the Mac (Alex; the loop keeps running)
+Each tick is a fresh process, so a pull between ticks is safe; a tick that imports during the
+sub-second checkout would traceback and lose its minute (one row, never a wrong one). Not while
+the nightly runs (08:30Z plus ~15 min, or at wake after a slept-through 03:30 local). `--ff-only`:
+a diverged `main` or a dirty tracked file stops it cleanly, never half-way. One line, BSD-safe,
+which waits for the current minute's heartbeat first, pulls, and runs the suite on the Mac (bash
+3.2, the real caffeinate, the real TMPDIR) before the next 03:30:
+```bash
+cd ~/Projects/jev-paper-loop && launchctl print gui/$(id -u)/com.alexward.jevloop.nightly | grep -q 'state = running' && echo "nightly running: wait" || { git fetch origin && git status --short --untracked-files=no && git log --oneline origin/main..main; until [ "$(cut -c1-16 data/heartbeat)" = "$(date -u +%Y-%m-%dT%H:%M)" ]; do sleep 1; done; git pull --ff-only origin main && make test; }
+```
+A red suite there is a `git reset --hard ORIG_HEAD` decision (safe on a clean tree). No plist
+needs reinstalling: the nightly plist's diff is comments only.
 
 ## Day 28 (`make results`, after 2026-10-23 21:55Z)
 `loop.inference --sample` now refuses while the last block's H2 unit still waits for its t + h
@@ -66,19 +89,29 @@ and says so) · `make dash` · `make inference-smoke` · `make results` (day 28;
 - Each morning: `make status`. The MISSING flag means the nightly's slot passed with no proposal.
 - The Mac must stay on AC, lid open.
 
-## What the branch changes on the tick and the send (guards only; no row's meaning changes)
+## What the branch changes on the tick, the send and the readers
 - jev: a 3xx is never followed with the bearer key (a redirect would have re-sent it, as a GET,
   to any host); a null `usage.input_tokens` reads 0 instead of throwing the paid answer away; a
   key file that is not UTF-8 is `no-key`; a ledger failure on the retry keeps attempt 1's billed
   kind; the locally refused request keeps no key-quoting context.
 - cycle: a torn last line is closed before the next row (it cost two rows); the watchdog can no
-  longer lose a row past the lock, bill a send $0 or exit 1; `--once` started in a minute's last
+  longer lose a row past the lock, bill a send $0 or exit 1; a fire at :59.9999 whose boundary
+  passed between two clock reads no longer sleeps a whole minute; `--once` started in a minute's last
   2 s sleeps to :00 first, and only when the heartbeat shows this minute already has its row
   (a late fire keeps its minute); the heartbeat failure has its own message and a per-pid temp name.
 - rules/cycle: a bool, NaN or wrong-typed answer field is `jev`/`parse` (the answer kept, no
   column), never a column; feed: a candle that is not finite and positive refuses the set.
 - outcomes: the live decision speaks for its tick when two rows share it; ties in whole ms; a
   whole row glued onto a torn line is kept. book: null columns hold C too (SPEC §10; latent).
+- **The outcomes and book changes are READERS** (an auditor of the whole diff, 2026-09-28): every
+  report, digest and inference run re-reads the whole log with them. On a tick with two or more
+  rows, on a torn line with a whole row glued to it, or on an exact-millisecond tie, `join`/`load`
+  return a different outcome or row than main did, and that moves the digest (the treatment),
+  report §1's stop-rule-3 fill and the day-28 H1/H2 inputs for those ticks only. Each moves toward
+  SPEC §11 / PREREG §5's words; each is a no-op when the counts of decision 6 are 0. New-row
+  changes for rare replies (a null token count is now an answered row; a bool or non-finite
+  field is now jev/parse; a NaN or zero candle is now a feed absence; the watchdog at the
+  columns stage is now jev/watchdog) are SPEC §2/§3/§9/§12 errata for after the sample.
 
 ## Not changed on purpose (prereg-v2 notes)
 - The digest's summary line on a promotion day replays arm B over every row of the day, v1 and
