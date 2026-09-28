@@ -8,6 +8,11 @@ The CLI keeps a session as <config>/projects/<its cwd, every non-alphanumeric ch
 fresh `mktemp -d .../jevloop-claude.XXXXXX`, so that night's project directory ends in
 `jevloop-claude-XXXXXX` and holds that one session.
 
+Two cases the name rule does not reach, and the log then says "unrecorded" (never a wrong model):
+the CLI cuts a project-directory name past 200 characters and adds a hash of the path (the
+unique suffix is then gone; a macOS TMPDIR plus jevloop-claude.XXXXXX is about 70), and
+CLAUDE_CODE_PROJECT_DIR_NAME, if set, names the directory instead. Seen in CLI 2.1.283.
+
 Usage: answered_model.py CONFIG_DIR WORK_DIR. Prints the models found, sorted and comma-separated,
 or nothing. Exit 0 always: a CLI that keeps its sessions elsewhere or in another shape makes the
 night's log say "unrecorded", never stops the night.

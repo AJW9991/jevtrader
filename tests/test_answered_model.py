@@ -48,6 +48,14 @@ class AnsweredModel(unittest.TestCase):
         self._session(answered_model.slug(self.work.replace("/private", "", 1)), [_assistant("claude-opus-5-5")])
         self.assertEqual(answered_model.models(self.cfg, self.work), ["claude-opus-5-5"])
 
+    def test_a_name_the_cli_cut_and_hashed_is_not_found_rather_than_misread(self):
+        # past 200 characters the CLI keeps the first 200 of the slug and a hash of the path: the unique
+        # suffix is gone, so the night logs "unrecorded" -- and another night's session is never taken for it
+        work = "/private/var/folders/" + "x" * 200 + "/T/jevloop-claude.AbC123"
+        cut = answered_model.slug(work)[:200] + "-1q2w3e"
+        self._session(cut, [_assistant("claude-opus-5-5")])
+        self.assertEqual(answered_model.models(self.cfg, work), [])
+
     def test_nothing_found_is_an_empty_answer_never_an_error(self):
         self.assertEqual(answered_model.models(os.path.join(self.cfg, "absent"), self.work), [])
         self.assertEqual(answered_model.models(self.cfg, "/"), [])

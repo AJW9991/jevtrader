@@ -73,8 +73,10 @@ jev-paper-loop/
   nightly/digest.py      what the slow model may read
   nightly/policy_table.py  81 synthetic states per candidate
   nightly/capped.py      the claude call under a cap on awake seconds
+  nightly/answered_model.py  which model answered the call, read from the CLI's transcript
   nightly/propose.sh  nightly/PROMPT.md  nightly/settings.json
   bin/promote            the human apply step
+  bin/readers-diff       two trees' readers on one log: counts and tick_ids only (before a pull)
   launchd/com.alexward.jevloop.loop.plist  launchd/com.alexward.jevloop.nightly.plist
   prompts/v1.json        frozen (written)   prompts/v2.json (promoted 2026-09-26)   prompts/CURRENT  → "v2" (one line)
   fixtures/              one recorded Coinbase snapshot set, committed
