@@ -75,7 +75,7 @@ cd ~/Projects/jev-paper-loop && launchctl print gui/$(id -u)/com.alexward.jevloo
 A red suite there is a `git reset --hard ORIG_HEAD` decision (safe on a clean tree). No plist
 needs reinstalling: the nightly plist's diff is comments only.
 
-## Day 28 (`make results`, at 2026-10-23 21:56Z or later)
+## Day 28 (`make results`, once the log holds the 2026-10-23 21:56 tick, by ~21:58Z)
 `loop.inference --sample` now refuses while the last block's H2 unit still waits for its t + h
 row (~30 s after the sample ends normally, up to ~15.5 min when the last block's first live
 row is in its last minute), refuses `--now`, another `--t0` or `--resamples` on the
