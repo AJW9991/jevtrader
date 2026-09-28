@@ -167,6 +167,34 @@ class TestSnapshot(unittest.TestCase):
             with self.assertRaises(feed.FeedError):
                 feed.snapshot(config.PRODUCT, now=NOW)
 
+    def test_a_non_finite_or_non_positive_candle_value_is_a_feed_error(self):
+        # float() takes "nan" and "inf". A NaN volume on the newest minute made vol5_usd NaN,
+        # which falls in neither flow cut (flow `organic`, absence null, a send on a wrong
+        # state); a zero close divided by zero in state.py; a NaN close raised a different
+        # class per Python version. raw[0] is the open minute, raw[1] the newest closed one.
+        raw = CANDLES["candles"]
+        for k, v in (("volume", "nan"), ("volume", "inf"), ("volume", "-1"), ("close", "0"),
+                     ("close", "nan"), ("close", "-inf"), ("open", "0"), ("high", "inf"),
+                     ("low", "nan"), ("low", "-114.9")):
+            for i in (1, 150, len(raw) - 1):                              # newest, mid-window, oldest spare
+                with self.subTest(field=k, value=v, row=i):
+                    bad = [dict(c) for c in raw]
+                    bad[i][k] = v
+                    with self.assertRaises(feed.FeedError) as cm:
+                        feed.assemble("SOL-USD", NOW, BOOK, {"candles": bad}, TRADES, {"calls": 3, "ms": 0})
+                    self.assertIn("not finite and positive", str(cm.exception))
+        # the open minute is dropped unread, and a zero volume is a quiet minute, kept
+        bad = [dict(c) for c in raw]
+        bad[0]["close"], bad[1]["volume"] = "nan", "0"
+        s = feed.assemble("SOL-USD", NOW, BOOK, {"candles": bad}, TRADES, {"calls": 3, "ms": 0})
+        self.assertEqual(s["candles"][-1]["volume"], 0.0)
+        # through snapshot() it is the same FeedError, which cycle.py logs as absence "feed"
+        bad = [dict(c) for c in raw]
+        bad[1]["volume"] = "NaN"
+        with mock.patch("urllib.request.urlopen", Fake(candles={"candles": bad})):
+            with self.assertRaises(feed.FeedError):
+                feed.snapshot(config.PRODUCT, now=NOW)
+
     def test_trades_5m_matches_hand_count(self):
         s, _ = snap()
         hand = sum(1 for t in TRADES["trades"]

@@ -375,6 +375,29 @@ class CycleTest(unittest.TestCase):
         self.assertIsNone(row["state"])
         self.assert_nothing_sent()
 
+    def test_a_garbage_candle_value_is_absence_feed_on_every_python(self):
+        # Through feed.assemble, as live: a NaN volume on the newest minute used to read flow
+        # `organic` with absence null; a zero close was ZeroDivisionError, logged `guard`; a NaN
+        # close was AttributeError on 3.11/3.12 (`guard`) and ValueError on 3.13+ (`feed`).
+        raw, book_j, trades_j = _load("candles.json"), _load("book.json"), _load("trades.json")
+        cases = (("volume", "nan", 1), ("volume", "inf", 1), ("close", "0", 1), ("close", "0", 150),
+                 ("close", "nan", 150), ("high", "inf", 1), ("low", "0", 2))
+        for i, (field, value, at) in enumerate(cases):
+            with self.subTest(field=field, value=value, at=at):
+                c = json.loads(json.dumps(raw))
+                c["candles"][at][field] = value
+                self.snapshot.side_effect = lambda c=c: feed.assemble(META["product"], NOW, book_j, c, trades_j,
+                                                                      {"calls": 3, "ms": 0})
+                with mock.patch("time.time", return_value=NOW + 60 * i):
+                    self.assertEqual(cycle.main(["--dry", "--once"]), 0)
+                row = self.rows()[-1]
+                self.assertEqual((row["absence"], row["mode"]), ("feed", "dry"))
+                self.assertEqual((row["state"], row["rule_c"], row["features"]), (None, None, None))
+                self.assertEqual(self.out.getvalue(), "")                   # no body: the tick stopped at the feed
+        self.assertEqual(len(self.rows()), len(cases))
+        self.assertNotIn("Traceback", self.err.getvalue())
+        self.assert_nothing_sent()
+
     def test_broken_prompts_is_absence_guard_after_the_state(self):
         with mock.patch.object(prompts, "current", side_effect=prompts.PromptError("CURRENT: two names")):
             self.assertEqual(cycle.main(["--once"]), 0)
