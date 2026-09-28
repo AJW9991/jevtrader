@@ -645,8 +645,8 @@ class LiveClock(unittest.TestCase):
     """On the live log the real clock bounds 'the log's last row': it is the last row stamped at or before
     the clock, never the clock itself (a row stamped before it can still be on its way), and a row stamped
     after it (a clock that stepped forward) must not satisfy the pending refusal, nor close d28 in the
-    stop-rule-3 lines. So d28 closes with the 21:56 tick's row, not at 21:56Z, and the Makefile and HANDOFF
-    say so."""
+    stop-rule-3 lines. So d28 closes with the 21:56 tick's row, not at 21:56Z. What the Makefile and HANDOFF
+    tell the person is kept in step by hand: no test here reads their wording (SealUnread)."""
     END = report._t0("2026-09-25T21:40") + 28 * 86400                   # the fixture's T0 + 28 d: 2026-10-23T21:40Z
 
     @classmethod
@@ -739,20 +739,14 @@ class LiveClock(unittest.TestCase):
         self.assertIn("(first live row 20261023T212500Z; the log has no row stamped at or before the clock; 30 row(s) stamped"
                       " after the clock (2026-10-23T21:40:10Z), first 20261023T211000Z, are not counted as reached);", err)
 
-    def test_the_day_28_run_waits_for_the_tick_that_closes_d28_as_the_makefile_and_handoff_say(self):
-        # both said "21:56Z or later" (2026-09-28 review): a run at 21:56:00 reads the log through the 21:55 tick (a
-        # tick writes its row during its minute), so d28 read open in the one output --out writes
+    def test_the_day_28_run_reads_d28_open_until_the_log_holds_the_tick_that_closes_it(self):
+        # the Makefile and HANDOFF said "21:56Z or later" (2026-09-28 review): a run at 21:56:00 reads the log through
+        # the 21:55 tick (a tick writes its row during its minute), so d28 read open in the one output --out writes.
+        # The behaviour is held here; the docs' wording is not (HANDOFF is rewritten every session, and a re-seal
+        # moves day 28): an earlier form of this test read both and would have failed on their correct v2 update
         close = self.END + inference.config.HORIZON_S + outcomes.JOIN_TOL_S    # d28's last row fills up to 21:55:30
-        tick = datetime.datetime.fromtimestamp(math.ceil(close / 60) * 60, datetime.timezone.utc)   # the first tick at or after
-        with open(os.path.join(REPO, "Makefile"), encoding="utf-8") as fh:
-            comment = fh.read().split("\nresults:")[0].split("\n\n")[-1]       # the comment above the target
-        self.assertIn(f"Day 28 ({tick:%Y-%m-%d}, once the log holds the {tick:%H:%M} tick,",
-                      " ".join(l.lstrip("#").strip() for l in comment.splitlines()))
-        with open(os.path.join(REPO, "HANDOFF.md"), encoding="utf-8") as fh:
-            heads = [l for l in fh if l.startswith("## Day 28")]
-        self.assertEqual(len(heads), 1, heads)
-        self.assertIn(f"once the log holds the {tick:%Y-%m-%d %H:%M} tick,", heads[0])
-        minute = int(tick.timestamp() - self.END) // 60                       # 16: the 21:56 tick
+        tick = math.ceil(close / 60) * 60                                     # the first tick at or after: 21:56
+        minute = int(tick - self.END) // 60                                   # 16
         code, out, err = self._run(self._rows(-30, minute), 60 * minute)       # at 21:56:00 the log ends with the 21:55 tick
         self.assertEqual(code, 0, err)
         self.assertIn("  open, not yet judged (a day's last t + h is not in the log): d28\n", self._rule3(out))
@@ -764,13 +758,39 @@ class LiveClock(unittest.TestCase):
 
 class SealUnread(unittest.TestCase):
     """tests/fixture_prereg.py: no test may depend on what the repository's PREREG.md §11 says (its T0 line
-    is to be blanked, then re-sealed for prereg-v2, after 2026-10-23). The classes in SEAL_READERS read the
-    repository's seal through dash.PREREG_PATH (the live log with no --t0, the sealed-copy guard, the
-    pre-T0 cut), so each pins the fixture: run here under a blanked and under a re-sealed §11 standing
-    in for the repository's, every one still passes. A new class that reads the seal belongs in
-    SEAL_READERS. LiveClock was added without the pin (2026-09-28): the suite was green, and a blanked
-    line would have errored it and a re-sealed one failed it."""
+    is to be blanked, then re-sealed for prereg-v2, after 2026-10-23), nor on the wording of HANDOFF.md
+    (rewritten every session) or of the Makefile's comments (a re-seal moves the day 28 they name). The
+    classes in SEAL_READERS read the repository's seal through dash.PREREG_PATH (the live log with no
+    --t0, the sealed-copy guard, the pre-T0 cut), so each pins the fixture: run here under a blanked and
+    under a re-sealed §11 standing in for the repository's, with HANDOFF.md rewritten and the Makefile's
+    comments gone, every one still passes. A new class that reads the seal belongs in SEAL_READERS.
+    LiveClock was added without the pin (2026-09-28): the suite was green, and a blanked line would have
+    errored it and a re-sealed one failed it. Its day-28 test then read the Makefile's and HANDOFF's
+    day-28 lines, so their correct update for a re-seal, or a HANDOFF without that heading, failed it."""
     SEAL_READERS = (LiveLog, PreT0Cut, SealedCopy, LiveClock)
+
+    def _stand_ins(self):
+        """Until this test ends, an open() of the repository's HANDOFF.md or Makefile, by any spelling of its
+        path (builtins.open, and io.open, which pathlib calls), reads a stand-in instead: HANDOFF.md as a later
+        session leaves it (a page with no day-28 heading) and the Makefile with every comment line gone, its
+        targets kept. Returns {the real file's realpath: its stand-in}, a map the caller may add to."""
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        with open(os.path.join(REPO, "Makefile"), encoding="utf-8") as fh:
+            make = "".join(l for l in fh if not l.lstrip().startswith("#"))
+        stand = {}
+        for name, body in (("HANDOFF.md", "# HANDOFF\n\nRewritten by a later session.\n"), ("Makefile", make)):
+            path = stand[os.path.realpath(os.path.join(REPO, name))] = os.path.join(tmp, name)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(body)
+        real = io.open
+
+        def redirect(file, *args, **kwargs):
+            if isinstance(file, (str, bytes, os.PathLike)):
+                file = stand.get(os.path.realpath(os.fsdecode(file)), file)
+            return real(file, *args, **kwargs)
+        self.enterContext(mock.patch("builtins.open", redirect))
+        self.enterContext(mock.patch("io.open", redirect))
+        return stand
 
     @staticmethod
     def _run_alone(cls):
@@ -791,9 +811,11 @@ class SealUnread(unittest.TestCase):
             cls.doClassCleanups()                                          # its pin and temp dirs, whatever failed
         return names, result
 
-    def test_the_classes_that_read_the_seal_pass_whatever_the_repository_section_11_says(self):
+    def test_the_classes_that_read_the_seal_pass_whatever_section_11_handoff_and_the_makefile_say(self):
+        stand = self._stand_ins()
         for t0 in (None, "20261024T120000Z"):                              # blanked; re-sealed a month on
-            path = pin_prereg(self, t0)                                    # stands in for the repository's PREREG.md
+            path = pin_prereg(self, t0)                                    # stands in for the repository's PREREG.md,
+            stand[os.path.realpath(os.path.join(REPO, "PREREG.md"))] = path   # read through dash.PREREG_PATH or by path
             for cls in self.SEAL_READERS:
                 with self.subTest(t0=t0, cls=cls.__name__):
                     names, result = self._run_alone(cls)
