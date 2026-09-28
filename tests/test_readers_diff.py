@@ -58,7 +58,8 @@ class ReadersDiff(unittest.TestCase):
         code, out, _ = _run(self.old, REPO, "--log", self.log)
         self.assertEqual(code, 0)
         head, body = out.split("\n", 1)                                     # the first line is paths, by design
-        self.assertTrue(head.startswith(f"log {self.log}: read by old "), head)
+        self.assertTrue(head.startswith(f"log {self.log} ("), head)
+        self.assertIn(" bytes, one copy read by both): read by old ", head)
         for token in ("mid_h", "ret_h", "bps", "101.0", "100.0", "up", "down", "flat", "S_k", "H1", "H2", "r("):
             self.assertNotIn(token, body.replace("H2 unit", ""), token)
 
@@ -107,6 +108,15 @@ class ReadersDiff(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("lines skipped: old 1 / new 1;", out)
         self.assertIn("priced tick_ids with more than one row: 0\n", out)
+
+    def test_both_trees_read_one_copy_and_it_is_removed(self):
+        tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmpdir, ignore_errors=True)
+        p = subprocess.run([sys.executable, TOOL, REPO, REPO, "--log", self.log], capture_output=True, text=True, cwd=REPO,
+                           env=dict(os.environ, TMPDIR=tmpdir))
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn(f"({os.path.getsize(self.log)} bytes, one copy read by both)", p.stdout)
+        self.assertEqual(os.listdir(tmpdir), [])                         # the copy is gone
 
     def test_it_writes_no_bytecode_into_either_tree(self):
         pyc = os.path.join(self.old, "loop", "__pycache__")

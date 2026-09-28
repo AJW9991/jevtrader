@@ -10,12 +10,13 @@ and tick_ids only: the rows each tree read, the lines each skipped and the whole
 newer reader kept back from a torn line, the priced tick_ids with more than one row, the
 live answered rows with both columns null, and the ticks whose joined outcome differs. Never
 a return, a PnL or a statistic (CLAUDE.md: no section 4-7 look), and never a write (the
-probes run isolated, -I, and write no bytecode, -B; each checks the loop/ it imported is its
+probes run isolated, -I, and write no bytecode, -B, on one temporary copy of the log, removed
+before it exits, so both trees read the same bytes while the loop appends; each checks the loop/ it imported is its
 tree's, so a tree without loop/__init__.py can never silently be the checkout). It
 exists for HANDOFF.md's counts before a merge: if every count is 0, the merge changes no
 existing reading of the log. Exit 0 when both trees read the log, 2 when one cannot.
 """
-import argparse, json, os, subprocess, sys
+import argparse, json, os, shutil, subprocess, sys, tempfile
 
 PROBE = r'''
 import json, math, os, sys
@@ -81,13 +82,27 @@ def main(argv=None):
     if not os.path.exists(args.log):
         sys.stderr.write(f"readers-diff: no log at {args.log}\n")
         return 2
-    read = {}
-    for name, tree in (("old", args.old), ("new", args.new)):
-        read[name], why = read_with(tree, args.log)
-        if why:
-            sys.stderr.write(f"readers-diff: the {name} tree {tree} cannot read {args.log}: {why}\n")
-            return 2
-    sys.stdout.write(f"log {args.log}: read by old {os.path.abspath(args.old)} and new {os.path.abspath(args.new)}\n")
+    try:
+        with open(args.log, "rb") as fh:                   # one read: the live loop appends every minute, and two
+            data = fh.read()                                # probes reading it a second apart would differ by a row
+    except OSError as e:
+        sys.stderr.write(f"readers-diff: cannot read {args.log}: {e.strerror or e}\n")
+        return 2
+    snap = tempfile.mkdtemp(prefix="readers-diff-")
+    try:
+        copy = os.path.join(snap, "decisions.jsonl")
+        with open(copy, "wb") as fh:
+            fh.write(data)
+        read = {}
+        for name, tree in (("old", args.old), ("new", args.new)):
+            read[name], why = read_with(tree, copy)
+            if why:
+                sys.stderr.write(f"readers-diff: the {name} tree {tree} cannot read {args.log}: {why}\n")
+                return 2
+    finally:
+        shutil.rmtree(snap, ignore_errors=True)
+    sys.stdout.write(f"log {args.log} ({len(data)} bytes, one copy read by both): read by old {os.path.abspath(args.old)}"
+                     f" and new {os.path.abspath(args.new)}\n")
     sys.stdout.write("\n".join(lines(read["old"], read["new"])) + "\n")
     return 0
 
