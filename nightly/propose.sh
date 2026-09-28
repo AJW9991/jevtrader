@@ -55,19 +55,19 @@ done
 # The same two prefixes as config.FORBIDDEN_PREFIXES: the nightly imports loop/ and
 # must never run under the crypto repo or its mirror either (CONTRACT §0, exit 3). Checked on
 # the repo, the --root and the working directory alike: every path this script writes under.
-# Each prefix is matched as written AND as pwd -P spells it (the prefix itself when it exists, else
-# its parent resolved plus its last name), as cycle.forbidden realpaths it: the paths checked are
-# physical, so a HOME or ~/Projects reached through a symlink must not hide the tree.
+# The check IS cycle.forbidden (one guard, not two that can disagree): it realpaths the path, so a
+# symlinked HOME or ~/Projects, a '..', '//' or '.' in it, or a --root that does not exist yet (its
+# existing part resolved, the rest normalized) cannot hide the tree, and it matches each prefix and
+# its realpath on a '/' boundary. If the guard itself cannot run, the night stops (exit 3).
+[ -x "$PY" ] || { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) propose FAIL no python at $PY (the path guard needs it; nothing written)" >&2; exit 0; }
 guard_path() {
-  for p in "$HOME/Projects/crypto-trading-system" "$HOME/Library/Mobile Documents/com~apple~CloudDocs/crypto-trading-system-backup"; do
-    q="$(cd "$p" 2>/dev/null && pwd -P || { d="$(cd "${p%/*}" 2>/dev/null && pwd -P)" && echo "$d/${p##*/}"; } || echo "$p")"
-    case "$1" in
-      "$p"*|"$q"*) echo "propose: refusing to run under a forbidden prefix ($2)" >&2; exit 3 ;;
-    esac
-  done
+  hit="$("$PY" -c 'import sys; sys.path.insert(0, sys.argv[1]); from loop import cycle; print(cycle.forbidden(sys.argv[2]) or "")' \
+         "$REPO" "$1" 2>/dev/null)" || { echo "propose: the path guard could not run ($2); refusing" >&2; exit 3; }
+  [ -z "$hit" ] || { echo "propose: refusing to run under a forbidden prefix ($2)" >&2; exit 3; }
 }
 case "$ROOT" in /*) ;; *) ROOT="$(pwd -P)/$ROOT" ;; esac        # absolute now: the guard and every write see one path
-ROOT_REAL="$(cd "$ROOT" 2>/dev/null && pwd -P || echo "$ROOT")"
+ROOT_REAL="$("$PY" -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$ROOT" 2>/dev/null)" \
+  || { echo "propose: cannot resolve --root $ROOT; refusing" >&2; exit 3; }
 guard_path "$REPO" repo
 guard_path "$ROOT_REAL" root
 guard_path "$(pwd -P)" cwd

@@ -1383,7 +1383,8 @@ class Capped(unittest.TestCase):
             code = [l for l in fh.read().splitlines() if not l.lstrip().startswith("#")]
         self.assertEqual([l for l in code if l.startswith("guard_path ")],
                          ['guard_path "$REPO" repo', 'guard_path "$ROOT_REAL" root', 'guard_path "$(pwd -P)" cwd'])
-        self.assertLess(code.index('ROOT_REAL="$(cd "$ROOT" 2>/dev/null && pwd -P || echo "$ROOT")"'), code.index('guard_path "$ROOT_REAL" root'))
+        self.assertLess([i for i, l in enumerate(code) if l.startswith('ROOT_REAL="$("$PY" -c ')][0], code.index('guard_path "$ROOT_REAL" root'))
+        self.assertTrue(any("cycle.forbidden(sys.argv[2])" in l for l in code))          # the same guard as the tick's
         env = _sh_env(self)                                      # the guard reads $HOME: the forbidden prefix is under the run's HOME
         forbidden = os.path.join(env["HOME"], "Projects", "crypto-trading-system")
         r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry", "--root", os.path.join(forbidden, "x")],
@@ -1409,6 +1410,22 @@ class Capped(unittest.TestCase):
             self.assertEqual(r.returncode, 3, (home, r.stderr))
             self.assertIn("forbidden prefix (root)", r.stderr)
             self.assertEqual(os.listdir(forbidden_real), [])      # nothing written under the tree
+        # a --root that does not exist yet is resolved, not checked as typed (pre-merge verifier): through
+        # the link, with '//', '/./' or '..' in it, or relative from a sibling directory
+        env["HOME"] = real
+        sib = os.path.join(real, "Projects", "jevtrader")
+        os.makedirs(sib)
+        projects = os.path.join(real, "Projects")
+        for root, cwd in ((os.path.join(link, "Projects", "crypto-trading-system", "new1"), None),       # the forbidden tree, via the link
+                          (projects + "//crypto-trading-system/new2", None),                          # the forbidden tree, '//'
+                          (projects + "/./crypto-trading-system/new3", None),                         # the forbidden tree, '/./'
+                          (projects + "/../Projects/crypto-trading-system/new4", None),               # the forbidden tree, '..'
+                          ("../crypto-trading-system/new5", sib)):                                    # the forbidden tree, relative
+            r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry", "--date", "2026-09-22",
+                                "--root", root], capture_output=True, text=True, timeout=30, env=env, cwd=cwd)
+            self.assertEqual(r.returncode, 3, (root, r.stderr))
+            self.assertIn("forbidden prefix (root)", r.stderr)
+        self.assertEqual(sorted(os.listdir(os.path.join(real, "Projects", "crypto-trading-system"))), ["x"])   # nothing created
 
     def test_propose_sh_defaults_are_the_mac_paths_and_launchd_sets_no_knob(self):
         # The JEVLOOP_* variables are for the suite (here, and on a host without Homebrew or
