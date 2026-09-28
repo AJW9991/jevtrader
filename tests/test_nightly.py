@@ -1746,6 +1746,36 @@ class Capped(unittest.TestCase):
         self.assertIn("refusing", r.stderr)
         self.assertFalse(os.path.exists(os.path.join(env["HOME"], "root2")))
 
+    def test_the_default_date_never_imports_the_working_directory(self):
+        # Without --date the day was computed by a plain "$PY" -c before `cd "$REPO"`, so from the
+        # invocation directory: run by hand from one holding a datetime.py, propose.sh imported it, left
+        # its bytecode there, and the night ended 'FAIL bad --date' (round-4 guard implementer). It runs
+        # -I -B now, like every python before the cd. That python ignores the suite's clock modes
+        # (PYTHONPATH), so the date is the real clock's yesterday: its value is never checked, only
+        # that the night ran on it.
+        env = _sh_env(self)
+        elsewhere = os.path.join(env["HOME"], "elsewhere")
+        os.makedirs(elsewhere)
+        marker = os.path.join(env["HOME"], "imported")
+        with open(os.path.join(elsewhere, "datetime.py"), "w", encoding="utf-8") as fh:
+            fh.write(f"open({marker!r}, 'w').close()\n")
+        r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry", "--root", os.path.join(env["HOME"], "root")],
+                           capture_output=True, text=True, timeout=120, env=env, cwd=elsewhere)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(os.path.exists(marker), "the default date imported the working directory's datetime.py")
+        self.assertEqual(os.listdir(elsewhere), ["datetime.py"])                  # no __pycache__ written there
+        m = re.search(r" propose start date=(\d{4}-\d\d-\d\d) dry=1 ", r.stderr)
+        self.assertIsNotNone(m, r.stderr)
+        self.assertIn(f" propose OK proposals/{m.group(1)}.json", r.stderr)
+        # every python started before `cd "$REPO"` runs isolated and writes no bytecode (the dash's runs
+        # in a subshell that cds there first)
+        with open(os.path.join(REPO, "nightly", "propose.sh"), encoding="utf-8") as fh:
+            code = [l for l in fh.read().splitlines() if not l.lstrip().startswith("#")]
+        runs = [l for l in code[:code.index('cd "$REPO" || fail "cd $REPO"')]
+                if re.search(r'"\$PY" -', l) and 'cd "$REPO" && "$PY" -' not in l]
+        self.assertEqual(len(runs), 3, runs)                                        # the guard, realpath_py, the default date
+        self.assertTrue(all('"$PY" -I -B -c ' in l for l in runs), runs)
+
     def test_a_guard_that_answers_nothing_refuses(self):
         # The silent interpreter above never reaches the guard: realpath_py refuses first. This one runs
         # every other call and answers nothing (exit 0, no output) only to cycle.forbidden, so the

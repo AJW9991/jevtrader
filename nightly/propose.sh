@@ -142,7 +142,9 @@ on_exit() {
 trap on_exit EXIT
 
 [ -x "$PY" ] || fail "no python at $PY"
-[ -n "$DATE" ] || DATE="$("$PY" -c 'import datetime as d; print((d.datetime.now(d.timezone.utc) - d.timedelta(days=1)).strftime("%Y-%m-%d"))')"
+# Isolated and without bytecode like the guard: this runs before the cd below, so from the
+# invocation directory, whose datetime.py (say) would otherwise be imported and leave its bytecode.
+[ -n "$DATE" ] || DATE="$("$PY" -I -B -c 'import datetime as d; print((d.datetime.now(d.timezone.utc) - d.timedelta(days=1)).strftime("%Y-%m-%d"))')"
 case "$DATE" in
   [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
   *) fail "bad --date $DATE" ;;
