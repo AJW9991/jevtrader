@@ -154,31 +154,50 @@ def load(path, bad=None):
             if not line.strip():
                 continue
             try:
-                r = json.loads(line)
+                found = [json.loads(line)]
             except ValueError as e:
                 # A torn line (a crash or a full disk mid-write) with the next whole row appended onto
                 # it: the tail from the last row start parses on its own, and that row was written in
-                # full, so it is kept and only the torn head is the skip (2026-09-28; cycle.write_row
-                # now also starts a fresh line after a torn one, so this recovers the older cases).
-                i = line.rfind(ROW_START)
-                r = None
-                if i > 0:
-                    try:
-                        r = json.loads(line[i:])
-                    except ValueError:
-                        r = None
+                # full, so it is kept and only the torn head is the skip; when the head parses too the
+                # line is two whole rows that lost their newline, and both are kept (2026-09-28;
+                # cycle.write_row now also starts a fresh line after a torn one, so this recovers the
+                # older cases).
+                found = _glued(line)
                 if bad is not None:
-                    bad.append((n, f"json: {e}" + ("; the whole row appended onto the torn line is kept" if r is not None else "")))
-                if r is None:
+                    bad.append((n, f"json: {e}" + _GLUED_NOTE[len(found)]))
+                if not found:
                     continue
-            if not (isinstance(r, dict) and isinstance(r.get("tick_id"), str)
-                    and isinstance(r.get("ts_rx"), str)):
-                if bad is not None:
-                    bad.append((n, "not a row: needs tick_id and ts_rx"))
-                continue
-            if not _TICK.match(r["tick_id"]) or _tick_ok(r["tick_id"]) is None or ts_epoch(r["ts_rx"]) is None:
-                if bad is not None:                    # a string that is not a minute would crash every reader's clock
-                    bad.append((n, "not a row: tick_id is not YYYYMMDDTHHMMSSZ or ts_rx is not a time"))
-                continue
-            rows.append(r)
+            for r in found:
+                if not (isinstance(r, dict) and isinstance(r.get("tick_id"), str)
+                        and isinstance(r.get("ts_rx"), str)):
+                    if bad is not None:
+                        bad.append((n, "not a row: needs tick_id and ts_rx"))
+                    continue
+                if not _TICK.match(r["tick_id"]) or _tick_ok(r["tick_id"]) is None or ts_epoch(r["ts_rx"]) is None:
+                    if bad is not None:                # a string that is not a minute would crash every reader's clock
+                        bad.append((n, "not a row: tick_id is not YYYYMMDDTHHMMSSZ or ts_rx is not a time"))
+                    continue
+                rows.append(r)
     return rows
+
+
+_GLUED_NOTE = {0: "", 1: "; the whole row appended onto the torn line is kept",
+               2: "; two whole rows on one line (a lost newline), both kept"}
+
+
+def _glued(line):
+    """The JSON objects on a line that is not one: the tail from the last row start when it parses
+    (a whole row appended onto a torn line), preceded by the head when that parses as well (a whole
+    row that lost only its newline); else nothing. Each is then read as a row only if it is one."""
+    i = line.rfind(ROW_START)
+    if i <= 0:
+        return []
+    try:
+        tail = json.loads(line[i:])
+    except ValueError:
+        return []
+    try:
+        head = json.loads(line[:i])
+    except ValueError:
+        return [tail]
+    return [head, tail]

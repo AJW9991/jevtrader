@@ -210,6 +210,30 @@ class Load(unittest.TestCase):
         self.assertEqual([n for n, _ in bad], [2, 3, 3])              # line 3: the json fault, then the rescued tail is not a row
         self.assertIn("not a row", bad[2][1])
 
+    def test_two_whole_rows_that_lost_their_newline_are_both_kept(self):
+        # the older writer could lose exactly the newline between two whole rows (a crash after the
+        # row's bytes, before its newline): neither row is torn, so both are read, in order, and the
+        # line is one skipped line whose reason says so (make health's count; bin/readers-diff's "kept")
+        p = os.path.join(tempfile.mkdtemp(), "d.jsonl")
+        a, b, c = _row(0, 100.0), _row(60, 101.0), _row(120, 102.0)
+        with open(p, "w") as fh:
+            fh.write(json.dumps(a, separators=(",", ":")))                  # whole, no newline
+            fh.write(json.dumps(b, separators=(",", ":")) + "\n")            # glued onto it
+            fh.write(json.dumps(c, separators=(",", ":")) + "\n")
+        bad = []
+        rows = outcomes.load(p, bad)
+        self.assertEqual([r["tick_id"] for r in rows], [a["tick_id"], b["tick_id"], c["tick_id"]])
+        self.assertEqual(rows[0], a)
+        self.assertEqual([(n, "two whole rows on one line (a lost newline), both kept" in why) for n, why in bad], [(1, True)])
+        # a head that parses but is not a row is not a row: the tail alone is kept, and the head is named
+        with open(p, "w") as fh:
+            fh.write('{"v":1}' + json.dumps(b, separators=(",", ":")) + "\n")
+        bad = []
+        rows = outcomes.load(p, bad)
+        self.assertEqual([r["tick_id"] for r in rows], [b["tick_id"]])
+        self.assertEqual([n for n, _ in bad], [1, 1])
+        self.assertIn("not a row: needs tick_id", bad[1][1])
+
     def test_missing_file_raises(self):
         with self.assertRaises(OSError):
             outcomes.load(os.path.join(tempfile.mkdtemp(), "nope.jsonl"))
