@@ -98,8 +98,8 @@ def disagreements(day, joined, cur_name=None):
         if not isinstance(a, dict) or not _num(a.get("confidence")) or a["confidence"] < DISAGREE_CONF:
             continue
         o = joined.get(r["tick_id"]) or outcomes.GAP
-        if (a.get("choice"), o["label"]) not in CONTRADICTS:
-            continue
+        if not isinstance(a.get("choice"), str) or (a["choice"], o["label"]) not in CONTRADICTS:
+            continue                                # a list or dict choice (a jev/parse row keeps the answer) is unhashable
         out.append({"state": r.get("state") or "?", "choice": a["choice"], "confidence": float(a["confidence"]),
                     "ret_h_bps": o["ret_h_bps"], "label": o["label"], "tick_id": r["tick_id"]})
     out.sort(key=lambda x: (-x["confidence"], x["tick_id"]))

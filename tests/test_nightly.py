@@ -264,6 +264,27 @@ class DigestTest(unittest.TestCase):
         self.assertEqual(_table_rows(text)[0], ("buy", 0.95, "down"))
         self.assertIn(("buy", 0.93, "down"), _table_rows(text))
 
+    def test_a_parse_row_with_a_list_or_dict_choice_neither_crashes_nor_changes_the_digest(self):
+        # cycle keeps the answers of a jev/parse row (a wrong-typed field); a b_action choice that is a
+        # list or dict made the digest raise TypeError (unhashable) and that date never got a proposal.
+        # Such a row is not a disagreement; every other byte of the digest is what it was without it.
+        base, _ = digest.build(DAY, self.log)
+        for bad in (["buy"], {"x": "buy"}):
+            rows = synthetic_log()
+            odd = dict(rows[7], absence="jev", columns={"a": None, "b": None})
+            odd["answers"] = dict(odd["answers"], b_action={"choice": bad, "confidence": 0.95,
+                                                             "probabilities": {"buy": 0.95, "sell": 0.025, "hold": 0.025}})
+            rows[7] = odd
+            _write_log(self.log, rows)
+            text, n = digest.build(DAY, self.log)
+            self.assertEqual(_table_rows(text), [("buy", 0.95, "down"), ("sell", 0.90, "up"), ("sell", 0.86, "up")], bad)
+            self.assertIn("B disagreements 3", text)
+            out = os.path.join(self.tmp, "d.md")
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(digest.main(["--date", "2026-09-22", "--log", self.log, "--out", out]), 0)
+        _write_log(self.log, synthetic_log())
+        self.assertEqual(digest.build(DAY, self.log)[0], base)                       # the clean day is byte-identical
+
     def test_main_writes_file_and_day_zero_exits_4(self):
         out = os.path.join(self.tmp, "digest.md")
         with redirect_stdout(io.StringIO()):

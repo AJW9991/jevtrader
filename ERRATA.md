@@ -61,6 +61,13 @@ follows; fix the sentence), **gap** (the document is silent where the code decid
 | Rules, 4 | A candidate with a digit "is discarded unread" | The whole reply fails (propose.sh), and policy_table.py would refuse it anyway | choice |
 | Output | "no other fenced block" | Not enforced; only ```json blocks are counted | gap |
 
+## nightly/digest.py (the treatment's content: fixed through the sample)
+
+| Where | The code does | What the revision should do | Kind |
+|---|---|---|---|
+| disagreements, the confidence filter | A b_action confidence that is NaN or +Infinity (kept on a `jev`/`parse` row) passes `< 0.85` as False, so it is counted in "B disagreements" and listed as `nan`/`inf` ahead of the 0.99 rows, where it can push a real row out of the 25 shown | Require a finite confidence (as report and outcomes do); no live row is known to carry one | choice |
+| disagreements, the choice | A list or dict choice (also a `jev`/`parse` row) raised TypeError and lost the night; since 2026-09-28 such a row is skipped, and every digest that rendered before is byte-identical | Keep | gap |
+
 ## The nightly's context (a decision, not an erratum)
 From the night a merge of this branch is pulled onto the Mac, the one `claude -p` call runs
 from an empty temporary directory, so the repo's CLAUDE.md and the CLI's per-project state no
