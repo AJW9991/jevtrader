@@ -89,8 +89,10 @@ guard_path "$(pwd -P)" cwd
 # --dry writes the fixture proposal as proposals/<date>.json. In the repo that file would then be
 # the day's proposal: a real night for the same date is refused (one run per date, below), no
 # Claude call is made, and bin/promote would accept the fixture with a warning. So --dry runs
-# only against a --root outside the repo (the suite passes a temp dir).
-if [ $DRY -eq 1 ] && [ "$ROOT_REAL" = "$REPO_REAL" ]; then      # both spelled by realpath ('//' and all)
+# only against a --root outside the repo (the suite passes a temp dir). Compared as realpath strings
+# ('//' and all) and as directories (-ef: same device and inode), since realpath keeps a second name
+# for one directory (a bind mount; on the Mac a case-only difference on APFS, a firmlink).
+if [ $DRY -eq 1 ] && { [ "$ROOT_REAL" = "$REPO_REAL" ] || [ "$ROOT_REAL" -ef "$REPO" ]; }; then
   echo "usage: --dry writes fixture files; pass --root DIR outside the repo" >&2; exit 2
 fi
 

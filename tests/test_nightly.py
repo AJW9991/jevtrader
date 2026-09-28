@@ -1027,6 +1027,20 @@ class ProposeDryTest(unittest.TestCase):
         self.assertIn("--dry writes fixture files; pass --root DIR outside the repo", r.stderr)
         self.assertEqual(sorted(os.listdir(copy)), ["loop", "nightly"])        # no proposals/, logs/ or data/
 
+    def test_dry_refuses_the_repo_by_a_second_name(self):
+        # realpath does not unify every second name for one directory (a bind mount; on the Mac a
+        # case-only difference on case-insensitive APFS, or the /System/Volumes/Data firmlink): the check
+        # compared two realpath strings, so --dry --root <the repo by such a name> wrote the fixture into
+        # the repo's proposals/ and that date's real night was then refused. It compares identity too.
+        env = _sh_env(self)
+        copy = _tree_copy(self)
+        wrap, alias = _second_name(self, copy, env)
+        r = subprocess.run(wrap + ["/bin/bash", os.path.join(copy, "nightly", "propose.sh"), "--dry", "--date", "2026-09-22",
+                                   "--root", alias], capture_output=True, text=True, timeout=120, env=env)
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("--dry writes fixture files; pass --root DIR outside the repo", r.stderr)
+        self.assertEqual(sorted(os.listdir(copy)), ["loop", "nightly"])        # no proposals/, logs/ or data/
+
     def test_a_committed_table_also_refuses_a_second_run(self):
         # the json is gitignored: after a re-clone only the .md is there, and a rerun would rewrite
         # the committed table
