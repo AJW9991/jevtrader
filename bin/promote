@@ -79,8 +79,10 @@ _TABLE_SHA = re.compile(r"^proposal sha256: ([0-9a-f]{64})", re.M)
 _TABLE_HEAD = re.compile(r"requests: (\d+), answered: (\d+), errors: (\d+) -- INCOMPLETE")
 
 
-def vouched(proposal):
-    """proposals/<date>.json is gitignored; the committed proposals/<date>.md carries its sha256
+def vouched(proposal, raw):
+    """`raw` are the proposal's bytes, read once by main: the sha checked here and the candidates
+    parsed there are of the same bytes (policy_table reads once for the same reason).
+    proposals/<date>.json is gitignored; the committed proposals/<date>.md carries its sha256
     (policy_table.render). A mismatch is a refusal: the json was edited after the table was
     made. No table, or a table without the line (made before 2026-09-26), is a warning: the
     person at the terminal is promoting a file nothing vouches for. A table marked INCOMPLETE
@@ -101,8 +103,7 @@ def vouched(proposal):
     if not m:
         print(f"promote: WARNING {md} carries no 'proposal sha256' line: nothing vouches for this file", file=sys.stderr)
         return
-    with open(proposal, "rb") as fh:
-        have = hashlib.sha256(fh.read()).hexdigest()
+    have = hashlib.sha256(raw).hexdigest()
     if have != m.group(1):
         raise RuntimeError(f"{proposal} sha256 {have[:12]} != {m.group(1)[:12]} in {md}: the file changed after its table was made")
 
@@ -138,9 +139,10 @@ def main(argv=None):
         if not sealed(a.repo):
             raise RuntimeError(f"no git tag {PREREG_TAG}: PREREG.md §10 must be sealed before the first "
                                "promote (the first row with prompt_b != v1)")
-        vouched(a.proposal)                                # the committed table names this file's sha, or says so
-        with open(a.proposal, encoding="utf-8") as fh:
-            cands = json.load(fh).get("candidates")
+        with open(a.proposal, "rb") as fh:                 # read ONCE: vouched and parsed from the same bytes
+            raw = fh.read()
+        vouched(a.proposal, raw)                           # the committed table names this file's sha, or says so
+        cands = json.loads(raw.decode("utf-8")).get("candidates")
         if not isinstance(cands, list) or not 0 <= a.k < len(cands):
             raise RuntimeError(f"{a.proposal}: no candidate {a.k} (has {len(cands) if isinstance(cands, list) else 0})")
         v1 = prompts.load("v1", root)

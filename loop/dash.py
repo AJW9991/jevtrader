@@ -565,6 +565,9 @@ def main(argv=None):
     ap.add_argument("--out", default=os.path.join(config.DATA, "dash.html"))
     ap.add_argument("--prereg", default=os.path.join(config.REPO, "PREREG.md"))
     ap.add_argument("--no-t0", action="store_true", help="ignore PREREG's T0: the whole log is the sample")
+    ap.add_argument("--data", default=None, help="the data/ holding heartbeat and HALT (default: the repo's; propose.sh --root passes its own)")
+    ap.add_argument("--proposals", default=None, help="the proposals/ to read the tables from (default: the repo's)")
+    ap.add_argument("--prompts", default=None, help="prompts root for CURRENT (default: the repo's; the suite pins v1)")
     args = ap.parse_args(argv)
     try:
         t0 = report._t0(args.t0) if args.t0 else (None if args.no_t0 else read_t0(args.prereg))
@@ -574,8 +577,10 @@ def main(argv=None):
     if os.path.exists(args.log):
         rows = outcomes.load(args.log, bad)
     outs = outcomes.join(rows)
-    page = render(rows, outs, t0=t0, hb=heartbeat(), halt=os.path.exists(config.HALT), props=proposals(),
-                  current=current_version(), log=args.log)
+    hb_path = os.path.join(args.data, "heartbeat") if args.data else None       # None: config.HEARTBEAT / config.HALT
+    halt_path = os.path.join(args.data, "HALT") if args.data else config.HALT
+    page = render(rows, outs, t0=t0, hb=heartbeat(hb_path), halt=os.path.exists(halt_path), props=proposals(args.proposals),
+                  current=current_version(args.prompts), log=args.log)
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as fh:
         fh.write(page)

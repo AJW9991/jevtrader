@@ -60,9 +60,18 @@ guard_path() {
       echo "propose: refusing to run under a forbidden prefix ($2)" >&2; exit 3 ;;
   esac
 }
+case "$ROOT" in /*) ;; *) ROOT="$(pwd -P)/$ROOT" ;; esac        # absolute now: the guard and every write see one path
+ROOT_REAL="$(cd "$ROOT" 2>/dev/null && pwd -P || echo "$ROOT")"
 guard_path "$REPO" repo
-guard_path "$(cd "$ROOT" 2>/dev/null && pwd -P || echo "$ROOT")" root
+guard_path "$ROOT_REAL" root
 guard_path "$(pwd -P)" cwd
+# --dry writes the fixture proposal as proposals/<date>.json. In the repo that file would then be
+# the day's proposal: a real night for the same date is refused (one run per date, below), no
+# Claude call is made, and bin/promote would accept the fixture with a warning. So --dry runs
+# only against a --root outside the repo (the suite passes a temp dir).
+if [ $DRY -eq 1 ] && [ "$ROOT_REAL" = "$REPO" ]; then
+  echo "usage: --dry writes fixture files; pass --root DIR outside the repo" >&2; exit 2
+fi
 
 LOGS="$ROOT/logs"
 mkdir -p "$LOGS" "$ROOT/data" "$ROOT/proposals" 2>/dev/null || { echo "propose: cannot create $ROOT dirs" >&2; exit 0; }
@@ -79,7 +88,8 @@ fail() { log "FAIL $*"; exit 0; }
 WORK=""
 rebuild_dash() {
   [ -x "$PY" ] || return 0
-  ( cd "$REPO" && "$PY" -m loop.dash --log "$ROOT/data/decisions.jsonl" --out "$ROOT/data/dash.html" ) >>"$LOG" 2>&1 \
+  ( cd "$REPO" && "$PY" -m loop.dash --log "$ROOT/data/decisions.jsonl" --out "$ROOT/data/dash.html" \
+      --data "$ROOT/data" --proposals "$ROOT/proposals" ${PROMPTS_ROOT:+--prompts "$PROMPTS_ROOT"} ) >>"$LOG" 2>&1 \
     || log "dash: loop.dash exit $? (non-fatal)"
 }
 on_exit() {
@@ -104,6 +114,7 @@ log "start date=$DATE dry=$DRY root=$ROOT"
 # committed table's sha or a promote may already point at -- and the json is gitignored, so an
 # overwrite is gone for good. To rerun a day, a person moves the json aside first.
 [ -e "$ROOT/proposals/$DATE.json" ] && fail "proposals/$DATE.json exists: one run per day, nothing overwritten, no claude call (move it aside to rerun)"
+[ -e "$ROOT/proposals/$DATE.md" ] && fail "proposals/$DATE.md exists (the committed table): one run per day; rerun by hand after moving it aside"
 # The day before gets no proposal when its slot was missed that way: the hole is named in the log.
 PREV="$("$PY" -c 'import datetime as d, sys; print((d.date.fromisoformat(sys.argv[1]) - d.timedelta(days=1)).isoformat())' "$DATE")"
 [ -e "$ROOT/proposals/$PREV.json" ] || [ -e "$ROOT/proposals/$PREV.md" ] || [ -e "$REPO/proposals/$PREV.md" ] \
@@ -144,13 +155,26 @@ else
   # digest and nothing else (PROMPT.md: "everything you may know is the digest"), but claude
   # auto-loads CLAUDE.md from its working directory and every ancestor, and --restricted only
   # ignores settings files, not CLAUDE.md (only --bare or --safe-mode would, and --bare disables
-  # the OAuth login). The repo gained a CLAUDE.md on 2026-09-27; nights 1-3 ran before it
-  # existed, so this keeps every later night seeing what they saw. The CLI still loads the
-  # user's own memory, ~/.claude/CLAUDE.md, so its sha256 is logged each night, beside the CLI
-  # version, so which input and which CLI wrote each night is on record. capped.py is run by
-  # path: `-m nightly.capped` resolves against the cwd, and it imports only the standard library.
+  # the OAuth login). The repo gained a CLAUDE.md on 2026-09-27, which the nights run in the repo
+  # from then on saw. Note what this does and does not restore: the CLI's own per-machine
+  # context (cwd, git status, memory paths) differs between the repo and an empty non-git
+  # directory, so the night this is deployed is a change of the model's context either way
+  # (2026-09-28; HANDOFF records the date). The CLI still loads the user's own memory,
+  # ~/.claude/CLAUDE.md, so its sha256 is logged each night, beside the CLI version, so which
+  # input and which CLI wrote each night is on record. Any CLAUDE.md, CLAUDE.local.md or .claude
+  # in an ancestor of the temp directory (a shared /tmp is world-writable) would be loaded too:
+  # the ancestors are walked and the night fails rather than send with one. capped.py is run
+  # by path: `-m nightly.capped` resolves against the cwd, and it imports only the standard library.
   TMPBASE="${TMPDIR:-/tmp}"
   WORK="$(mktemp -d "${TMPBASE%/}/jevloop-claude.XXXXXX")" || fail "cannot make an empty cwd for claude"
+  ANC="$(cd "$WORK" && pwd -P)"
+  while [ -n "$ANC" ]; do
+    for f in CLAUDE.md CLAUDE.local.md .claude; do
+      [ -e "$ANC/$f" ] && fail "$ANC/$f exists above claude's cwd $WORK: the CLI would auto-load it; nothing sent"
+    done
+    [ "$ANC" = "/" ] && break
+    ANC="$(dirname "$ANC")"
+  done
   MEM="$HOME/.claude/CLAUDE.md"
   if [ -f "$MEM" ]; then
     MEMSHA="$("$PY" -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest()[:12])' "$MEM" 2>/dev/null)"
@@ -201,17 +225,17 @@ for i, x in enumerate(c):
     if any(ch.isdigit() for ch in x["instructions"] + "".join(x["criteria"].values())): sys.exit("candidate %d: carries a digit" % i)
     out.append({"rationale": x.get("rationale", ""), "instructions": x["instructions"],
                 "criteria": {k: x["criteria"][k] for k in ("buy", "sell", "hold")}})
-# serialized whole first, written beside the target, renamed over it: a failure never leaves a
-# truncated json for a table or a promote to read
+# serialized whole first, written beside the target, then LINKED to the target name: a failure
+# never leaves a truncated json for a table or a promote to read, and a target that appeared
+# meanwhile (a by-hand run beside launchd) is never overwritten: link fails, the night does
 text = json.dumps({"candidates": out}, indent=2, ensure_ascii=False) + "\n"
 tmp = sys.argv[2] + ".tmp"
 try:
     with open(tmp, "w", encoding="utf-8") as fh:
         fh.write(text)
-    os.replace(tmp, sys.argv[2])
-except BaseException:
+    os.link(tmp, sys.argv[2])
+finally:
     if os.path.exists(tmp): os.unlink(tmp)
-    raise
 ' "$RAW" "$ROOT/proposals/$DATE.json" >>"$LOG" 2>&1 || fail "invalid proposal (see $RAW)"
 log "wrote proposals/$DATE.json"
 
@@ -220,7 +244,7 @@ log "wrote proposals/$DATE.json"
 #    cannot see these sends (they never reach decisions.jsonl), so the check is here and
 #    again in policy_table.py. Checked in --dry too, so the suite can exercise it.
 if [ -e "$ROOT/data/HALT" ]; then
-  log "HALT present ($ROOT/data/HALT): no Jev send; proposals/$DATE.json written, no table"
+  log "HALT present ($ROOT/data/HALT): no Jev send; proposals/$DATE.json written, no table (once HALT is cleared: $PY -m nightly.policy_table --out proposals/$DATE.md proposals/$DATE.json)"
   exit 0
 fi
 if [ $DRY -eq 1 ]; then DRYFLAG="--dry"; else DRYFLAG=""; fi

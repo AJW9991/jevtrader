@@ -26,8 +26,11 @@ class ProtocolScan(unittest.TestCase):
         self.assertEqual(sockets, {"loop/feed.py", "loop/jev.py"})       # the public venue feed, and the one send path
 
     def test_only_promote_writes_current(self):
+        # a write mode on a line naming CURRENT, or a rename/link/move onto it (bin/promote switches
+        # CURRENT by os.replace of CURRENT.tmp since 2026-09-28): either is a writer
+        moves = ("os.replace", "os.rename", "os.link", "shutil.move", "rename(", "replace(")
         writers = {_rel(p) for p in CODE
-                   if any("CURRENT" in l and ('"w"' in l or "'w'" in l) for l in _code_lines(p))}
+                   if any("CURRENT" in l and ('"w"' in l or "'w'" in l or any(m in l for m in moves)) for l in _code_lines(p))}
         self.assertEqual(writers, {"bin/promote"})
         for p in CODE:
             if _rel(p) == "bin/promote":

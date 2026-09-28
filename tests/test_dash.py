@@ -163,6 +163,31 @@ class Dash(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(dash.main(["--log", os.path.join(self.tmp, "none.jsonl"), "--out", out, "--no-t0"]), 0)
 
+    def test_main_takes_its_roots_from_the_arguments(self):
+        # propose.sh --root passes its own data/, proposals/ and (under test) a pinned prompts root,
+        # so the nightly's rebuild never reads the repo's heartbeat, HALT or CURRENT (2026-09-28)
+        root = tempfile.mkdtemp()
+        os.makedirs(os.path.join(root, "data"))
+        os.makedirs(os.path.join(root, "proposals"))
+        os.makedirs(os.path.join(root, "prompts"))
+        with open(os.path.join(root, "data", "heartbeat"), "w") as fh:
+            fh.write("2026-09-23T10:41:00.100Z\n")
+        with open(os.path.join(root, "data", "HALT"), "w") as fh:
+            fh.write("test\n")
+        with open(os.path.join(root, "prompts", "CURRENT"), "w") as fh:
+            fh.write("v7\n")
+        out = os.path.join(root, "dash.html")
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = dash.main(["--log", self.log, "--out", out, "--no-t0", "--data", os.path.join(root, "data"),
+                              "--proposals", os.path.join(root, "proposals"), "--prompts", os.path.join(root, "prompts")])
+        self.assertEqual(code, 0)
+        with open(out) as fh:
+            page = fh.read()
+        self.assertIn("HALT present", page)
+        self.assertIn("heartbeat 2026-09-23T10:41:00.100Z", page)
+        self.assertIn("prompt_b v7", page)
+        self.assertIn("no proposals yet", page)
+
     def test_gaps_latency_and_absence_by_day(self):
         rows = [dict(_row(m)) for m in range(42) if m not in (20, 21, 22, 30)]   # a 3-minute hole and an isolated skip
         g = dash.gaps(rows)

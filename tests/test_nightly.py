@@ -746,7 +746,6 @@ class ProposeDryTest(unittest.TestCase):
     def test_dry_writes_proposal_from_fixture_and_sends_nothing(self):
         tmp = self.enterContext(tempfile.TemporaryDirectory())
         _write_log(os.path.join(tmp, "data", "decisions.jsonl"), synthetic_log())
-        sends_before = os.path.getsize(config.SENDS) if os.path.exists(config.SENDS) else None
         r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry",
                             "--date", "2026-09-22", "--root", tmp],
                            cwd=tmp, capture_output=True, text=True, timeout=120, env=_sh_env(self))
@@ -773,9 +772,43 @@ class ProposeDryTest(unittest.TestCase):
         self.assertIn(prompts.load("v1")["action"]["instructions"], dig)
         self.assertFalse(os.path.exists(os.path.join(tmp, "proposals", "2026-09-22.md")))   # dry writes no table
         self.assertFalse(os.path.exists(os.path.join(tmp, "data", "sends.tsv")))
-        sends_after = os.path.getsize(config.SENDS) if os.path.exists(config.SENDS) else None
-        self.assertEqual(sends_before, sends_after)
+        # (the repo's own data/sends.tsv is never read here: on the Mac the live loop appends to it
+        # every minute, and a size compared across the run went red about once in fifty runs)
         self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", log + r.stdout + r.stderr)
+
+    def test_dry_needs_a_root_outside_the_repo(self):
+        # 2026-09-28 (verifier): `propose.sh --dry` with no --root wrote the fixture proposal as the
+        # repo's real proposals/<date>.json, and the one-run-per-date refusal then blocked that
+        # night's real Claude call for good. Refused before anything is written, exit 2.
+        for argv in (["--dry", "--date", "2026-09-22"], ["--dry", "--date", "2026-09-22", "--root", REPO]):
+            r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), *argv],
+                               cwd=REPO, capture_output=True, text=True, timeout=30, env=_sh_env(self))
+            self.assertEqual(r.returncode, 2, r.stderr)
+            self.assertIn("--dry writes fixture files; pass --root DIR outside the repo", r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(REPO, "proposals", "2026-09-22.json")))
+        # a relative --root is taken from the invocation directory, never from the repo
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry", "--date", "2026-09-22", "--root", "sub"],
+                           cwd=tmp, capture_output=True, text=True, timeout=120, env=_sh_env(self))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(os.path.exists(os.path.join(tmp, "sub", "proposals", "2026-09-22.json")))
+        self.assertFalse(os.path.exists(os.path.join(REPO, "sub")))
+
+    def test_a_committed_table_also_refuses_a_second_run(self):
+        # the json is gitignored: after a re-clone only the .md is there, and a rerun would rewrite
+        # the committed table
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        _write_log(os.path.join(tmp, "data", "decisions.jsonl"), synthetic_log())
+        os.makedirs(os.path.join(tmp, "proposals"))
+        with open(os.path.join(tmp, "proposals", "2026-09-22.md"), "w") as fh:
+            fh.write("# policy table 2026-09-22\n")
+        r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry", "--date", "2026-09-22", "--root", tmp],
+                           cwd=tmp, capture_output=True, text=True, timeout=120, env=_sh_env(self))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("FAIL proposals/2026-09-22.md exists (the committed table)", r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(tmp, "proposals", "2026-09-22.json")))
+        with open(os.path.join(tmp, "proposals", "2026-09-22.md")) as fh:
+            self.assertEqual(fh.read(), "# policy table 2026-09-22\n")
 
     def test_halt_present_skips_the_table(self):
         tmp = self.enterContext(tempfile.TemporaryDirectory())
@@ -894,6 +927,7 @@ class LiveBranch(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)                  # holds a fake token and a stub claude
         _write_log(os.path.join(self.tmp, "data", "decisions.jsonl"), synthetic_log())
         with open(os.path.join(self.tmp, "data", "HALT"), "w") as fh:
             fh.write("test: no sends\n")
@@ -987,6 +1021,24 @@ class LiveBranch(unittest.TestCase):
         # and the night's record: that cwd, the user memory's sha, the CLI's version
         self.assertIn("(empty); user memory ", log)
         self.assertIn("CLAUDE.md sha256 " + hashlib.sha256(memory.encode()).hexdigest()[:12] + "; cli 9.9.9 (stub claude)", log)
+
+    def test_a_claude_md_above_the_temp_cwd_fails_the_night_before_any_send(self):
+        # /tmp is shared and world-writable: a CLAUDE.md planted above claude's empty cwd would be
+        # auto-loaded like the repo's was. The ancestors are walked and the night fails, nothing sent.
+        tmpdir = os.path.join(self.tmp, "tmpbase")
+        os.makedirs(tmpdir)
+        with open(os.path.join(tmpdir, "CLAUDE.md"), "w") as fh:
+            fh.write("# planted\n")
+        stub = self._stub('printf "%s\\0" "$@" >"' + self.saw + '/argv"\necho "{}"\n')
+        r = self._run(stub, TMPDIR=tmpdir)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(os.path.join(self.tmp, "logs", "propose.log")) as fh:
+            log = fh.read()
+        self.assertIn("/CLAUDE.md exists above claude's cwd", log)
+        self.assertIn("nothing sent", log)
+        self.assertFalse(os.path.exists(os.path.join(self.saw, "argv")))          # the stub never ran
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "proposals", f"{DAY.isoformat()}.json")))
+        self.assertEqual([d for d in os.listdir(tmpdir) if d.startswith("jevloop-claude.")], [])   # the temp cwd is gone
 
     def test_a_hung_claude_is_one_fail_line_and_the_night_ends_clean(self):
         stub = self._stub('[ "$1" = --version ] && { echo "9.9.9 (stub claude)"; exit 0; }\nsleep 30\n')
@@ -1085,7 +1137,8 @@ class Capped(unittest.TestCase):
         dash = [l for l in code if "-m loop.dash" in l]
         self.assertEqual(len(dash), 1)
         self.assertIn('--log "$ROOT/data/decisions.jsonl" --out "$ROOT/data/dash.html"', dash[0])
-        self.assertIn('|| log "dash:', code[code.index(dash[0]) + 1])
+        self.assertIn('|| log "dash:', code[code.index(dash[0]) + 2])                # the call spans two lines
+        self.assertIn('--data "$ROOT/data" --proposals "$ROOT/proposals" ${PROMPTS_ROOT:+--prompts "$PROMPTS_ROOT"}', code[code.index(dash[0]) + 1])
         # the rebuild runs from an EXIT trap, so a HALT night or a failed claude night rebuilds it
         # too. The trap is installed after the usage (2) and guard (3) exits and after logs/ exists,
         # and before the first FAIL can end a night; it keeps the night's exit status.
@@ -1115,7 +1168,8 @@ class Capped(unittest.TestCase):
         with open(os.path.join(REPO, "nightly", "propose.sh")) as fh:
             code = [l for l in fh.read().splitlines() if not l.lstrip().startswith("#")]
         self.assertEqual([l for l in code if l.startswith("guard_path ")],
-                         ['guard_path "$REPO" repo', 'guard_path "$(cd "$ROOT" 2>/dev/null && pwd -P || echo "$ROOT")" root', 'guard_path "$(pwd -P)" cwd'])
+                         ['guard_path "$REPO" repo', 'guard_path "$ROOT_REAL" root', 'guard_path "$(pwd -P)" cwd'])
+        self.assertLess(code.index('ROOT_REAL="$(cd "$ROOT" 2>/dev/null && pwd -P || echo "$ROOT")"'), code.index('guard_path "$ROOT_REAL" root'))
         forbidden = os.path.expanduser("~/Projects/crypto-trading-system")
         r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry", "--root", os.path.join(forbidden, "x")],
                            capture_output=True, text=True, timeout=30)
