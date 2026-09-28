@@ -867,7 +867,7 @@ class Robustness(unittest.TestCase):
             self.assertEqual((code, out, err), (2, "", f"inference: no log at {missing}\n"), mode)
 
     def test_pre_t0_with_no_row_before_the_cut_prints_no_blocks_and_no_units(self):
-        code, out, err = _main(["--pre-t0", "--log", self.log, "--t0", T0S, "--resamples", "20"])   # every row is at or after T0
+        code, out, err = _main(["--pre-t0", "--log", self.log, "--t0", T0S, "--resamples", "20", "--exclusions", self.ex])   # every row is at or after T0
         self.assertEqual(code, 0, err)
         self.assertIn("rows in scope 0\n", out)
         self.assertIn("    n blocks 0; mean S_k n/a bps; lower bound n/a bps -> no blocks: nothing to test", out)
