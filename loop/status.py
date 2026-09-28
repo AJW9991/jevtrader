@@ -143,7 +143,7 @@ def main(argv=None, now=None):
     ap = argparse.ArgumentParser(prog="python3 -m loop.status", description="the loop's health in one screen (report §1 only)")
     ap.add_argument("--log", default=config.DECISIONS)
     ap.add_argument("--t0", help="PREREG T0 (UTC minute or tick_id); default: read from PREREG.md §11")
-    ap.add_argument("--prereg", default=os.path.join(config.REPO, "PREREG.md"))
+    ap.add_argument("--prereg", default=dash.PREREG_PATH)
     ap.add_argument("--now", help="override the clock (tests): YYYY-MM-DDTHH:MM UTC")
     args = ap.parse_args(argv)
     try:

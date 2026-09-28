@@ -17,6 +17,7 @@ import bisect, calendar, contextlib, datetime, io, math, os, re, subprocess, sys
 from unittest import mock
 
 import synth
+from fixture_prereg import pin_prereg
 from fixture_prompts import pin_v1
 from loop import book, config, cycle, dash, inference, outcomes, report, rules, state, status
 from test_dash import runtime_health_only
@@ -438,6 +439,7 @@ class Readers(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        pin_prereg(cls)                                             # report.main reads PREREG §11 for its withholding
         cls.edges = _edge_logs()
         cls.halt = os.path.join(_TMP.name, "no-HALT")               # never the repo's data/HALT
         cls.props = os.path.join(_TMP.name, "no-proposals")
@@ -654,6 +656,8 @@ class Inference(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        pin_prereg(cls)                                             # the in-process run's repository seal (the fresh interpreter
+                                                                    # reads the repo's own: the log holds no row of either sample)
         cls.path = synth.write(os.path.join(_TMP.name, "inference.jsonl"), synth.generate(cls.SEED, **{**knobs(cls.SEED), "t0": cls.T0S}))
         cls.ex = os.path.join(_TMP.name, "exclusions.tsv")
         with open(cls.ex, "w") as fh:

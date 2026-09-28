@@ -3,6 +3,7 @@ exclusions by T0-anchored day, and an end-to-end run on a synthetic log and on -
 import contextlib, datetime, hashlib, io, json, math, os, random, sys, tempfile, unittest
 from unittest import mock
 
+from fixture_prereg import pin_prereg
 from loop import book, inference, outcomes, report, rules
 from test_report import _row, _write
 
@@ -230,6 +231,7 @@ class LiveLog(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        pin_prereg(cls)                                               # the repository's PREREG, pinned: T0 2026-09-25T21:40Z
         cls.tmp = tempfile.mkdtemp()
         cls.log = os.path.join(cls.tmp, "decisions.jsonl")
         _write(cls.log, [_row(m) for m in range(42)])                # 2026-09-23, before PREREG's T0: no sample row
@@ -315,6 +317,7 @@ class PreT0Cut(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        pin_prereg(cls)
         cls.tmp = tempfile.mkdtemp()
         cls.log = os.path.join(cls.tmp, "copy.jsonl")                 # not the live log: --t0 is accepted
         sealed = report._t0("2026-09-25T21:40")
@@ -345,6 +348,7 @@ class SealedCopy(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        pin_prereg(cls)                                               # "the repository's" seal: the pinned fixture's
         cls.tmp = tempfile.mkdtemp()
         cls.log = os.path.join(cls.tmp, "copy.jsonl")
         _write(cls.log, _minutes(cls.SEALED - 600, cls.SEALED + 42 * 60, mid=lambda e: 100.0 + (e % 3600) / 600.0), garbage=False)

@@ -482,13 +482,14 @@ def render(mode, t0, now, log, excluded, excl_lines, kept_days, h1s, h2s, resamp
 
 
 def main(argv=None, now=None):
+    repo_prereg = _repo_prereg()                            # the repository's PREREG.md
     ap = argparse.ArgumentParser(prog="python3 -m loop.inference", description="PREREG §4-§5 inference, once, at day 28")
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--sample", action="store_true", help=f"the sample [T0, T0 + {N_DAYS} d); refused before T0 + {N_DAYS} d")
     g.add_argument("--pre-t0", action="store_true", help="the rows before T0 (shakedown): a smoke of the procedure, never a claim")
     ap.add_argument("--log", default=config.DECISIONS)
     ap.add_argument("--t0", help="T0 (UTC minute or tick_id); default: PREREG.md §11")
-    ap.add_argument("--prereg", default=os.path.join(config.REPO, "PREREG.md"))
+    ap.add_argument("--prereg", default=repo_prereg)
     ap.add_argument("--exclusions", help="stop rule 3's exclusions (default data/exclusions.tsv, which may be absent: no exclusions);"
                                          " a path given here must exist")
     ap.add_argument("--now", help="override the clock (tests). Printed in the header when used.")
@@ -517,12 +518,12 @@ def main(argv=None, now=None):
     if t0 is None:
         ap.error("no T0: PREREG.md §11 is unsealed and no --t0 given")
     sealed = _read_t0(args.prereg)                          # PREREG §11's T0 (None before sealing)
-    sealed_repo = _read_t0(os.path.join(config.REPO, "PREREG.md"))   # the repository's own seal, whatever --prereg names
+    sealed_repo = _read_t0(repo_prereg)                     # the repository's own seal, whatever --prereg names
     if live_log:                                            # the clock and T0 of the live log are the real ones, in both modes
         why = None
         if args.now:
             why = f"--now {args.now} overrides the clock, and the live log is read on the real clock only (tests use a temporary log)"
-        elif os.path.realpath(args.prereg) != os.path.realpath(os.path.join(config.REPO, "PREREG.md")):
+        elif os.path.realpath(args.prereg) != os.path.realpath(repo_prereg):
             why = f"--prereg {args.prereg} is not the repository's PREREG.md, whose §11 anchors the live log"
         elif args.t0 and t0 != sealed:
             why = (f"--t0 {args.t0} is not PREREG §11's T0 {report._iso_minute(sealed) if sealed is not None else '(unsealed)'};"
@@ -612,6 +613,12 @@ def main(argv=None, now=None):
 def _read_t0(prereg):
     from .dash import read_t0
     return read_t0(prereg)
+
+
+def _repo_prereg():
+    """The repository's PREREG.md: dash.PREREG_PATH, looked up at call time (tests pin a fixture there)."""
+    from . import dash
+    return dash.PREREG_PATH
 
 
 if __name__ == "__main__":

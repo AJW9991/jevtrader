@@ -3,8 +3,9 @@ because every report.<name> it uses is on an allowlist of section 1-3 functions 
 import ast, contextlib, io, os, re, tempfile, unittest
 from unittest import mock
 
+from fixture_prereg import pin_prereg, text as prereg_text
 from fixture_prompts import pin_v1
-from loop import config, dash, outcomes, report
+from loop import config, dash, inference, outcomes, report, status
 from test_report import _row, _write
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -134,10 +135,8 @@ class Dash(unittest.TestCase):
                 assert_health_only(self, p, ALLOWED_REPORT, ALLOWED_IMPORTS)
 
     def test_t0_from_prereg_and_the_sample_cut(self):
-        with open(os.path.join(REPO, "PREREG.md")) as fh:
-            sealed = "T0 (first tick_id of day 1): `" in fh.read()
-        if sealed:
-            self.assertEqual(dash.read_t0(), report.tick_epoch("20260925T214000Z"))
+        pin_prereg(self)                                                 # prereg-v1's §11, not the repository's (to be re-sealed for v2)
+        self.assertEqual(dash.read_t0(), report.tick_epoch("20260925T214000Z"))
         self.assertIsNone(dash.read_t0(os.path.join(self.tmp, "nope.md")))
         page = dash.render(self.rows, self.outs, t0=report.tick_epoch("20260923T102000Z"))
         self.assertIn("T0 2026-09-23T10:20Z", page)
@@ -285,6 +284,65 @@ class Dash(unittest.TestCase):
         self.assertEqual((p["current"], p["current_vs_rule"], p["current_of"]), ("v2", 27, 79))
         page = dash.render(self.rows, self.outs, props=dash.proposals(root))
         self.assertIn("current v2: 27/79 vs rule_c", page)
+
+
+class PinnedPrereg(unittest.TestCase):
+    """tests/fixture_prereg.pin_prereg: every program reads the repository's PREREG through
+    dash.PREREG_PATH, so the pin is the one place a test names a T0, and the repository's own
+    PREREG.md (to be re-sealed for prereg-v2 after 2026-10-23) is never opened while it holds."""
+    LATER = "20261101T000000Z"                                          # a T0 no real PREREG has had: seen, it came from the pin
+
+    def test_the_default_is_the_repositorys_prereg(self):
+        self.assertEqual(dash.PREREG_PATH, os.path.join(config.REPO, "PREREG.md"))
+
+    def test_every_program_reads_the_pin_and_never_the_repositorys_prereg(self):
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        repo_prereg = os.path.realpath(os.path.join(config.REPO, "PREREG.md"))
+        real_open = open
+
+        def guarded(file, *a, **k):
+            if isinstance(file, (str, bytes, os.PathLike)) and os.path.realpath(file) == repo_prereg:
+                raise AssertionError(f"{file} was opened while a PREREG was pinned")
+            return real_open(file, *a, **k)
+        path = pin_prereg(self, self.LATER)
+        pin_v1(self)
+        log = os.path.join(tmp, "decisions.jsonl")
+        _write(log, [_row(m) for m in range(20)], garbage=False)       # 2026-09-23 10:00 .. 10:19, before any T0 here
+        ex = os.path.join(tmp, "exclusions.tsv")
+        with open(ex, "w", encoding="utf-8") as fh:
+            fh.write("day\tfill%\tjev-err%\treason\n")
+        for k, v in (("HALT", "HALT"), ("HEARTBEAT", "heartbeat"), ("PROPOSALS", "proposals")):
+            self.enterContext(mock.patch.object(config, k, os.path.join(tmp, v)))
+        self.enterContext(mock.patch("builtins.open", guarded))
+        run = _capture                                                  # (main, argv) -> (exit code, stdout)
+        self.assertEqual(dash.read_t0(), report.tick_epoch(self.LATER))
+        code, out = run(report.main, ["--log", log, "--health", "--sample"])
+        self.assertEqual(code, 0)
+        self.assertIn("T0 2026-11-01T00:00Z (sample [T0, T0 + 28 d)", out.splitlines()[0])
+        code, out = run(status.main, ["--log", log, "--now", "2026-09-28T12:00"])
+        self.assertIn("sample: not started (T0 2026-11-01T00:00Z)", out)
+        code, out = run(dash.main, ["--log", log, "--out", os.path.join(tmp, "dash.html")])
+        with open(os.path.join(tmp, "dash.html"), encoding="utf-8") as fh:
+            self.assertIn("T0 2026-11-01T00:00Z", fh.read())
+        code, out = run(inference.main, ["--pre-t0", "--log", log, "--resamples", "20", "--exclusions", ex])
+        self.assertEqual(code, 0)
+        self.assertIn("rows before 2026-11-01T00:00Z (the earlier of --t0 and PREREG §11's T0)", out)
+        # blank the pinned §11 and every reader sees an unsealed PREREG
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(prereg_text(None))
+        self.assertIsNone(dash.read_t0())
+        with self.assertRaises(SystemExit) as cm, contextlib.redirect_stderr(io.StringIO()):
+            run(report.main, ["--log", log, "--health", "--sample"])
+        self.assertEqual(cm.exception.code, 2)
+        code, out = run(status.main, ["--log", log, "--now", "2026-09-28T12:00"])
+        self.assertIn("sample: no T0", out)
+
+
+def _capture(main, argv):
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        code = main(argv)
+    return code, buf.getvalue()
 
 
 if __name__ == "__main__":

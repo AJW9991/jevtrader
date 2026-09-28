@@ -916,7 +916,7 @@ def main(argv=None, now=None):
         ap.error(f"--t0 wants YYYY-MM-DDTHH:MM (UTC) or a tick_id, got {args.t0!r}")
     from . import dash                                               # here, not at the top: dash imports report
     sealed = dash.read_t0(args.prereg)                               # PREREG §11's T0, None before sealing
-    sealed_repo = dash.read_t0(None)                                 # the withholding reads the REPO's PREREG whatever
+    sealed_repo = dash.read_t0(dash.PREREG_PATH)                     # the withholding reads the REPO's PREREG whatever
                                                                      # --prereg says: a pointer at another file is not a look
     if args.sample:
         if args.t0:

@@ -23,6 +23,7 @@ k2 = m 30..41.
 import contextlib, datetime, io, json, math, os, tempfile, unittest
 from unittest import mock
 
+from fixture_prereg import pin_prereg
 from loop import book, config, outcomes, report, rules, state
 
 MINUTES = tuple(range(0, 20)) + tuple(range(22, 42))       # 40 ticks, minutes 20 and 21 missing
@@ -822,12 +823,14 @@ class Withheld(unittest.TestCase):
     """CLAUDE.md: nobody reads report §4-§7 before day 28; the day-14 look is --health. `make report`
     on rows of the sealed sample therefore prints sections 1-3 and says the rest is withheld until
     the sample ends; --unblind prints them and says so on stderr; shakedown rows before T0, or any
-    log after the sample has ended, print in full. --sample reads T0 from PREREG.md §11."""
+    log after the sample has ended, print in full. --sample reads T0 from PREREG.md §11, here the
+    pinned fixture (tests/fixture_prereg.py), never the repository's, which is to be re-sealed for v2."""
     T0 = report.tick_epoch("20260925T214000Z")                       # the sealed T0 (PREREG §11)
     END = T0 + report.SAMPLE_DAYS * 86400
 
     @classmethod
     def setUpClass(cls):
+        pin_prereg(cls)                                                 # prereg-v1's §11 line: T0 2026-09-25T21:40Z
         cls.tmp = tempfile.mkdtemp()
         rows = []
         for m in MINUTES:                                               # the synthetic log moved into day 2 of the sample
@@ -907,7 +910,8 @@ class Withheld(unittest.TestCase):
             self._run(["--log", self.log, "--health", "--sample", "--prereg", self.unsealed], None)
         self.assertEqual(cm.exception.code, 2)
         # --prereg pointed at an unsealed file does NOT lift the withholding: it reads the repo's own
-        # PREREG, which is sealed (a pointer at another file is not a look; --unblind is the one way)
+        # PREREG (dash.PREREG_PATH, the pinned fixture here), which is sealed (a pointer at another file
+        # is not a look; --unblind is the one way)
         code, out, err = self._run(["--log", self.log, "--prereg", self.unsealed], self.T0 + 10 * 86400)
         self.assertIn("WITHHELD", out)
         self.assertNotIn("pair B-C", out)

@@ -20,6 +20,7 @@ import argparse, collections, datetime, glob, html, os, re, sys
 from . import config, outcomes, report, state
 
 T0_RE = re.compile(r"T0 \(first tick_id of day 1\): `(\d{8}T\d{6}Z)`")   # PREREG §11's sealed line
+PREREG_PATH = os.path.join(config.REPO, "PREREG.md")   # the repository's PREREG, read at call time (tests pin a fixture)
 PROPOSAL_HEAD = re.compile(r"requests: (\d+), answered: (\d+), errors: (\d+)")
 PROPOSAL_NAME = re.compile(r"^(cand_\d+)\n")
 PROPOSAL_COUNTS = re.compile(r"^differs from CURRENT on (\d+) of (\d+) answered states; from rule_c on (\d+) of (\d+)", re.M)
@@ -62,9 +63,10 @@ def _bin_state(n, top):
 
 def read_t0(prereg=None):
     """PREREG §11's T0 line as epoch seconds, or None before sealing. report.main, status and
-    inference read it here (report.py itself opens no file, by test)."""
+    inference read it here (report.py itself opens no file, by test). `prereg` None is the
+    repository's own, PREREG_PATH, looked up at call time."""
     try:
-        with open(prereg or os.path.join(config.REPO, "PREREG.md"), encoding="utf-8") as fh:
+        with open(prereg or PREREG_PATH, encoding="utf-8") as fh:
             m = T0_RE.search(fh.read())
     except OSError:
         return None
@@ -566,7 +568,7 @@ def main(argv=None):
     ap.add_argument("--log", default=config.DECISIONS)
     ap.add_argument("--t0", help="PREREG T0 (UTC minute or tick_id); default: read from PREREG.md §11, else the whole log")
     ap.add_argument("--out", default=os.path.join(config.DATA, "dash.html"))
-    ap.add_argument("--prereg", default=os.path.join(config.REPO, "PREREG.md"))
+    ap.add_argument("--prereg", default=PREREG_PATH)
     ap.add_argument("--no-t0", action="store_true", help="ignore PREREG's T0: the whole log is the sample")
     ap.add_argument("--data", default=None, help="the data/ holding heartbeat and HALT (default: the repo's; propose.sh --root passes its own)")
     ap.add_argument("--proposals", default=None, help="the proposals/ to read the tables from (default: the repo's)")
