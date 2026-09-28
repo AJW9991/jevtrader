@@ -243,6 +243,14 @@ class Status(unittest.TestCase):
         self.assertNotIn("spend $", line)
         self.assertIn("; spend $0.0001 of the $0.25 tripwire", self._today([1000]))   # a count in range is still priced
 
+    def test_counts_that_fit_a_float_but_sum_past_one_are_named_as_the_sum(self):
+        # two server replies of 1e308 (jev._parse int()s them): each fits a float, today's sum does not; the
+        # line said "a token count today is past a float's range" and sent Alex to look for a row not there
+        line = self._today([10 ** 308, 10 ** 308])
+        self.assertIn("; spend UNCOUNTED: a token count today, or today's sum of them, is past a float's range,"
+                      " so the next tick's guard trips (HALT)", line)
+        self.assertNotIn("spend $", line)
+
     def test_no_h1_h2_pair_or_confidence_number(self):
         text = self._render("2026-09-23T10:42")
         for banned in ("H1 statistic", "H2 statistic", "pair B-C", "mean_S", "Pearson", "Brier", "calibration", "c99", "noultail", "pbuy", "confidence"):

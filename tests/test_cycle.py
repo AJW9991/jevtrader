@@ -303,6 +303,25 @@ class CycleTest(unittest.TestCase):
         self.assertIn("past a float's range", reason)                   # the cause, not "cannot be read"
         self.assertNotIn("cannot be read", reason)
 
+    def test_counts_that_fit_a_float_but_sum_past_one_trip_the_guard_and_the_halt_says_so(self):
+        # jev._parse int()s a server reply of 1e308, which fits a float, so no single count today is past
+        # a float's range; their sum is. The guard trips (right), but the HALT named "a logged input_tokens
+        # count today" past a float's range, and Alex would look for a row that is not there.
+        os.makedirs(self.data)
+        with open(config.DECISIONS, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(_row(DAY + "T010000Z", 10 ** 308)) + "\n")
+            fh.write(json.dumps(_row(DAY + "T010100Z", 10 ** 308)) + "\n")
+        self.assertEqual(float(10 ** 308), 1e308)                            # each count fits a float
+        self.assertEqual(cycle.spend_today(NOW), cycle.SPEND_UNCOUNTED)
+        self.assertEqual(cycle.main(["--once"]), 0)
+        self.assertEqual(self.rows()[-1]["absence"], "halt")
+        self.assert_nothing_sent()
+        with open(config.HALT, encoding="utf-8") as fh:
+            reason = fh.read()
+        self.assertTrue(reason.startswith(cycle.HALT_SPEND + ": today's input_tokens (one logged count, or the sum of today's counts)"
+                                          " is past a float's range"), reason)
+        self.assertNotIn("a logged input_tokens count today is past", reason)
+
     def test_spend_widens_when_the_tail_starts_after_today(self):
         # rows stamped later than today (a clock that ran ahead, then stepped back) fill the tail, so
         # its first row is not today's: the read used to stop there and miss today's earlier rows

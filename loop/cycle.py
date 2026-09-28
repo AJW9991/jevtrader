@@ -51,7 +51,7 @@ disarms it. In the guards before the lock it costs the row, never the exit code.
 """
 import argparse, fcntl, hashlib, json, math, os, signal, sys, time, traceback
 
-SPEND_UNCOUNTED = sys.float_info.max   # spend_today: a token count past a float's range (over any limit; not 'unreadable')
+SPEND_UNCOUNTED = sys.float_info.max   # spend_today: a token count, or today's sum of them, past a float's range (over any limit; not 'unreadable')
 
 from loop import config, feed, jev, prompts, rules, state
 
@@ -192,7 +192,8 @@ def spend_today(now, path=None):
     tokens = sum(billed_tokens(r) for r in rows if str(r.get("tick_id", ""))[:8] == day)
     try:
         return tokens * config.USD_PER_MTOK / 1e6
-    except OverflowError:                   # a server-reported count past a float's range: over any limit,
+    except OverflowError:                   # a server-reported count past a float's range, or counts that each fit one
+                                            # and sum past it: over any limit,
         return SPEND_UNCOUNTED              # and a raise here would cost every later tick of the day its row
 
 
@@ -441,8 +442,9 @@ def tick(dry=False, now=None):
                   f" against ${config.DAILY_SPEND_HALT_USD} (config.DAILY_SPEND_HALT_USD) at {row['ts_rx']}; make it readable")
             halt = True
         elif usd == SPEND_UNCOUNTED:
-            _halt(f"{HALT_SPEND}: a logged input_tokens count today is past a float's range (the server reported it), over"
-                  f" ${config.DAILY_SPEND_HALT_USD} (config.DAILY_SPEND_HALT_USD) whatever the rest is, at {row['ts_rx']}")
+            _halt(f"{HALT_SPEND}: today's input_tokens (one logged count, or the sum of today's counts) is past a float's range"
+                  f" (the server reported them), over ${config.DAILY_SPEND_HALT_USD} (config.DAILY_SPEND_HALT_USD) whatever the rest is,"
+                  f" at {row['ts_rx']}")
             halt = True
         elif usd >= config.DAILY_SPEND_HALT_USD:
             _halt(f"{HALT_SPEND}: ${usd:.4f} of input tokens today >= "
