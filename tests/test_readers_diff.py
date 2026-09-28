@@ -175,6 +175,25 @@ class ReadersDiff(unittest.TestCase):
             self.assertEqual(mod.main([REPO, REPO, "--log", self.log]), 2)
         self.assertIn("cannot write a temporary copy", err.getvalue())
 
+    def test_no_temporary_directory_is_a_message(self):
+        # a volume so full that mkdtemp fails too (on the Mac TMPDIR, /tmp and /var/tmp are one volume):
+        # exit 2 and a message, not a traceback and exit 1. Once where the directory cannot be made, once
+        # where gettempdir finds nowhere to write at all
+        mod = self._module()
+        missing = os.path.join(self.tmp, "no-such-dir")
+        nowhere = FileNotFoundError(2, "No usable temporary directory found in ['/tmp', '/var/tmp']")
+        for patch, says in ((mock.patch.object(mod.tempfile, "tempdir", missing),
+                             f"readers-diff: cannot make a temporary directory in {missing}: "),
+                            (mock.patch.object(mod.tempfile, "gettempdir", side_effect=nowhere),
+                             "readers-diff: cannot make a temporary directory: No usable temporary directory found in ")):
+            err = io.StringIO()
+            with patch, contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(mod.main([REPO, REPO, "--log", self.log]), 2)
+            self.assertIn(says, err.getvalue())
+            self.assertTrue(err.getvalue().endswith(" (set TMPDIR elsewhere)\n"), err.getvalue())
+            self.assertEqual(out.getvalue(), "")
+        self.assertFalse(os.path.exists(missing))
+
     def test_a_non_ascii_failure_reads_under_a_c_locale(self):
         # the probes' output is decoded as UTF-8 whatever the locale: a tree whose code fails with a
         # non-ASCII message is exit 2 and the message, not a UnicodeDecodeError traceback

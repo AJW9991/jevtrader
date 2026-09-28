@@ -88,7 +88,12 @@ def main(argv=None):
     except OSError as e:
         sys.stderr.write(f"readers-diff: cannot read {args.log}: {e.strerror or e}\n")
         return 2
-    snap = tempfile.mkdtemp(prefix="readers-diff-")
+    try:
+        snap = tempfile.mkdtemp(prefix="readers-diff-")
+    except OSError as e:                                    # a full volume: not even gettempdir's probe file fits
+        where = f" in {os.path.dirname(e.filename)}" if e.filename else ""
+        sys.stderr.write(f"readers-diff: cannot make a temporary directory{where}: {e.strerror or e} (set TMPDIR elsewhere)\n")
+        return 2
     def _stop(signum, frame):                               # a SIGTERM or SIGHUP mid-probe: unwind, so the copy
         raise SystemExit(128 + signum)                      # of the decision log is removed below
     old = {s: signal.signal(s, _stop) for s in (signal.SIGTERM, signal.SIGHUP)}
