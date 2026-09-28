@@ -25,12 +25,13 @@ def _choice(choice, conf):
             "probabilities": {k: conf if k == choice else rest for k in ("buy", "sell", "hold")}}
 
 
-def _at(epoch, mid=100.0, up=0.6, down=0.4, a="hold", b="hold", c="hold", conf=0.9, mode="live", absence=None, ts=0.1):
+def _at(epoch, mid=100.0, up=0.6, down=0.4, a="hold", b="hold", c="hold", conf=0.9, conf_b=None, mode="live", absence=None, ts=0.1):
     """A live answered row at `epoch` (a minute boundary) with ts_rx `ts` seconds after it; a, b the
-    arms' action choices (confidence conf), c rule_c, up/down the direction nouls (None: missing)."""
+    arms' action choices (confidence conf, B's conf_b when given), c rule_c, up/down the direction
+    nouls (None: missing)."""
     x = _row(22)
     d = datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc)
-    ans = {"a_action": _choice(a, conf), "b_action": _choice(b, conf), "skip": {"type": "noul", "noul": 0.1},
+    ans = {"a_action": _choice(a, conf), "b_action": _choice(b, conf if conf_b is None else conf_b), "skip": {"type": "noul", "noul": 0.1},
            "up15": {"type": "noul"} if up is None else {"type": "noul", "noul": up}, "down15": {"type": "noul", "noul": down}}
     x.update(tick_id=d.strftime("%Y%m%dT%H%M00Z"), ts_rx=d.strftime("%Y-%m-%dT%H:%M:") + f"{ts:06.3f}Z", mode=mode,
              absence=absence, bid=round(mid - 0.01, 6), ask=round(mid + 0.01, 6), mid=mid, answers=ans, rule_c=c,
@@ -41,6 +42,30 @@ def _at(epoch, mid=100.0, up=0.6, down=0.4, a="hold", b="hold", c="hold", conf=0
 def _minutes(a, b, **kw):
     """Rows every minute on [a, b) (epochs); kw as _at, a callable value is called with the epoch."""
     return [_at(e, **{k: (v(e) if callable(v) else v) for k, v in kw.items()}) for e in range(int(a), int(b), 60)]
+
+
+def _edge_rows(blocks=16, b_trades=True, a_sell=None, b_conf=0.9, lean0=0.3, lean_step=-0.01, day=1):
+    """`blocks` whole blocks from the start of T0-day `day`: in block j the mid climbs 0.1 a minute from
+    100 + 0.5 j; B buys on the block's first minute and sells on its 15th (b_trades), C holds, A holds
+    or buys with B and sells on minute a_sell. lean = lean0 + lean_step x j, so with the falling
+    15-minute return (the base climbs 0.5 a block) a negative step makes r(lean, ret) > 0. Two dry
+    rows open the next block: the last unit's t + h, and nothing pending."""
+    rows, start = [], T0 + (day - 1) * 86400
+    for j in range(blocks):
+        lean = lean0 + lean_step * j
+        for m in range(15):
+            b = ("buy" if m == 0 else "sell" if m == 14 else "hold") if b_trades else "hold"
+            a = "hold" if a_sell is None else "buy" if m == 0 else "sell" if m == a_sell else "hold"
+            rows.append(_at(start + 900 * j + 60 * m, mid=round(100.0 + 0.5 * j + 0.1 * m, 6), up=round(0.5 + lean / 2, 6),
+                            down=round(0.5 - lean / 2, 6), a=a, b=b, conf_b=b_conf))
+    rows += [_at(start + 900 * blocks + 60 * m, mid=100.0 + 0.5 * blocks, mode="dry") for m in (0, 1)]
+    return rows
+
+
+def _exclusions(path, days=()):
+    with open(path, "w") as fh:
+        fh.write("day\tfill%\tjev-err%\treason\n" + "".join(f"d{d:02d}\t50.0%\t0.0%\tx\n" for d in days))
+    return path
 
 
 class Draw(unittest.TestCase):
@@ -292,6 +317,89 @@ class PreT0Cut(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("rows in scope 5\n", out)
         self.assertIn("rows before 2026-09-25T21:35Z", out)
+
+
+class Reading(unittest.TestCase):
+    """PREREG §8.1-§8.2's stop rules and §5/§9's reading, each on a line of its own, from the verdicts."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp()
+        cls.edge = os.path.join(cls.tmp, "edge.jsonl")              # B beats C on 16 blocks, lean tracks the return
+        _write(cls.edge, _edge_rows(), garbage=False)
+        cls.flat = os.path.join(cls.tmp, "flat.jsonl")              # every arm holds; lean runs against the return
+        _write(cls.flat, _edge_rows(b_trades=False, lean_step=0.01), garbage=False)
+        cls.none = _exclusions(os.path.join(cls.tmp, "none.tsv"))
+        cls.seven = _exclusions(os.path.join(cls.tmp, "seven.tsv"), range(2, 9))    # 21 kept: not void
+        cls.eight = _exclusions(os.path.join(cls.tmp, "eight.tsv"), range(2, 10))   # 20 kept: void
+
+    def _run(self, log, ex):
+        code, out, err = _main(["--sample", "--log", log, "--t0", T0S, "--now", "2026-10-21T10:00", "--resamples", "100", "--exclusions", ex])
+        self.assertEqual(code, 0, err)
+        return out.splitlines()
+
+    def _line(self, lines, start):
+        hit = [l for l in lines if l.startswith(start)]
+        self.assertEqual(len(hit), 1, (start, lines))
+        return hit[0]
+
+    def test_b_beats_c_and_lean_tracks_the_return_the_loop_works_as_described(self):
+        lines = self._run(self.edge, self.none)
+        i = lines.index(self._line(lines, "  B - A: "))
+        ba = lines[i + 1].split("mean S_k ")[1].split(" bps")[0]           # the point estimate printed under B - A
+        self.assertIn("  stop rule 1: B-C reject=True, A-C reject=False -> does not fire", lines)
+        self.assertIn(f"  stop rule 2: mean S_k(B-A) = {ba} -> does not fire", lines)
+        self.assertIn("  primaries: H1 (B - C) reject=True, H2 reject=True -> both primaries hold: 'the loop works as described' (§5),"
+                      " which does not say it earns anything at a retail fee (§4)", lines)
+        self.assertIn("  H1 (§9): H1 rejected for B and not for A: the rewrite earned its keep over the rule", lines)
+        self.assertTrue(self._line(lines, "  H2 (§9): ").startswith("  H2 (§9): H2 supported: "))
+        self.assertFalse(any("VOID" in l for l in lines))
+
+    def test_no_arm_beats_c_stop_rules_1_and_2_fire_whatever_h2_shows(self):
+        lines = self._run(self.flat, self.none)
+        self.assertIn("  stop rule 1: B-C reject=False, A-C reject=False -> fires", lines)
+        self.assertIn("  stop rule 2: mean S_k(B-A) = 0.0000 -> fires", lines)      # <= 0 fires, 0 included
+        self.assertIn("  primaries: H1 (B - C) reject=False, H2 reject=False -> neither primary holds", lines)
+        self.assertTrue(self._line(lines, "  H1 (§9): ").startswith("  H1 (§9): neither A nor B beats C on H1: "))
+        self.assertTrue(self._line(lines, "  H1 (§9): ").endswith("(stop rule 1)"))
+        self.assertTrue(self._line(lines, "  H2 (§9): ").startswith("  H2 (§9): H2 not supported: "))
+
+    def test_21_kept_days_read_the_stop_rules_20_are_void_and_say_so_on_every_verdict(self):
+        kept21 = self._run(self.edge, self.seven)
+        self.assertIn("  days kept 21 of 28; excluded [2, 3, 4, 5, 6, 7, 8] (data/exclusions.tsv, reproduced below)", kept21)
+        self.assertFalse(any("VOID" in l for l in kept21))
+        self.assertIn("  stop rule 1: B-C reject=True, A-C reject=False -> does not fire", kept21)
+        void = self._run(self.edge, self.eight)
+        self.assertIn("  stop rule 1: B-C reject=True, A-C reject=False -> does not fire", [l.replace("VOID: ", "") for l in void])
+        self.assertIn("  VOID: stop rule 1: B-C reject=True, A-C reject=False -> does not fire", void)
+        self.assertIn("  VOID (PREREG §8.3): fewer than 21 days kept: the block is void and the stop rules are not read", void)
+        for start in ("  VOID: stop rule 2: ", "  VOID: primaries: ", "  VOID: H1 (§9): ", "  VOID: H2 (§9): "):
+            self._line(void, start)
+        verdicts = [l for l in void if " -> " in l and not l.startswith("  VOID: ")]
+        self.assertEqual(len(verdicts), 4, verdicts)                        # B - C, A - C, B - A and H2
+        self.assertTrue(all(" -> VOID: " in l for l in verdicts), verdicts)
+
+    def test_every_combination_of_verdicts(self):
+        def h1s(b, a, ba):
+            return [{"pair": "B - C", "reject": b}, {"pair": "A - C", "reject": a}, {"pair": "B - A", "reject": None, "mean": ba}]
+        cases = {  # (B - C, A - C, H2) -> (stop rule 1, primaries, H1 reading, H2 reading)
+            (True, True, True): ("does not fire", "both primaries hold", "H1 rejected for B and for A", "H2 supported: "),
+            (True, False, False): ("does not fire", "H1 alone", "H1 rejected for B and not for A", "H2 not supported"),
+            (False, True, False): ("does not fire", "neither primary holds", "H1 rejected for A and not for B", "H2 not supported"),
+            (False, True, True): ("does not fire", "H2 alone", "H1 rejected for A and not for B", "H2 supported and H1 not"),
+            (False, False, True): ("fires", "H2 alone", "neither A nor B beats C", "H2 supported and H1 not"),
+            (False, False, False): ("fires", "neither primary holds", "neither A nor B beats C", "H2 not supported"),
+        }
+        for (b, a, h2), (sr1, prim, r1, r2) in cases.items():
+            lines = inference.reading(h1s(b, a, 0.5), {"reject": h2})
+            self.assertIn(f"  stop rule 1: B-C reject={b}, A-C reject={a} -> {sr1}", lines)
+            self.assertIn(f"H2 reject={h2} -> {prim}", self._line(lines, "  primaries: "))
+            self.assertTrue(self._line(lines, "  H1 (§9): ").startswith(f"  H1 (§9): {r1}"), (b, a, h2))
+            self.assertTrue(self._line(lines, "  H2 (§9): ").startswith(f"  H2 (§9): {r2}"), (b, a, h2))
+        for ba, sr2 in ((0.5, "does not fire"), (0.0, "fires"), (-0.25, "fires"), (-1e-9, "fires"), (None, "not read (no blocks)")):
+            self.assertIn(f"  stop rule 2: mean S_k(B-A) = {inference._f(ba)} -> {sr2}", inference.reading(h1s(True, True, ba), {"reject": True}))
+        self.assertIn("  PRE-T0: a smoke of the procedure; no stop rule and no reading applies before T0",
+                      inference.reading(h1s(False, False, 0.0), {"reject": False}, pre_t0=True))
 
 
 class Pending(unittest.TestCase):

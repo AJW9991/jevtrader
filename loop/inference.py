@@ -238,6 +238,61 @@ def _iso_second(epoch):
     return datetime.datetime.fromtimestamp(math.ceil(epoch), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def reading(h1s, h2s, void=False, pre_t0=False):
+    """The stop rules (PREREG §8.1-§8.2) and the reading (§5's last paragraph, §9) from the verdicts
+    already computed; nothing new is tested here. Stop rule 1 fires when NEITHER B - C nor A - C
+    rejects on H1, whatever H2 shows; stop rule 2 fires when the B - A point estimate is <= 0. A
+    void block (§8.3) prints every line prefixed VOID and reads no stop rule."""
+    p = {h["pair"]: h for h in h1s}
+    b, a = bool((p.get("B - C") or {}).get("reject")), bool((p.get("A - C") or {}).get("reject"))
+    h2r = bool(h2s.get("reject"))
+    ba = (p.get("B - A") or {}).get("mean")
+    v = "VOID: " if void else ""
+    lines = ["reading (PREREG §5, §8-§9): the stop rules and what the verdicts above mean, nothing new tested"]
+    if void:
+        lines.append(f"  VOID (PREREG §8.3): fewer than {MIN_KEPT_DAYS} days kept: the block is void and the stop rules are not read")
+    if pre_t0:
+        lines.append("  PRE-T0: a smoke of the procedure; no stop rule and no reading applies before T0")
+    lines.append(f"  {v}stop rule 1: B-C reject={b}, A-C reject={a} -> {'does not fire' if b or a else 'fires'}")
+    lines.append("    (§8.1: fires when neither B - C nor A - C rejects on H1, whatever H2 shows: the model arms are retired)")
+    lines.append(f"  {v}stop rule 2: mean S_k(B-A) = {_f(ba)} -> " + ("not read (no blocks)" if ba is None else "fires" if ba <= 0 else "does not fire"))
+    lines.append("    (§8.2: fires when the point estimate of mean S_k(B - A, argmax, 0 bps) is <= 0: the nightly is stopped, arm A kept)")
+    if b and h2r:
+        prim = "both primaries hold: 'the loop works as described' (§5), which does not say it earns anything at a retail fee (§4)"
+    elif b:
+        prim = "H1 alone: reported as exactly that (§5), not as 'the loop works as described'"
+    elif h2r:
+        prim = "H2 alone: reported as exactly that (§5), not as 'the loop works as described'"
+    else:
+        prim = "neither primary holds"
+    lines.append(f"  {v}primaries: H1 (B - C) reject={b}, H2 reject={h2r} -> {prim}")
+    if b and not a:
+        h1 = "H1 rejected for B and not for A: the rewrite earned its keep over the rule"
+    elif a and not b:
+        h1 = ("H1 rejected for A and not for B: the frozen prompt beat the rule and the rewriting hurt"
+              " (stop rule 2, above, reads the B - A point estimate)")
+    elif a and b:
+        h1 = ("H1 rejected for B and for A: both model arms beat the rule in direction; what the rewrite adds over the"
+              " frozen prompt is B - A, a point estimate read by stop rule 2 and never tested here")
+    else:
+        h1 = ("neither A nor B beats C on H1: the model arms are no better than four words and three lines of `if`,"
+              " in direction, gross of fees, on this product, over these 28 days (stop rule 1)")
+    lines.append(f"  {v}H1 (§9): {h1}")
+    if h2r and not b:
+        h2 = ("H2 supported and H1 not: the `trend` word, as Jev maps it into direction probabilities, predicts the next"
+              " 15-minute return, and the rewritten action did not beat the rule that already acts on that word; it does"
+              " not show that Jev has a signal the action question ignores (read the comparator, descriptive)")
+    elif h2r:
+        h2 = ("H2 supported: Jev's up15 / down15 carry information about the next 15-minute return, in the four words as"
+              " Jev maps them (mostly the `trend` word on the shakedown), not shown to go beyond the words (§5)")
+    else:
+        h2 = ("H2 not supported: Jev's up15 / down15 carry no linear information about the next 15-minute return on this"
+              " product over these 28 days; the noultail column is then noise around hold")
+    lines.append(f"  {v}H2 (§9): {h2}")
+    lines.append("  Secondaries (§6) are not tested here; a claim from the 32 gross secondaries would take alpha 0.025 / 32.")
+    return lines
+
+
 def render(mode, t0, now, log, log_sha, n_rows, excluded, excl_lines, kept_days, h1s, h2s, resamples, pending=None, cut=None):
     """pending: None when --accept-pending was not given, else the pending_units it overrode.
     cut: --pre-t0's end of scope, the earlier of --t0 and PREREG §11's T0."""
@@ -258,8 +313,11 @@ def render(mode, t0, now, log, log_sha, n_rows, excluded, excl_lines, kept_days,
     if mode == "pre-t0":
         lines.append("  PRE-T0: shakedown rows only (PREREG §2), never in the sample; every number here is a smoke of the procedure, not a result;"
                      f" rows before {report._iso_minute(cut if cut is not None else t0)} (the earlier of --t0 and PREREG §11's T0)")
-    if mode == "sample" and kept_days < MIN_KEPT_DAYS:
-        lines.append(f"  VOID (PREREG §8.3): fewer than {MIN_KEPT_DAYS} days kept; reported as void, a second block is a new pre-registration")
+    void = mode == "sample" and kept_days < MIN_KEPT_DAYS
+    v = "VOID: " if void else ""                            # every verdict of a void block says so where it is printed
+    if void:
+        lines.append(f"  VOID (PREREG §8.3): fewer than {MIN_KEPT_DAYS} days kept; reported as void, a second block is a new pre-registration;"
+                     " every verdict below is prefixed VOID and the stop rules are not read")
     lines.append("")
     lines.append("H1 -- mean S_k of the paired 15-minute pnl difference, column argmax, 0 bps (gross of fees, net of the spread)")
     if h1s:
@@ -268,7 +326,7 @@ def render(mode, t0, now, log, log_sha, n_rows, excluded, excl_lines, kept_days,
     for h in h1s:
         lines.append(f"  {h['pair']}: {h['title']}")
         verdict = ("REJECT H0: the arm beats the other" if h["reject"] else "not rejected") if h["reject"] is not None else "no test (point estimate)"
-        lines.append(f"    n blocks {h['n']}; mean S_k {_f(h['mean'])} bps; lower bound {_f(h['lower'])} bps -> {verdict}")
+        lines.append(f"    n blocks {h['n']}; mean S_k {_f(h['mean'])} bps; lower bound {_f(h['lower'])} bps -> {v}{verdict}")
         lines.append(f"    descriptive: disagreement blocks {h['dis_blocks']} ({100.0 * h['dis_blocks'] / h['n']:.1f}%), mean S_k on them {_f(h['mean_dis'])};"
                      f" every tick mean d_t {_f(h['mean_tick'])} over {h['ticks']}; trades {h['trades_x']} vs {h['trades_y']};"
                      f" forced holds {h['forced_x']} vs {h['forced_y']}")
@@ -277,14 +335,13 @@ def render(mode, t0, now, log, log_sha, n_rows, excluded, excl_lines, kept_days,
     h = h2s
     units = f"  n units {h['n']} (blocks with a live row {h['blocks_with_row']}; dropped {h['dropped'] or 'none'})"
     if h["degenerate"]:
-        lines.append(f"{units}: not supported: {h['degenerate']} (PREREG §5 degenerate case)")
+        lines.append(f"{units}: {v}not supported: {h['degenerate']} (PREREG §5 degenerate case)")
     else:
         verdict = "REJECT H0: r > 0" if h["reject"] else "not rejected"
-        lines.append(f"{units}; r {_f(h['r'])}; lower bound {_f(h['lower'])} -> {verdict}")
+        lines.append(f"{units}; r {_f(h['r'])}; lower bound {_f(h['lower'])} -> {v}{verdict}")
         lines.append(f"  descriptive: Spearman rho {_f(h['rho'])}")
     lines.append("")
-    lines.append("reading (PREREG §9): both primaries rejected -> 'the loop works as described'; either alone -> exactly that;"
-                 " neither -> stop rule 1. Stop rule 2 reads B - A's point estimate. Secondaries (§6) are not tested here.")
+    lines.extend(reading(h1s, h2s, void, mode == "pre-t0"))
     lines.append("")
     lines.append("data/exclusions.tsv, verbatim:" if excl_lines else "data/exclusions.tsv: absent or empty")
     lines.extend("  " + l for l in excl_lines)
