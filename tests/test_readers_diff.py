@@ -178,7 +178,7 @@ class ReadersDiff(unittest.TestCase):
     def test_a_non_ascii_failure_reads_under_a_c_locale(self):
         # the probes' output is decoded as UTF-8 whatever the locale: a tree whose code fails with a
         # non-ASCII message is exit 2 and the message, not a UnicodeDecodeError traceback
-        bad = os.path.join(self.tmp, "tr\u00e9e")
+        bad = os.path.join(self.tmp, "accented-failure")                   # an ASCII path: the runner may itself be in a C locale
         os.makedirs(os.path.join(bad, "loop"), exist_ok=True)
         with open(os.path.join(bad, "loop", "__init__.py"), "w", encoding="utf-8") as fh:
             fh.write("")
