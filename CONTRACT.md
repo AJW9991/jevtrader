@@ -77,7 +77,7 @@ jev-paper-loop/
   launchd/com.alexward.jevloop.loop.plist  launchd/com.alexward.jevloop.nightly.plist
   prompts/v1.json        frozen (written)   prompts/v2.json (promoted 2026-09-26)   prompts/CURRENT  → "v2" (one line)
   fixtures/              one recorded Coinbase snapshot set, committed
-  tests/                 unittest, stdlib; tests/fixture_prompts.py pins a v1-only prompts root (tests never read the live prompts/)
+  tests/                 unittest, stdlib; tests/fixture_prompts.py pins a v1-only prompts root (no test depends on what the live prompts/CURRENT names; one checks it builds, whatever it names)
   data/   logs/   proposals/   (gitignored except proposals/*.md and data/exclusions.tsv, versioned when it exists)
 ```
 
@@ -98,8 +98,12 @@ jev-paper-loop/
   "feed_age_s": float (ts_rx minus the newest candle's start+60, i.e. how stale),
   "http": {"calls": int, "ms": int} }
 ```
-Raises `FeedError(str)` on any HTTP/parse failure, an empty or crossed book, or a
-level that is not a finite positive price and size. No retries inside feed.
+Raises `FeedError(str)` on any HTTP/parse failure, fewer than 300 closed candles, a
+window that is not contiguous, a window candle whose open/high/low/close is not finite
+and positive (or whose volume is not finite and non-negative), `feed_age_s` over
+`MAX_FEED_AGE_S` (120 s), an empty or crossed book, or a level that is not a finite
+positive price and size. A failed trades call is `trades_5m = -1`, not an error. No
+retries inside feed.
 (2026-09-24, decided by Alex: `bids`/`asks` added and `limit=1` → `limit=100`, so
 `state.features` can walk the book; the row keeps level 1 only.)
 
@@ -167,7 +171,10 @@ raises JevError(kind, detail)   kind ∈ {"unsigned","no-key","ledger","http-4xx
   (`utc  source  state_chars  q_chars  sha12  paths`, source=`jev-paper-loop`)
   BEFORE the request; if the append fails, do not send, raise `JevError("ledger")`.
 - Retry: at most ONE, only on 429 (honour `Retry-After`, cap 5 s) or 5xx/timeout,
-  after 1.0 s. Never on 4xx other than 429. 401/403 → raise; the caller writes HALT.
+  after 1.0 s. Never on 4xx other than 429. 401/403 → raise; the caller writes HALT. A 3xx is
+  never followed (the bearer key would go with it) and is raised as `http-4xx` with its
+  status, no retry. If the retry's ledger append fails, attempt 1's kind is raised, not
+  `ledger` (attempt 1 was billed). (2026-09-28)
 - Response: `answers[qid]` for choice is `{"choice","probabilities","confidence"}`;
   for noul is `{"noul"}`. If `resp["model"] != config.MODEL`, still return but the
   caller logs it as drift.
@@ -207,7 +214,11 @@ still writes a row with `absence` set and everything else null it can't fill.
 ```
 mid_h from the priced row whose `ts_rx` is NEAREST t+h within ±30 s (half a cadence;
 ties → the earlier row); `ret_h_bps = 1e4*ln(mid_h/mid_t)`; label with a ±5 bps dead
-band. Anything else is `gap`, never the wrong row. (Was "first row in [t+h, t+h+90 s]"
+band. Anything else is `gap`, never the wrong row. Ties are judged in whole milliseconds
+and the picked row is strictly after t. When two rows share a `tick_id` (a double fire, a
+dry row beside a live one) the live decision speaks for the tick, then any other priced
+row, then an unpriced one; equal ranks keep the first in file order (`outcomes.rank`,
+2026-09-28). (Was "first row in [t+h, t+h+90 s]"
 until 2026-09-24: ts_rx jitter made that pick the t+16 row whenever the t+15 row
 landed a millisecond earlier in its minute than t did.)
 
@@ -324,9 +335,11 @@ Print, plain text, in this order:
    the answer matched it; nearly every answer is hold, correct only when
    |ret_h| < 5 bps).
 `--health` prints §1–§3 only and neither computes nor prints §4–§7: PREREG
-§8.4's day-14 look is `python3 -m loop.report --health --t0 <T0>`, because a
-plain `make report` puts H1's and H2's statistics on lines of their own
-(review, 2026-09-24).
+§8.4's day-14 look is `python3 -m loop.report --health --t0 <T0>` (`make health` is
+`--health --sample`, T0 read from PREREG §11). Since 2026-09-28 a run without
+`--health` on rows of the sealed sample prints §1–§3 and a WITHHELD line until
+T0 + 28 d (2026-10-23 21:40Z); the T0 for that is read from the repo's own PREREG.md
+whatever `--prereg` says; `--unblind` prints §4–§7 and says so on stderr.
 No p-values in `make report`. Inference lives in PREREG.md and is run once.
 
 ## 5. Nightly
@@ -344,7 +357,10 @@ there with one log line and no Claude call); then the token read from
 `~/.secondbrain-secrets/oauth_token` into `CLAUDE_CODE_OAUTH_TOKEN` for the ONE call and
 unset after, never on argv, never logged; the call itself, with the working directory an
 empty temporary directory so the CLI auto-loads no CLAUDE.md from the repo (the slow
-model sees PROMPT.md and the digest, and nothing the repo's working rules say; 2026-09-28):
+model sees PROMPT.md and the digest, nothing the repo's working rules say, and
+`~/.claude/CLAUDE.md` user memory as it always has, whose sha256 is logged; the night
+fails if a CLAUDE.md, CLAUDE.local.md or .claude sits in any ancestor of the temp
+directory; 2026-09-28):
 `caffeinate -i python3 nightly/capped.py 2700 -- claude -p "$(cat nightly/PROMPT.md)
 
 $(cat data/digest-<date>.md)" --tools "" --restricted --strict-mcp-config --settings
@@ -352,8 +368,10 @@ nightly/settings.json --output-format text` (`capped.py`: 45 min of AWAKE time, 
 exit 124 when it fires; the CLI's version and the temp cwd are logged); extract exactly one
 fenced ```json block; validate it is `{"candidates": [ {"instructions": str, "criteria":
 {"buy","sell","hold"}} , ... ]}` with 1–3 entries and no digit; write `proposals/<date>.json`
-(refused when one exists for that date: a missed slot that fires after 00:00Z plus the
-regular slot must not spend twice or overwrite a json a table vouches for). Then
+(refused, before the digest and any call, when `proposals/<date>.json` or `.md` exists: a
+missed slot that fires after 00:00Z plus the regular slot must not spend twice or overwrite
+a json a table vouches for; `--dry`, the tests' form, needs `--root DIR` outside the repo,
+else a usage error, exit 2). Then
 `policy_table.py proposals/<date>.json` asks Jev each candidate AND the CURRENT action
 question on the 81 synthetic state strings (3⁴ combinations of the alphabet; ~$0.005) and
 writes `proposals/<date>.md`: per candidate, the 81-row table of choice/confidence, the diff
@@ -370,9 +388,12 @@ failures in a row, or three failures of any kind in a row end its night; a 401/4
 
 `bin/promote proposals/<date>.json <k>`: copies candidate k to `prompts/v<N+1>.json`
 (with the other three questions carried from v1 unchanged), writes the new
-version name to `prompts/CURRENT`, prints the diff, and refuses if `git status`
-is dirty or the `prereg-v1` tag does not exist (PREREG §10: sealed before the
-first row with `prompt_b != "v1"`). A person runs it. Nothing else writes `prompts/`.
+version name to `prompts/CURRENT`, prints the diff, and refuses without a tty, if `git status`
+is dirty, if the `prereg-v1` tag does not exist (PREREG §10: sealed before the
+first row with `prompt_b != "v1"`), or if the json's sha256 differs from the
+`proposal sha256` line of the table beside it (no table, a table without the line, or
+one marked INCOMPLETE is a warning). CURRENT is written as CURRENT.tmp and renamed
+over. A person runs it. Nothing else writes `prompts/`.
 
 ## 6. Tests (`tests/`, `python3 -m unittest`)
 
