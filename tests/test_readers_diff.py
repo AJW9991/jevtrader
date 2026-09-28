@@ -1,5 +1,6 @@
 """bin/readers-diff: one log read by two code trees, reported as counts and tick_ids only."""
-import json, os, shutil, subprocess, sys, tempfile, unittest
+import contextlib, io, json, os, shutil, signal, subprocess, sys, tempfile, unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_report import _row
@@ -102,8 +103,9 @@ class ReadersDiff(unittest.TestCase):
             good = [l for l in fh.read().splitlines() if l.startswith("{") and l.endswith("}")][:3]
         nan_row = json.loads(good[0])
         nan_row["mid"] = float("nan")
+        inf_row = dict(json.loads(good[1]), mid=float("inf"))                # shares good[1]'s tick: not a second PRICED row
         with open(log, "w", encoding="utf-8") as fh:
-            fh.write("\n".join(good) + "\n" + '{"v":1}{"v":1}' + "\n" + json.dumps(nan_row) + "\n")
+            fh.write("\n".join(good) + "\n" + '{"v":1}{"v":1}' + "\n" + json.dumps(nan_row) + "\n" + json.dumps(inf_row) + "\n")
         code, out, err = _run(REPO, REPO, "--log", log)
         self.assertEqual(code, 0, err)
         self.assertIn("lines skipped: old 1 / new 1;", out)
@@ -117,6 +119,75 @@ class ReadersDiff(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn(f"({os.path.getsize(self.log)} bytes, one copy read by both)", p.stdout)
         self.assertEqual(os.listdir(tmpdir), [])                         # the copy is gone
+
+    def _module(self):
+        import importlib.machinery, importlib.util
+        spec = importlib.util.spec_from_loader("readers_diff", importlib.machinery.SourceFileLoader("readers_diff", TOOL))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_both_probes_are_given_the_same_copy_never_the_live_log(self):
+        # the point of reading once: a probe given the live log path would see rows the other did not
+        mod, seen = self._module(), []
+        real = mod.read_with
+
+        def spy(tree, log):
+            seen.append((log, os.path.exists(log)))
+            return real(tree, log)
+        tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmpdir, ignore_errors=True)
+        with mock.patch.object(mod, "read_with", spy), mock.patch.object(mod.tempfile, "tempdir", tmpdir), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(mod.main([REPO, REPO, "--log", self.log]), 0)
+        self.assertEqual(len(seen), 2)
+        self.assertEqual(seen[0][0], seen[1][0])                         # the same copy for both trees
+        self.assertNotEqual(os.path.realpath(seen[0][0]), os.path.realpath(self.log))
+        self.assertTrue(seen[0][1])
+        self.assertEqual(os.listdir(tmpdir), [])                          # and it is gone afterwards
+
+    def test_a_sigterm_mid_probe_still_removes_the_copy(self):
+        mod = self._module()
+        tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmpdir, ignore_errors=True)
+        before = signal.getsignal(signal.SIGTERM)
+
+        def killed(tree, log):
+            os.kill(os.getpid(), signal.SIGTERM)                          # delivered at once to this process
+            return {}, None
+        with mock.patch.object(mod, "read_with", killed), mock.patch.object(mod.tempfile, "tempdir", tmpdir):
+            with self.assertRaises(SystemExit) as cm:
+                mod.main([REPO, REPO, "--log", self.log])
+        self.assertEqual(cm.exception.code, 128 + signal.SIGTERM)
+        self.assertEqual(os.listdir(tmpdir), [])
+        self.assertEqual(signal.getsignal(signal.SIGTERM), before)       # the handler is put back
+
+    def test_a_copy_that_cannot_be_written_is_a_message(self):
+        mod = self._module()
+        real_open = open
+
+        def full(path, mode="r", *a, **k):
+            if "wb" == mode and str(path).endswith("decisions.jsonl") and "readers-diff-" in str(path):
+                raise OSError(28, "No space left on device")
+            return real_open(path, mode, *a, **k)
+        err = io.StringIO()
+        with mock.patch("builtins.open", side_effect=full), contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(mod.main([REPO, REPO, "--log", self.log]), 2)
+        self.assertIn("cannot write a temporary copy", err.getvalue())
+
+    def test_a_non_ascii_failure_reads_under_a_c_locale(self):
+        # the probes' output is decoded as UTF-8 whatever the locale: a tree whose code fails with a
+        # non-ASCII message is exit 2 and the message, not a UnicodeDecodeError traceback
+        bad = os.path.join(self.tmp, "tr\u00e9e")
+        os.makedirs(os.path.join(bad, "loop"), exist_ok=True)
+        with open(os.path.join(bad, "loop", "__init__.py"), "w", encoding="utf-8") as fh:
+            fh.write("")
+        with open(os.path.join(bad, "loop", "outcomes.py"), "w", encoding="utf-8") as fh:
+            fh.write("raise RuntimeError('d\u00e9j\u00e0 cass\u00e9')\n")
+        env = dict(os.environ, LC_ALL="C", LANG="C", PYTHONUTF8="0", PYTHONCOERCECLOCALE="0")
+        p = subprocess.run([sys.executable, TOOL, bad, REPO, "--log", self.log], capture_output=True, cwd=REPO, env=env)
+        self.assertEqual(p.returncode, 2, p.stderr)
+        self.assertNotIn(b"UnicodeDecodeError", p.stderr)
 
     def test_it_writes_no_bytecode_into_either_tree(self):
         pyc = os.path.join(self.old, "loop", "__pycache__")

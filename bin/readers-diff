@@ -16,7 +16,7 @@ tree's, so a tree without loop/__init__.py can never silently be the checkout). 
 exists for HANDOFF.md's counts before a merge: if every count is 0, the merge changes no
 existing reading of the log. Exit 0 when both trees read the log, 2 when one cannot.
 """
-import argparse, json, os, shutil, subprocess, sys, tempfile
+import argparse, json, os, shutil, signal, subprocess, sys, tempfile
 
 PROBE = r'''
 import json, math, os, sys
@@ -89,10 +89,17 @@ def main(argv=None):
         sys.stderr.write(f"readers-diff: cannot read {args.log}: {e.strerror or e}\n")
         return 2
     snap = tempfile.mkdtemp(prefix="readers-diff-")
+    def _stop(signum, frame):                               # a SIGTERM or SIGHUP mid-probe: unwind, so the copy
+        raise SystemExit(128 + signum)                      # of the decision log is removed below
+    old = {s: signal.signal(s, _stop) for s in (signal.SIGTERM, signal.SIGHUP)}
     try:
         copy = os.path.join(snap, "decisions.jsonl")
-        with open(copy, "wb") as fh:
-            fh.write(data)
+        try:
+            with open(copy, "wb") as fh:
+                fh.write(data)
+        except OSError as e:
+            sys.stderr.write(f"readers-diff: cannot write a temporary copy in {snap}: {e.strerror or e} (set TMPDIR elsewhere)\n")
+            return 2
         read = {}
         for name, tree in (("old", args.old), ("new", args.new)):
             read[name], why = read_with(tree, copy)
@@ -101,6 +108,8 @@ def main(argv=None):
                 return 2
     finally:
         shutil.rmtree(snap, ignore_errors=True)
+        for s, h in old.items():
+            signal.signal(s, h)
     sys.stdout.write(f"log {args.log} ({len(data)} bytes, one copy read by both): read by old {os.path.abspath(args.old)}"
                      f" and new {os.path.abspath(args.new)}\n")
     sys.stdout.write("\n".join(lines(read["old"], read["new"])) + "\n")
