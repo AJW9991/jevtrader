@@ -19,7 +19,10 @@ from . import config, cycle, dash, outcomes, report
 STALE_S = 3 * config.CADENCE_S      # a heartbeat older than three ticks is a stopped loop, not a slow one
 LOG_TAIL = 3                        # lines of logs/propose.log shown
 DAYS_SHOWN = 3                      # rows of the per-day table shown: yesterday closes, today is open
-NIGHTLY_DONE_UTC_H = 10             # 03:30 America/Chicago is 08:30Z in summer and 09:30Z in winter; by 10Z it has run
+# The nightly starts 03:30 America/Chicago and its claude call is capped at 45 min awake: under CDT
+# it starts 08:30Z and is done by 09:15Z, under CST (from 2026-11-01) it starts 09:30Z and may run to
+# 10:15Z. At 10Z a slow winter night is still running, so MISSING waits for 11Z.
+NIGHTLY_DONE_UTC_H = 11
 
 
 def _age_line(hb, now):

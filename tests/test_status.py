@@ -97,8 +97,15 @@ class Status(unittest.TestCase):
         self.assertIn("  line 3\n  line 4\n  line 5\n", text)
         text = self._render("2026-09-24T12:00")
         self.assertIn("MISSING: no proposal for 2026-09-23 yet", text)
-        self.assertNotIn("MISSING", self._render("2026-09-24T05:00"))    # before 10Z the slot has not come round yet
+        self.assertNotIn("MISSING", self._render("2026-09-24T05:00"))    # before 11Z the slot has not come round yet
         self.assertIn("MISSING: no proposal for 2026-09-23 yet", self._render("2026-09-25T05:00"))
+
+    def test_missing_waits_until_11z_for_a_slow_winter_night(self):
+        # under CST (from 2026-11-01) 03:30 America/Chicago is 09:30Z and the call is capped at 45 min
+        # awake, so a night can still be running at 10:15Z: MISSING at 10Z would flag a night in progress
+        self.assertEqual(status.NIGHTLY_DONE_UTC_H, 11)
+        self.assertNotIn("MISSING", self._render("2026-09-24T10:59"))
+        self.assertIn("MISSING: no proposal for 2026-09-23 yet", self._render("2026-09-24T11:00"))
 
     def test_empty_log_and_main(self):
         text = status.render([], {}, None, _now("2026-09-28T01:00"), None, self.halt, os.path.join(self.tmp, "none.jsonl"),
