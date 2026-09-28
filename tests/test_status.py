@@ -143,6 +143,18 @@ class Status(unittest.TestCase):
         self.assertIn("prompt_b CURRENT: v9", out)
         self.assertIn("sample: day d01 of 28", out)
 
+    def test_an_unreadable_log_is_named_not_a_traceback(self):
+        # a 0200 log (write_row still appends to it) or a directory: the spend guard trips on it, and
+        # the morning screen says why instead of dying in outcomes.load
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), mock.patch.object(config, "HALT", self.halt), \
+                mock.patch.object(dash, "heartbeat", return_value=None), mock.patch.object(dash, "current_version", return_value="v9"):
+            code = status.main(["--log", self.tmp, "--t0", "2026-09-23T10:00", "--now", "2026-09-23T10:42"])   # a directory
+        self.assertEqual(code, 0)
+        out = buf.getvalue()
+        self.assertTrue(out.startswith(f"LOG UNREADABLE: {self.tmp}: "), out[:200])
+        self.assertIn("spend UNREADABLE: the log cannot be read, so the guard trips (HALT) rather than count it", out)
+
     def test_no_h1_h2_pair_or_confidence_number(self):
         text = self._render("2026-09-23T10:42")
         for banned in ("H1 statistic", "H2 statistic", "pair B-C", "mean_S", "Pearson", "Brier", "calibration", "c99", "noultail", "pbuy", "confidence"):

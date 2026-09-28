@@ -263,6 +263,31 @@ class CycleTest(unittest.TestCase):
         self.assertEqual(self.rows()[-1]["absence"], "halt")
         self.assert_nothing_sent()
 
+    def test_a_log_that_exists_but_cannot_be_read_trips_the_guard(self):
+        # write_row keeps appending to a 0200 (or ACL) log it cannot read; spend_today used to read
+        # that as $0 and the tick sent past the tripwire. It now fails closed: HALT, a halt row, no send.
+        os.makedirs(self.data)
+        with open(config.DECISIONS, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(_row(DAY + "T010000Z", OVER)) + "\n")
+            fh.write(json.dumps(_row(DAY + "T010200Z", OVER)) + "\n")
+        real_open = open
+
+        def no_read(path, mode="r", *a, **k):
+            if os.path.abspath(str(path)) == os.path.abspath(config.DECISIONS) and "r" in mode and "+" not in mode:
+                raise PermissionError(13, "Permission denied", path)
+            return real_open(path, mode, *a, **k)
+        with mock.patch("builtins.open", side_effect=no_read):
+            self.assertEqual(cycle.spend_today(NOW), float("inf"))
+            self.assertEqual(cycle.main(["--once"]), 0)
+        with open(config.HALT, encoding="utf-8") as fh:
+            reason = fh.read()
+        self.assertIn(cycle.HALT_SPEND, reason)
+        self.assertIn("cannot be read", reason)
+        self.assertEqual(self.rows()[-1]["absence"], "halt")
+        self.assert_nothing_sent()
+        self.assertEqual(cycle.spend_today(NOW, os.path.join(self.tmp, "missing")), 0.0)     # missing is still $0
+        self.assertEqual(cycle.spend_today(NOW, self.data), float("inf"))                   # a directory: cannot count
+
     def test_spend_just_under_limit_proceeds(self):
         os.makedirs(self.data)
         with open(config.DECISIONS, "w", encoding="utf-8") as fh:

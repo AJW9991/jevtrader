@@ -49,7 +49,7 @@ row then says so. Past the lock the
 row is written wherever the alarm lands (inside _run's handlers too); the write
 disarms it. In the guards before the lock it costs the row, never the exit code.
 """
-import argparse, fcntl, hashlib, json, os, signal, sys, time, traceback
+import argparse, fcntl, hashlib, json, math, os, signal, sys, time, traceback
 
 from loop import config, feed, jev, prompts, rules, state
 
@@ -172,7 +172,9 @@ def spend_today(now, path=None):
     """USD of input tokens over today's rows (UTC date of `now`, matched on tick_id), each
     row charged billed_tokens(). Reads the tail (TAIL_BYTES) and widens to the whole file
     only when the tail's first row is already today's, i.e. today did not fit. A missing
-    log is $0."""
+    log is $0. A log that exists but cannot be read (a 0200 mode or an ACL, which write_row
+    still appends to; a directory; an I/O error) is math.inf: the guard cannot count, so it
+    trips and nothing is sent, as the ledger fails closed."""
     path = path or config.DECISIONS
     day = time.strftime("%Y%m%d", time.gmtime(now))
     try:
@@ -180,8 +182,10 @@ def spend_today(now, path=None):
         rows = _rows(buf)
         if cut and rows and str(rows[0].get("tick_id", ""))[:8] == day:
             rows = _rows(_tail(path, 0)[0])
+    except FileNotFoundError:
+        return 0.0                  # no log yet: nothing spent
     except OSError:
-        return 0.0
+        return math.inf             # it exists and cannot be read: the spend cannot be counted
     tokens = sum(billed_tokens(r) for r in rows if str(r.get("tick_id", ""))[:8] == day)
     return tokens * config.USD_PER_MTOK / 1e6
 
@@ -426,7 +430,11 @@ def tick(dry=False, now=None):
     halt = os.path.exists(config.HALT)      # HALT stops SENDS; the observation below still runs
     if not halt:
         usd = spend_today(t0)
-        if usd >= config.DAILY_SPEND_HALT_USD:
+        if usd == math.inf:
+            _halt(f"{HALT_SPEND}: {config.DECISIONS} exists but cannot be read, so today's spend cannot be counted"
+                  f" against ${config.DAILY_SPEND_HALT_USD} (config.DAILY_SPEND_HALT_USD) at {row['ts_rx']}; make it readable")
+            halt = True
+        elif usd >= config.DAILY_SPEND_HALT_USD:
             _halt(f"{HALT_SPEND}: ${usd:.4f} of input tokens today >= "
                   f"${config.DAILY_SPEND_HALT_USD} (config.DAILY_SPEND_HALT_USD) at {row['ts_rx']}")
             halt = True

@@ -70,7 +70,8 @@ def _today_line(rows, now, log):
     elapsed = max(1, int((now - now.replace(hour=0, minute=0, second=0, microsecond=0)).total_seconds() // config.CADENCE_S))
     return (f"today {now.strftime('%Y-%m-%d')}Z: {len(today)} rows in {elapsed} min ({100.0 * len(today) / elapsed:.0f}%), live answered {live},"
             f" absence " + (", ".join(f"{k} {v}" for k, v in sorted(absent.items())) or "none")
-            + f"; spend ${usd:.4f} of the ${config.DAILY_SPEND_HALT_USD:g} tripwire (as the guard counts it)")
+            + (f"; spend UNREADABLE: the log cannot be read, so the guard trips (HALT) rather than count it" if usd == float("inf")
+               else f"; spend ${usd:.4f} of the ${config.DAILY_SPEND_HALT_USD:g} tripwire (as the guard counts it)"))
 
 
 def _sample_line(t0, now):
@@ -159,9 +160,13 @@ def main(argv=None, now=None):
         except ValueError:
             ap.error(f"--now wants YYYY-MM-DDTHH:MM (UTC), got {args.now!r}")
     now = now or datetime.datetime.now(datetime.timezone.utc)
-    rows = outcomes.load(args.log, []) if os.path.exists(args.log) else []
+    unreadable = None
+    try:
+        rows = outcomes.load(args.log, []) if os.path.exists(args.log) else []
+    except OSError as e:                                    # a 0200 log (write_row still appends), a directory, EIO
+        rows, unreadable = [], f"LOG UNREADABLE: {args.log}: {e.strerror or e}; the spend guard trips (HALT) until it can be read\n"
     outs = outcomes.join(rows)
-    text = render(rows, outs, t0, now, dash.heartbeat(), config.HALT, args.log, config.PROPOSALS,
+    text = (unreadable or "") + render(rows, outs, t0, now, dash.heartbeat(), config.HALT, args.log, config.PROPOSALS,
                   os.path.join(config.REPO, "logs", "propose.log"), dash.current_version())
     sys.stdout.write(text)
     return 0
