@@ -61,9 +61,11 @@ done
 # existing part resolved, the rest normalized) cannot hide the tree, and it matches each prefix and
 # its realpath on a '/' boundary, then each existing prefix by (st_dev, st_ino) against the path's
 # existing ancestors, so a second name realpath keeps (a bind mount; on the Mac a case-only
-# difference on APFS, or the /System/Volumes/Data firmlink) cannot either. Its python runs isolated (-I: no working directory on the path, so
-# a cwd inside another tree is never imported) and writes no bytecode (-B), and must answer "ok" or
-# "forbidden ...": anything else, an empty answer included, is a guard that did not run (exit 3).
+# difference on APFS, or the /System/Volumes/Data firmlink) cannot either. Every write then goes
+# under the --root as resolved, the path the guard checked, never as typed. Its python runs
+# isolated (-I: no working directory on the path, so a cwd inside another tree is never imported)
+# and writes no bytecode (-B), and must answer "ok" or "forbidden ...": anything else, an empty
+# answer included, is a guard that did not run (exit 3).
 [ -x "$PY" ] || { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) propose FAIL no python at $PY (the path guard needs it; nothing written)" >&2; exit 0; }
 guard_path() {
   hit="$("$PY" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from loop import cycle; p = cycle.forbidden(sys.argv[2]); print("forbidden " + p if p else "ok")' \
@@ -86,6 +88,9 @@ REPO_REAL="$(realpath_py "$REPO")"
 guard_path "$REPO" repo
 guard_path "$ROOT_REAL" root
 guard_path "$(pwd -P)" cwd
+# Every write goes where the guard looked. As typed, a '..' after a directory that does not exist
+# (popped by realpath, so not what the guard saw) would be created by `mkdir -p` on the way there.
+ROOT="$ROOT_REAL"
 # --dry writes the fixture proposal as proposals/<date>.json. In the repo that file would then be
 # the day's proposal: a real night for the same date is refused (one run per date, below), no
 # Claude call is made, and bin/promote would accept the fixture with a warning. So --dry runs

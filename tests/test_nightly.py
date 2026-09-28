@@ -1599,6 +1599,20 @@ class Capped(unittest.TestCase):
         self.assertIn("forbidden prefix (root)", r.stderr)
         self.assertEqual(os.listdir(forbidden), ["x"])                                # nothing written under the tree
 
+    def test_every_write_goes_under_the_root_the_guard_checked(self):
+        # the guard checked the --root's realpath and every write went to the --root as typed: realpath
+        # pops a '..' after a directory that does not exist, so the guard saw a path beside the tree,
+        # while `mkdir -p` on the typed path created that directory inside the tree on its way there
+        env = _sh_env(self)
+        forbidden = os.path.join(env["HOME"], "Projects", "crypto-trading-system")   # the forbidden tree, under the run's HOME
+        os.makedirs(os.path.join(forbidden, "x"))
+        r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry", "--date", "2026-09-22",
+                            "--root", os.path.join(forbidden, "newdir", "..", "..", "jevroot")],
+                           capture_output=True, text=True, timeout=120, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(os.listdir(forbidden), ["x"])                                # no newdir inside the tree
+        self.assertTrue(os.path.exists(os.path.join(env["HOME"], "Projects", "jevroot", "proposals", "2026-09-22.json")), r.stderr)
+
     def test_the_guard_never_imports_the_working_directory_and_refuses_when_it_cannot_answer(self):
         # 2026-09-28 (second pre-merge pass): the guard's python had the cwd on sys.path, after the repo
         # (so loop/ always came from the repo) but before the standard library: started from inside
