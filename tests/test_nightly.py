@@ -886,6 +886,13 @@ class Capped(unittest.TestCase):
         self.assertEqual(self._run("0", "--", "true").returncode, 2)
         self.assertEqual(self._run("5", "--", "/nonexistent-cmd").returncode, 127)
 
+    def test_a_child_killed_by_a_signal_exits_128_plus_the_signal(self):
+        # subprocess reports -15 for SIGTERM; sys.exit(-15) would exit 241, which reads as the
+        # command's own code. A shell says 143, and so does capped.
+        r = subprocess.run([sys.executable, "-m", "nightly.capped", "5", "--", "sh", "-c", "kill -TERM $$"],
+                           cwd=REPO, capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 128 + 15)
+
     def test_propose_sh_rebuilds_the_dash_after_the_table_non_fatally(self):
         with open(os.path.join(REPO, "nightly", "propose.sh")) as fh:
             src = fh.read()
