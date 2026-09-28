@@ -155,6 +155,44 @@ class Dash(unittest.TestCase):
         self.assertIn("<div class='cell b0' title='2026-09-25 03:00Z: 1/60 priced ticks'></div>", strip)
         self.assertIn("<div class='cell future' title='2026-09-25 04:00Z: not yet'></div>", strip)
 
+    def test_a_row_stamped_after_the_clock_never_puts_a_count_above_its_denominator(self):
+        # 2026-09-28 (round 4b): today's label and its hour in progress count out of the minutes begun, and
+        # rows stamped after the clock (a clock stepped forward) were counted in them: sixty rows 09:00..09:59
+        # read '60/45 priced ticks so far' and '60/585' at 09:44:30, 720 rows 00:00..11:59 read '720/6' at
+        # 00:05, and two absence rows at 15:00 drew as 'not yet'. A day or an hour holding such a row reads
+        # as logged, out of 1440 and 60, like a day or an hour over.
+        now = datetime.datetime(2026, 9, 23, 9, 44, 30, tzinfo=datetime.timezone.utc)
+        rows = _at([f"20260923T09{m:02d}00Z" for m in range(60)])
+        strip = _strip(dash.render(rows, outcomes.join(rows), now=now))
+        self.assertIn("<div class='lab'>2026-09-23 &middot; <b>60</b>/1440</div>", strip)
+        self.assertIn("<div class='cell b4' title='2026-09-23 09:00Z: 60/60 priced ticks'></div>", strip)
+        self.assertIn("<div class='cell' title='2026-09-23 08:00Z: 0/60 priced ticks'></div>", strip)    # an hour over, as before
+        self.assertIn("<div class='cell future' title='2026-09-23 10:00Z: not yet'></div>", strip)       # no row: still not yet
+        _within(self, strip)
+        early = datetime.datetime(2026, 9, 23, 0, 5, tzinfo=datetime.timezone.utc)
+        rows = _at([f"20260923T{h:02d}{m:02d}00Z" for h in range(12) for m in range(60)])
+        strip = _strip(dash.render(rows, outcomes.join(rows), now=early))
+        self.assertIn("<div class='lab'>2026-09-23 &middot; <b>720</b>/1440</div>", strip)
+        self.assertIn("<div class='cell b4' title='2026-09-23 00:00Z: 60/60 priced ticks'></div>", strip)
+        self.assertIn("<div class='cell future' title='2026-09-23 12:00Z: not yet'></div>", strip)
+        _within(self, strip)
+        # one row ahead is enough, though the hour's count is under its minutes begun: as logged, not '31/45 so far'
+        rows = _at([f"20260923T09{m:02d}00Z" for m in range(30)] + ["20260923T095000Z"])
+        strip = _strip(dash.render(rows, outcomes.join(rows), now=now))
+        self.assertIn("<div class='cell b1' title='2026-09-23 09:00Z: 31/60 priced ticks'></div>", strip)
+        self.assertIn("<div class='lab'>2026-09-23 &middot; <b>31</b>/1440</div>", strip)
+        # absence rows alone, after the clock: a gap that names them, never 'not yet'
+        rows = _at([f"20260923T08{m:02d}00Z" for m in range(60)]) + _at(["20260923T150000Z", "20260923T150100Z"], mid=None, absence="feed")
+        strip = _strip(dash.render(rows, outcomes.join(rows), now=now))
+        self.assertIn("<div class='cell' title='2026-09-23 15:00Z: 0/60 priced ticks; absent feed 2'></div>", strip)
+        self.assertIn("<div class='lab'>2026-09-23 &middot; <b>60</b>/1440</div>", strip)
+        _within(self, strip)
+        # the minute under way is not after the clock, even rendered in its first second; the next one is
+        self.assertEqual(dash.ahead(_at(["20260923T094400Z"]), now), set())
+        self.assertEqual(dash.ahead(_at(["20260923T094400Z"]), now.replace(second=0)), set())
+        self.assertEqual(dash.ahead(_at(["20260923T094400Z", "20260923T094500Z"]), now), {("20260923", 9)})
+        self.assertEqual(dash.ahead(_at(["20260924T000000Z"], mid=None, absence="lock"), now), {("20260924", 0)})
+
     def test_a_days_tokens_summed_past_a_floats_range_are_not_charted_and_the_page_says_so(self):
         # 2026-09-28 (round 4): each count passes report._num, but two of int(1e308) on one day sum past a
         # float's range, and `t * rate` raised OverflowError: spend_by_day, and with it the page, died
@@ -543,6 +581,25 @@ class PinnedPrereg(unittest.TestCase):
 def _strip(page):
     """The hourly strip of a rendered page, its header row to its last cell."""
     return page.split("<div class='strip'>", 1)[1].split("<div class='legend'>", 1)[0]
+
+
+def _at(ticks, **kw):
+    """A priced, answered row at each tick_id, its ts_rx that minute; `kw` overrides fields (mid=None,
+    absence='feed' makes an absence row)."""
+    out = []
+    for t in ticks:
+        r = dict(_row(20), **kw)
+        r["tick_id"], r["ts_rx"] = t, f"{t[:4]}-{t[4:6]}-{t[6:8]}T{t[9:11]}:{t[11:13]}:00.100Z"
+        out.append(r)
+    return out
+
+
+def _within(tc, strip):
+    """Every count on the strip, a day's label and each cell's title, is at most its denominator."""
+    pairs = re.findall(r"<b>(\d+)</b>/(\d+)</div>", strip) + re.findall(r": (\d+)/(\d+) priced ticks", strip)
+    tc.assertTrue(pairs)
+    for n, of in pairs:
+        tc.assertLessEqual(int(n), int(of), f"{n}/{of} on the strip")
 
 
 def _capture(main, argv):

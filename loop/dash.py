@@ -104,6 +104,20 @@ def absent(rows):
     return c
 
 
+def ahead(rows, now):
+    """(day, hour) keys, as hourly() and absent() make them, of every row stamped after `now` (a
+    datetime): a clock stepped forward. Any row, priced or an absence. A tick_id sorts as its time
+    (SPEC: YYYYMMDDTHHMMSSZ), so it is compared with `now` in that form; a row stamped in the
+    minute under way is not after it."""
+    cut = now.strftime("%Y%m%dT%H%M%SZ")
+    out = set()
+    for r in rows:
+        t = str(r.get("tick_id"))
+        if len(t) >= 11 and t > cut:
+            out.add((t[:8], int(t[9:11])))
+    return out
+
+
 def _bin_hour(n):
     """The strip's bin by SHORTFALL from a full hour: 60 -> 4 (darkest), 55-59 -> 3, 45-54 -> 2,
     30-44 -> 1, 1-29 -> 0, 0 -> -1 (empty). Fifths of 60 read 49 and 60 the same, and an hour
@@ -113,15 +127,18 @@ def _bin_hour(n):
     return 4 if n >= 60 else 3 if n >= 55 else 2 if n >= 45 else 1 if n >= 30 else 0
 
 
-def _hour_cell(n, start, now):
+def _hour_cell(n, start, now, late=False):
     """(css class, title tail) of the strip's cell for the UTC hour beginning at epoch `start`, with
     `n` priced ticks, at render time `now` (epoch). An hour over is binned by _bin_hour. An hour not
     begun with no row, or begun under a minute ago with none yet, is 'not yet' (a dashed cell), never
     a gap. The hour in progress reads n of the minutes begun, and bins by its shortfall from the
-    minutes over, so the minute under way (its row may not be written yet) is no shortfall. Rows
-    stamped after the clock (a clock stepped forward) are drawn as logged. Until 2026-09-28 every
-    hour of today drew as a full hour, so the hours after the render read 0/60 like an outage."""
-    if now >= start + 3600 or (now < start and n):
+    minutes over, so the minute under way (its row may not be written yet) is no shortfall. An hour
+    holding a row stamped after the clock (`late`, from ahead(): a clock stepped forward), priced or
+    an absence, is drawn as logged, n of 60, like an hour over, so its count is never above its
+    denominator (sixty such rows read '60/45 so far' at 09:44, and two absence rows at 15:00 read
+    'not yet', until the evening of 2026-09-28). Until 2026-09-28 every hour of today drew as a full
+    hour, so the hours after the render read 0/60 like an outage."""
+    if now >= start + 3600 or late or (now < start and n):
         b = _bin_hour(n)
         return "cell" + (f" b{b}" if b >= 0 else ""), f"{n}/60 priced ticks"
     begun = int((now - start) // 60) + 1 if now >= start else 0
@@ -402,6 +419,8 @@ def render(rows, outs, t0=None, now=None, hb=None, halt=False, props=(), current
     days_seen = sorted({d["day"] for d in h_all["days"]})
     strip_days, strip_older = _calendar_run(days_seen, now)
     hourly_c, absent_c = hourly(rows), absent(rows)
+    late = ahead(rows, now)                                              # hours holding a row stamped after the clock
+    late_days = {d for d, _ in late}
     sc = state_counts(sample)
     top_state = max(sc.values()) if sc else 0
     decided_live = sum(d["live"] for d in h["days"])                  # stop-rule fill: live rows whose t + h the log has reached
@@ -477,7 +496,8 @@ def render(rows, outs, t0=None, now=None, hb=None, halt=False, props=(), current
     # -- hourly strip: every gap is a light cell; only priced ticks count
     parts.append("<h2>priced ticks per hour (UTC)</h2><p class='sub'>a full hour is 60 ticks with a mid; a pale or empty cell is a gap "
                  "(the Mac asleep or logged out, the feed down, a HALT: absence rows do not count, hover for them). A dashed cell is an "
-                 "hour not yet begun at render; today's count and its hour in progress are out of the minutes begun. Calendar days; "
+                 "hour not yet begun at render; today's count and its hour in progress are out of the minutes begun, unless they hold "
+                 "a row stamped after the clock (a clock stepped forward): then they read as logged, out of 1440 and 60. Calendar days; "
                  + ("T0 days start at " + report._iso_minute(t0)[11:] + ". " if t0 is not None else "")
                  + "Days before T0 are labelled.</p>")
     strip = ["<div class='wrap'><div class='strip'><div class='lab'>day &middot; <b>ticks</b></div>"] + [f"<div class='hr'>{hh:02d}</div>" for hh in range(HOURS)]
@@ -490,11 +510,12 @@ def render(rows, outs, t0=None, now=None, hb=None, halt=False, props=(), current
         pre = t0 is not None and d0 + 86400 <= t0
         lab = f"{d[:4]}-{d[4:6]}-{d[6:]}" + (" (pre-T0)" if pre else "")
         total = sum(hourly_c.get((d, hh), 0) for hh in range(HOURS))
-        of = int((now_s - d0) // 60) + 1 if d0 <= now_s < d0 + 86400 else DAY_TICKS   # today: out of the minutes begun
+        so_far = d0 <= now_s < d0 + 86400 and d not in late_days       # a day holding a row after the clock: as logged
+        of = int((now_s - d0) // 60) + 1 if so_far else DAY_TICKS        # today: out of the minutes begun
         strip.append(f"<div class='lab'>{_esc(lab)} &middot; <b>{total}</b>/{of}</div>")
         for hh in range(HOURS):
             n = hourly_c.get((d, hh), 0)
-            cls, tip = _hour_cell(n, d0 + 3600 * hh, now_s)
+            cls, tip = _hour_cell(n, d0 + 3600 * hh, now_s, (d, hh) in late)
             ab = absent_c.get((d, hh))
             ab_txt = ("; absent " + ", ".join(f"{k} {v}" for k, v in sorted(ab.items()))) if ab else ""
             strip.append(f"<div class='{cls}' title='{_esc(lab)} {hh:02d}:00Z: {_esc(tip)}{_esc(ab_txt)}'></div>")
