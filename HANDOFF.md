@@ -1,107 +1,85 @@
 # HANDOFF — where the last session left off
 
-Written 2026-09-28 by Claude in a CLOUD session on branch `claude/cool-lamport-7sirtw`, merged to
-`main` by fast-forward twice that day, at 1e7faeb and again after a fourth review round (Alex: "you
-can merge with main when it's safe"; for the second, "approved for recommended on all" on the three
-options below). Nothing here reaches the Mac until Alex pulls (below). Supersedes the 2026-09-27
-05:40Z handoff. Update this file at the end of every session that changes state.
+Written 2026-09-28 ~21:50Z by Claude (Fable 5.1) on Alex's Mac, the session that PULLED the cloud
+merge onto the Mac. Supersedes the cloud session's handoff of 2026-09-28 (branch
+`claude/cool-lamport-7sirtw`, merged to `main` by fast-forward at 183db6b); its record of what the
+branch changed is kept below unchanged. Update this file at the end of every session that changes
+state; whichever session ends last pushes.
 
 ## State
-- The Mac's loop is untouched by this session (no `data/` here). Sample: `prereg-v1`, T0
-  2026-09-25 21:40Z, ends 2026-10-23 21:40Z; day 3 of 28 on 2026-09-28. Arm B is v2 since
-  2026-09-26 22:21Z. Spend ≈ $0.05 to date.
-- The merge (`git log 09e867f..origin/main`): `make test` green (836 tests) under 3.11-3.13 here, and in CI on
-  every push (`.github/workflows/test.yml`): Linux 3.11-3.14, macOS 3.14, and six modes on 3.14 that were hand runs
-  until 2026-09-28: warnings as errors, a C locale with UTF-8 mode off, a shuffled order, and the clock moved to the
-  day-28 run, to 2026-11-15 and to 2027 (`make test-modes` runs them here, ~7 min). Reviewed by five code reviews, a
-  six-lens bug hunt, a mutation round (4,012 mutants), a day-28 triple check, two pre-merge verification passes and
-  a fourth round (76 agents, 33 confirmed findings) with two rounds of fixes after it, each patch re-run and tried
-  by an agent that did not write it. None found a defect on the normal path (a tick or a night on the inputs the
-  loop itself writes); every fix is a guard, a report line, a test or tooling. Nothing frozen changed: SPEC,
-  PREREG, PROTOCOL, prompts/, PROMPT.md, the digest's content, config thresholds. tests/test_frozen.py now pins
-  SPEC, PREREG, PROMPT.md, prompts/v1 and v2, every config threshold a row depends on, the alphabet and arm C
-  (an edit fails the suite the day it is made); the digest has its own golden test; PROTOCOL.md and
-  prompts/CURRENT are not pinned.
+- **The Mac runs 183db6b since 2026-09-28 21:31:50Z.** `git pull --ff-only` between ticks (heartbeat
+  21:31:06Z, next tick 21:32:00Z wrote its row; no traceback); `make test` on the Mac: 836 tests,
+  OK (2 skipped), 36 s, python 3.14. No plist reinstalled (both diffs are comments only).
+- Sample `prereg-v1`, T0 2026-09-25 21:40Z, ends 2026-10-23 21:40Z; **d03 of 28** open at 21:34Z.
+  `make status`: d01 95.2 % fill (kept), d02 100 % (skip 9, all before the 05:18Z plist swap), d03
+  100 % so far, skip 0, jev-err 0.6 % (7 http-5xx, 2 timeout); BAD days 0; no exclusions file;
+  HALT absent; 5,066 rows; spend $0.034 today of the $0.25 tripwire, ≈ $0.09 since T0. Arm B is
+  v2 (sha b3291ca4a550…) since 2026-09-26 22:21Z; every v2 row carries that sha. Mac on AC, 100 %.
+- **Counts of the cloud's decision 6, taken on the Mac BEFORE the pull** (`bin/readers-diff`, old =
+  09e867f, new = 183db6b, over data/decisions.jsonl at 5,062 rows): rows read 5062/5062; lines
+  skipped 0/0; rows recovered from torn lines 0; live answered rows with both columns null 0;
+  **ticks whose joined outcome differs 0**; dry rows in the sample 0; `prompt_b_sha` of the v2
+  rows = exactly one, b3291ca4a550…. So the merge changed no existing reading. Priced tick_ids
+  with two rows: 3 — `20260924T172000Z` and `20260924T181600Z` (shakedown, before T0) and
+  `20260927T051800Z` (the minute the loop plist was swapped: both plists fired). Same outcome
+  under both trees.
+- **Nights.** 2026-09-27 08:30Z (digest of 09-26, 606 ticks): `claude -p` produced nothing and was
+  killed at the 2700 s cap (logs/claude-2026-09-26.err: "exceeded 2700 s awake; killed";
+  claude-2026-09-26.txt empty). No proposal exists for 2026-09-26; cause unknown (that call ran
+  with cwd = the repo, the day after CLAUDE.md was written there). 2026-09-28 08:30Z (digest of
+  09-27, 1435 ticks): exit 0 after 75 s; `proposals/2026-09-27.{json,md}` (committed): cand_0
+  differs from CURRENT on 7 of 81 states, cand_1 on 9; both tighten `buy` on `trend pumping, vol
+  normal` (the digest's top disagreements were 1.00-confidence buys there that went down). Not
+  promoted: v2 keeps its 28 days (Do not). **Tonight, 2026-09-29 08:30Z, is the first night under
+  the pulled code**: the call runs from an empty temp directory (no repo CLAUDE.md), logs the CLI
+  version, the user-memory sha and `claude model <id>`. Record what it does.
+- Added this session: ERRATA.md SPEC §10 row for the **verified venue fee: 90 bps taker** (Alex,
+  in-account, 2026-09-27 ~22:55Z; tier Intro, maker 0.50 %); `config.FEE_BPS_VENUE` stays 120
+  through the sample (the digest prints pnl at it; the treatment). `AGENTS.md -> CLAUDE.md`.
 
-## Decisions for Alex (options, not done)
-1. **The slow model's context.** `claude -p` run with cwd = the repo auto-loads `./CLAUDE.md`
-   (the CLI's `--restricted` ignores settings files, not CLAUDE.md discovery; only `--bare` or
-   `--safe-mode` do). CLAUDE.md was committed 2026-09-28 00:15Z (written ~05:40Z on 09-27), so
-   the 09-27 08:30Z run may have seen it and tonight's will; it carries the "Jev reads calm as
-   not violent" line the 09-25 review kept out of PROMPT.md. Commit 11a0b76 runs the one call from
-   an empty temp directory (no repo CLAUDE.md; `~/.claude/CLAUDE.md` user memory still loads as
-   it always has), fails the night if a CLAUDE.md sits above that directory, and logs the CLI
-   version and the user-memory sha each night. Note: the CLI's own per-machine context (cwd,
-   git status, memory paths) differs between the repo and an empty non-git directory, so the
-   night this is deployed is itself a change of the model's context; record the date. (a) merge
-   and `git pull` on the Mac before 08:30Z (recommended; pulling the merged `main` IS this option, and
-   the CLI's per-project state for the repo path no longer reaches the night either); (b) leave it
-   and record the deviation date here; (c) for prereg-v2, `--safe-mode` so the model sees
-   PROMPT.md + digest only.
-2. **A day with no live rows** (the Mac off all day, or all-HALT): stop rule 3's fill is 0/0,
-   undefined. The report and dash now list every T0 day and flag such a day NO LIVE ROWS, never
-   BAD by code. Decide before day 28: excluded whole, or kept (96 blocks of S_k = 0, no H2 unit).
-3. **Duplicate priced ticks.** The join now lets the live decision speak for its tick (a later
-   dry/double-fire row can no longer score it against a shifted window). Check the live log for
-   any such duplicate: `python3 -c "from loop import outcomes;import collections;c=collections.Counter(r['tick_id'] for r in outcomes.load('data/decisions.jsonl') if r.get('mid'));print({t:n for t,n in c.items() if n>1})"`.
-4. **Model for the nightly: recorded, not pinned** (the recommended option; Alex approved it
-   2026-09-28). From the first night after the pull, the log says `claude model <id>` (or
-   `unrecorded`), read after the call from the CLI's own transcript of it
-   (nightly/answered_model.py), and each table's header says `proposal written by: <id>`; the
-   call itself is byte-identical. Nights before the pull recorded neither the model nor the CLI
-   version. Pinning with `--model` stays a treatment and spending decision for prereg-v2.
-5. **120 bps taker fee** still unverified in-account (`config.FEE_BPS_VENUE`).
-6. **Counts to take on the Mac BEFORE pulling** (numbers, never a statistic; no §4-§7 look), with
-   the merged `main`'s `bin/readers-diff` (old = the code the Mac runs now, new = `origin/main`), which reads the log with two trees and prints counts and
-   tick_ids only:
-   ```bash
-   cd ~/Projects/jev-paper-loop && git fetch origin && rm -rf /tmp/old /tmp/new && mkdir /tmp/old /tmp/new && git archive HEAD loop | tar -x -C /tmp/old && git archive origin/main loop | tar -x -C /tmp/new && git show origin/main:bin/readers-diff > /tmp/readers-diff && /opt/homebrew/bin/python3 /tmp/readers-diff /tmp/old /tmp/new --log data/decisions.jsonl
-   ```
-   It prints rows read by each tree (a difference = a whole row glued onto a torn line, now
-   kept), lines skipped, priced tick_ids with more than one row (item 3), live answered rows
-   with both columns null, and the ticks whose joined outcome differs. Also the dry rows inside
-   the sample and the `prompt_b_sha` of the v2 rows (rows are compact JSON, so a grep for
-   `"mode": "dry"` with a space always prints 0):
-   ```bash
-   /opt/homebrew/bin/python3 -c "from loop import outcomes,report;t0=report.tick_epoch('20260925T214000Z');rows=outcomes.load('data/decisions.jsonl');print('dry rows in the sample:',sum(1 for r in rows if r.get('mode')=='dry' and report.tick_epoch(r['tick_id'])>=t0));print('prompt_b_sha of v2 rows:',sorted({str(r.get('prompt_b_sha')) for r in rows if r.get('prompt_b')=='v2'}))"
-   ```
-   and the `parse`/`unexpected` jev-error counts in `make health`. The v2 rows (since
-   2026-09-26 22:21Z) should carry a `prompt_b_sha` starting b3291ca4a550 (v2 read as UTF-8; another sha would
-   mean the Mac read the file in another encoding, and the merge would change the question
-   sent). Record them here. If every count is 0, the merge changes no existing reading.
-7. **2026-09-26 is likely a BAD day.** The 09-25 review measured that UTC day's fill at 90.2 %,
-   under stop rule 3's 95 % (STEPS said "0.2 points from a BAD day"; corrected). The exclusions
-   line is yours (PREREG §8.3): `make health` or `make status` names the T0-anchored day and its
-   fill. The parser, pulled with main, refuses a tab-form line whose reason begins with a number
-   standing apart ('3 h asleep', '401 from Jev', '24/7'), because a tab typed inside the day
-   ('d1<TAB>6<TAB>...') shifts that number into the reason: write '3h asleep' or start with a
-   word. A header typed with single spaces or reworded is accepted again. `make status` shows
-   REFUSED, with the fix, the morning after a line it cannot read.
+## Decisions for Alex
+1. ~~The slow model's context~~ **done as (a)** by the pull; first night 2026-09-29 08:30Z.
+2. **A day with no live rows** (Mac off all day, or all-HALT): stop rule 3's fill is 0/0. The
+   report and dash flag such a day NO LIVE ROWS, never BAD by code. Decide before day 28: excluded
+   whole, or kept (96 blocks of S_k = 0, no H2 unit). None has happened.
+3. ~~Duplicate priced ticks~~ checked: the three above; the join's outcome is the same either way.
+4. Nightly model **recorded, not pinned** — in force from the 09-29 night. Pinning with `--model`
+   stays a prereg-v2 treatment/spending decision.
+5. ~~120 bps taker fee~~ **verified 90 bps** (ERRATA.md §10). Whether prereg-v2 sets 90 is yours.
+6. ~~Counts before pulling~~ taken; all zero (above).
+7. ~~2026-09-26 likely BAD~~ Under the T0-anchored days you decided on 09-26, d01 (09-25 21:40Z →
+   09-26 21:40Z) closed at 95.2 % and is kept; the UTC day 09-26 at 90.2 % is not a unit of the
+   sample. No exclusions line is due. (`make status` shows the table each morning.)
+8. **The missed 2026-09-26 proposal.** `nightly/propose.sh --date 2026-09-26` would digest that day
+   (data/digest-2026-09-26.md exists, 606 ticks) and make one `claude -p` call (a spend, ~1-2 min
+   on the 09-28 evidence, 45 min cap). Options: (a) run it by hand once, outside 00:00-08:30Z and
+   never while the loop's tick is writing (it is a separate process; the nightly's 81 sends have
+   their own HALT check); (b) leave the slot empty and let the write-up say one night of 28 produced
+   no proposal. Nothing in PREREG requires a proposal every night; promote is yours either way.
 
 ## Approved 2026-09-28 ("approved for recommended on all")
 - The nightly model is recorded, not pinned: decision 4.
 - The 81-state table: under each candidate's counts, where it changes CURRENT's answer (per
   adjective, changed / answered states, and the CURRENT -> candidate moves), for the person who
-  promotes; the digest never carries a table. Tables built before 2026-09-28 lack it. It says which
-  states moved, not whether the move follows the wording's criteria: that stays your read.
+  promotes; the digest never carries a table. Tables built before 2026-09-28 lack it (the 09-27
+  table was built by the pre-pull code and lacks it too). It says which states moved, not whether
+  the move follows the wording's criteria: that stays your read.
 - Report §4.5: the H1 cell by arm B's prompt version, one row per contiguous stretch of a version
   (a rollback's return is `<version> #2`). Descriptive, not in PREREG, and withheld with §4-§7
   until day 28; read it beside, never instead of, the H1 statistic.
 
-## Pulling on the Mac (Alex; the loop keeps running)
-`main` on GitHub holds the merge; the Mac's checkout does not until this pull. Take the counts of
-decision 6 first.
-Each tick is a fresh process, so a pull between ticks is safe; a tick that imports during the
-sub-second checkout would traceback and lose its minute (one row, never a wrong one). Not while
-the nightly runs (08:30Z plus ~15 min, or at wake after a slept-through 03:30 local). `--ff-only`:
-a diverged `main` or a dirty tracked file stops it cleanly, never half-way. One line, BSD-safe,
-which waits for the current minute's heartbeat first, pulls, and runs the suite on the Mac (bash
-3.2, the real caffeinate, the real TMPDIR) before the next 03:30:
+## Pulling on the Mac (done 2026-09-28; the procedure, for the next merge)
+Take the counts of decision 6 first (`bin/readers-diff OLD NEW --log data/decisions.jsonl` with
+`git archive` copies of `loop/`). Each tick is a fresh process, so a pull between ticks is safe;
+a tick that imports during the sub-second checkout would traceback and lose its minute (one row,
+never a wrong one). Not while the nightly runs (08:30Z plus ~15 min, or at wake after a
+slept-through 03:30 local). `--ff-only`: a diverged `main` or a dirty tracked file stops it
+cleanly, never half-way. One line, BSD-safe, which waits for the current minute's heartbeat,
+pulls, and runs the suite on the Mac (bash 3.2, the real caffeinate, the real TMPDIR):
 ```bash
 cd ~/Projects/jev-paper-loop && launchctl print gui/$(id -u)/com.alexward.jevloop.nightly | grep -q 'state = running' && echo "nightly running: wait" || { git fetch origin && git status --short --untracked-files=no && git log --oneline origin/main..main; until [ "$(cut -c1-16 data/heartbeat)" = "$(date -u +%Y-%m-%dT%H:%M)" ]; do sleep 1; done; git pull --ff-only origin main && make test; }
 ```
-A red suite there is a `git reset --hard ORIG_HEAD` decision (safe on a clean tree). No plist
-needs reinstalling: the nightly plist's diff is comments only.
+A red suite there is a `git reset --hard ORIG_HEAD` decision (safe on a clean tree).
 
 ## Day 28 (`make results`, once the log holds the 2026-10-23 21:56 tick, by ~21:58Z)
 `loop.inference --sample` now refuses while the last block's H2 unit still waits for its t + h
