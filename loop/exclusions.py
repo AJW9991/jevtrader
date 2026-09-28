@@ -90,13 +90,15 @@ def _day_field(line):
 
 TAB_FORM = ("a tab line is day<TAB>fill%<TAB>jev-err%<TAB>reason, fill% and jev-err% each a number or n/a,"
             " the reason not beginning with one")
-_VALUE = re.compile(r"(?:\d+(?:[.,]\d*)?|[.,]\d+) ?%?|\d+/\d+|n/a", re.ASCII | re.IGNORECASE)
+_VALUE = re.compile(r"(?:\d+(?:[.,]\d*)?|[.,]\d+)[ \u00a0\u202f]?%?|\d+/\d+|n/a", re.ASCII | re.IGNORECASE)
 
 
 def _value(s):
     """A fill% or jev-err% as the report prints one ('94.2%', '94.2', 'n/a'; '0/0' as its NO LIVE ROWS
-    line puts a day's fill), or typed with a comma for the point, a space before the %, or a trailing
-    ',', ';' or ':'."""
+    line puts a day's fill), or typed with a comma for the point, one space before the % (a plain
+    space, or a no-break U+00A0 or narrow no-break U+202F, which an editor or a keyboard layout may
+    put there and which look the same on screen; any other character there, a thin space or a second
+    space, is refused), or a trailing ',', ';' or ':'."""
     return bool(_VALUE.fullmatch(s.strip().rstrip(",;:")))
 
 

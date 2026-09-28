@@ -285,6 +285,30 @@ class DaysAndExclusions(unittest.TestCase):
                 fh.write("day\tfill%\tjev-err%\treason\n" + gap + "\n")
             self.assertEqual(exclusions.read_exclusions(p)[0], {1}, repr(gap))
 
+    def test_a_no_break_space_before_the_percent_is_taken_like_a_space(self):
+        # a fill% or jev-err% allowed only an ASCII space before the %, so the correct line
+        # 'd16<TAB>94.2<U+00A0>%<TAB>0.3%<TAB>Mac asleep', which looks the same on screen and which the parser
+        # took before 90cbeb6, was refused (2026-09-28, round-4 checker). U+00A0 and U+202F are taken as a space
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        p = os.path.join(tmp, "exclusions.tsv")
+        for good in ("d16\t94.2\u00a0%\t0.3%\tMac asleep", "d16\t94,2\u202f%\t0,3\u202f%\tMac asleep",
+                     "d16\t94.2 %\t0.3\u00a0%;\tMac asleep"):
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write("day\tfill%\tjev-err%\treason\n" + good + "\n")
+            self.assertEqual(exclusions.read_exclusions(p), ({16}, [good]), repr(good))
+            self.assertEqual(exclusions.status_line(p), f"exclusions: 1 day(s) excluded: d16 ({p})", repr(good))
+        # any other character before the %, or a second space, is refused, as the docstring says; and a tab
+        # typed inside the day is refused with these spaces as without them
+        for bad in ("d16\t94.2\u2009%\t0.3%\ta thin space", "d16\t94.2%\t0.3\u2007%\ta figure space",
+                    "d16\t94.2  %\t0.3%\ttwo spaces", "d16\t94.2\u00a0\u00a0%\t0.3%\ttwo no-break spaces",
+                    "d1\t6\t94.2\u00a0%\t0.3\u00a0%. Mac asleep", "d1\t6\t94.2\u202f%\t0.3\u202f%"):
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write("day\tfill%\tjev-err%\treason\n" + bad + "\n")
+            with self.assertRaises(ValueError, msg=repr(bad)) as cm:
+                exclusions.read_exclusions(p)
+            self.assertEqual(str(cm.exception), f"{p}:2: day {bad.strip()!r} is not d01..d28; {exclusions.TAB_FORM} "
+                                                f"(the line: {bad!r})")
+
 
 class Guard(unittest.TestCase):
     @classmethod
