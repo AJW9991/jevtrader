@@ -314,14 +314,21 @@ def _short(day):
 
 
 STRIP_DAYS = 35         # the strip's window: the 28-day sample and a week, ending today
+STRIP_LOOKBACK_DAYS = 365   # a row this close before the window: the loop ran before it (a reset clock lands years back)
 
 
 def _calendar_run(days, now, max_days=STRIP_DAYS):
-    """(the strip's days, the logged days older than its window). Every calendar day from the first
-    logged day to TODAY, at most `max_days` of them, so a day with no row at all (the Mac off, or the
-    loop stopped while the nightly still rebuilds this page) is drawn as 24 empty cells rather than
-    left out; a logged day before the window (a clock stepped back to 1970) is counted, not filled up
-    to; a logged day after `now` (a clock stepped forward) is drawn as a line of its own."""
+    """(the strip's days, the logged days older than its window). `days` are sorted YYYYMMDD labels.
+    The window is the `max_days` calendar days ending TODAY, and a day in it with no row at all (the
+    Mac off, or the loop stopped while the nightly still rebuilds this page) is drawn as 24 empty
+    cells rather than left out. The strip starts at the window's floor when the log has no row inside
+    the window (an outage still under way, of any length, is the whole window empty) or when its last
+    row before the window falls within 365 days of the floor (the loop ran before the window, so each
+    empty day in it is a gap, however long the outage that ended inside it). Otherwise it starts at
+    the first logged day inside the window: the only rows before it are more than a year older, a
+    clock stepped back to 1970 or 2001, and they are counted (the second list), not filled up to. A
+    clock stepped back by less than a year pads the window with at most its own empty days. A logged
+    day after `now` (a clock stepped forward) is drawn as a line of its own."""
     if not days:
         return [], []
     today = now.date()
@@ -332,10 +339,9 @@ def _calendar_run(days, now, max_days=STRIP_DAYS):
     older = [d for d in past if day(d) < floor]
     run = []
     if past:
-        # from the window's floor when the log ran up to shortly before it (its empty days are gaps, and
-        # an outage longer than the window is the whole window empty); else from the first logged day in
-        # it (a lone row from a clock stepped back to 1970 does not pad the window with false gaps)
-        ran_before = bool(older) and day(older[-1]) >= floor - datetime.timedelta(days=7)
+        # until 2026-09-28 the lookback was 7 days: a loop that ran until 08-19 and came back on 09-30
+        # drew 09-30 alone, and the 34 empty days it drew the evening before vanished with one row
+        ran_before = bool(older) and day(older[-1]) >= floor - datetime.timedelta(days=STRIP_LOOKBACK_DAYS)
         a = floor if ran_before or not recent else day(recent[0])
         run = [(a + datetime.timedelta(days=i)).strftime("%Y%m%d") for i in range((today - a).days + 1)]
     return run + [d for d in days if day(d) > today], older

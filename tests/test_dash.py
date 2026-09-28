@@ -161,6 +161,44 @@ class Dash(unittest.TestCase):
         self.assertIn("1 earlier logged day(s), the last 1970-01-01: not drawn", page)
         self.assertIn("2026-09-30 &middot; <b>0</b>/1440", page)                                 # today, the loop stopped
 
+    def test_the_strip_starts_at_its_floor_when_the_log_ran_within_a_year_before_it(self):
+        # 2026-09-28 (round 4): the lookback was 7 days. A loop that ran until 08-18 drew the whole window
+        # while it was down, and today alone the moment it came back: 34 empty days vanished with one row.
+        # A year still keeps a row from a clock stepped back to 1970 or 2001 from padding the window.
+        now = datetime.datetime(2026, 9, 30, 12, 0, tzinfo=datetime.timezone.utc)
+        floor = datetime.date(2026, 8, 27)                                  # 35 days ending 09-30
+        ymd = lambda d: d.strftime("%Y%m%d")
+        whole = [ymd(floor + datetime.timedelta(days=i)) for i in range(dash.STRIP_DAYS)]
+        run = lambda days: dash._calendar_run(days, now)[0]
+        ran = [f"202607{d:02d}" for d in range(1, 32)] + [f"202608{d:02d}" for d in range(1, 19)]   # 07-01 .. 08-18
+        self.assertEqual(run(ran), whole)                                   # still down
+        self.assertEqual(run(ran + ["20260930"]), whole)                    # back today: the outage stays drawn
+        self.assertEqual(run(ran + ["20260920"]), whole)                    # back on 09-20
+        self.assertEqual(run(["19700101"] + ran + ["20260930"]), whole)     # the LAST row before the window decides
+        # the boundary: a last row exactly a year before the floor counts, one day more does not
+        edge = floor - datetime.timedelta(days=dash.STRIP_LOOKBACK_DAYS)
+        self.assertEqual(run([ymd(edge), "20260920"]), whole)
+        beyond = ymd(edge - datetime.timedelta(days=1))
+        self.assertEqual(run([beyond, "20260920"]), [f"202609{d}" for d in range(20, 31)])
+        # no row inside the window: the whole window, whatever the age of the last row, never today alone
+        self.assertEqual(run([beyond]), whole)
+        self.assertEqual(run(["20260628"]), whole)                          # ended 60 days before the floor
+        self.assertEqual(run(["19700101"]), whole)
+        # a clock stepped back to 1970 or 2001 is counted, not filled up to
+        self.assertEqual(dash._calendar_run(["19700101", "20010101", "20260923"], now),
+                         ([f"202609{d}" for d in range(23, 31)], ["19700101", "20010101"]))
+        self.assertIn(f"within {dash.STRIP_LOOKBACK_DAYS} days", dash._calendar_run.__doc__)   # the docstring states the rule
+        # the page: one row a day 07-01 .. 08-18, then one today
+        rows = []
+        for d in ran + ["20260930"]:
+            r = dict(_row(0))
+            r["tick_id"], r["ts_rx"] = f"{d}T100000Z", f"{d[:4]}-{d[4:6]}-{d[6:]}T10:00:00.100Z"
+            rows.append(r)
+        strip = dash.render(rows, outcomes.join(rows), now=now).split("<div class='strip'>", 1)[1].split("<div class='legend'>", 1)[0]
+        self.assertIn("49 earlier logged day(s), the last 2026-08-18: not drawn", strip)
+        self.assertIn("<div class='lab'>2026-08-27 &middot; <b>0</b>/1440</div>", strip)
+        self.assertEqual(len(re.findall(r"<div class='lab'>\d{4}-\d\d-\d\d ", strip)), dash.STRIP_DAYS)
+
     def test_no_h1_h2_pair_or_confidence_number(self):
         page = dash.render(self.rows, self.outs, t0=report.tick_epoch("20260923T100000Z"))
         body = page.split("<div class='foot'>")[0]                 # the footer NAMES what the page cannot carry
