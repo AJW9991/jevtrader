@@ -1,0 +1,32 @@
+# The offline test suite on every push and pull request: `make test`, the whole gate for any
+# checkout that is not Alex's Mac (CLAUDE.md). Nothing here has a key, a network policy that
+# matters, or data/: the tests mock urllib.request.urlopen, and nothing under tests/ opens a
+# socket (STEPS.md step 3). 3.14 is the Mac's interpreter; 3.12 and 3.13 are what a cloud
+# session tends to have.
+name: test
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: make test
+        run: make test
+      - name: the interpreter the gate ran under
+        run: python3 --version && make -n test
