@@ -217,6 +217,10 @@ def ask(state, questions):
     err = None
     for attempt in (1, 2):
         if ledger(state, questions) is None:
+            if err is not None:                          # the retry's row: attempt 1 already left, so its
+                                                         # billed kind stands, never "ledger" (billed 0)
+                raise JevError(err.kind, f"{err.detail}; retry not sent: cannot append to {config.SENDS}",
+                               err.status, kpath)
             raise JevError("ledger", f"cannot append to {config.SENDS}; nothing sent", key_path=kpath)
         t0 = time.monotonic()
         try:

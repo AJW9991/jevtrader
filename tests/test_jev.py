@@ -113,6 +113,28 @@ class JevTest(unittest.TestCase):
         self.urlopen.assert_not_called()
         self.assertEqual(self.sleeps, [])
 
+    def test_a_ledger_failure_on_the_retry_raises_the_first_attempts_billed_error(self):
+        # "ledger" means nothing left and bills 0 (cycle.UNSENT_KINDS); on the retry attempt 1
+        # had already left, so the row must carry attempt 1's kind, which the guard bills.
+        real = jev.ledger
+        for first, kind, status in ((_http(503), "http-5xx", 503), (_http(429, 2), "http-429", 429),
+                                    (TimeoutError("timed out"), "timeout", None)):
+            with self.subTest(kind=kind):
+                calls = []
+                def ledger(s, q):
+                    calls.append(1)
+                    return real(s, q) if len(calls) == 1 else None
+                self.urlopen.reset_mock(); self.sleeps.clear()
+                self.urlopen.side_effect = [first, AssertionError("the retry was sent")]
+                with mock.patch.object(jev, "ledger", side_effect=ledger):
+                    with self.assertRaises(jev.JevError) as cm:
+                        jev.ask(STATE, Q)
+                e = cm.exception
+                self.assertEqual((e.kind, e.status, e.key_path), (kind, status, "env:TYPESAFE_API_KEY_LOOP"))
+                self.assertIn("retry not sent", e.detail)
+                self.assertEqual(len(calls), 2)
+                self.assertEqual(self.urlopen.call_count, 1)               # nothing sent unledgered
+
     # --- CONTRACT §6: 401 -> http-4xx, no retry --------------------------------------
     def test_401_raises_http_4xx_without_retry(self):
         for code in (401, 403, 400, 404, 422):
