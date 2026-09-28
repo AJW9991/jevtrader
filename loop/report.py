@@ -954,8 +954,10 @@ def render(rows, bad=(), log=None, since=None, missing=False, t0=None, outs=None
 
 
 def _since(s):
-    """--since YYYY-MM-DD -> the tick_id prefix YYYYMMDD, or None; ValueError on a bad date."""
-    return None if s is None else datetime.date.fromisoformat(s).strftime("%Y%m%d")
+    """--since YYYY-MM-DD -> the tick_id prefix YYYYMMDD, or None; ValueError on a bad date. isoformat, not
+    strftime: glibc's %Y does not pad a year below 1000 ('9990101'), which tick_epoch refuses and which sorts
+    after every real tick_id, so main's filter kept no row."""
+    return None if s is None else datetime.date.fromisoformat(s).isoformat().replace("-", "")
 
 
 def _t0(s):

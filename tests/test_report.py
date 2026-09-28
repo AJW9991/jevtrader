@@ -1369,6 +1369,35 @@ class PerDay(unittest.TestCase):
         for since, out in outs.items():
             self.assertEqual(out, want, since)
 
+    def test_since_a_year_below_1000_keeps_every_row_not_a_traceback(self):
+        # _since built the prefix with strftime('%Y%m%d'), and glibc's %Y does not pad a year below 1000:
+        # --since 0999-01-01 gave '9990101', render's tick_epoch refused '9990101T000000Z' (a traceback, exit 1),
+        # and main's filter compared every tick_id against it and kept none. It cuts nothing now, as it should.
+        self.assertEqual((report._since("0999-01-01"), report._since("0001-01-01"), report._since("2026-09-28")),
+                         ("09990101", "00010101", "20260928"))
+        t0 = report.tick_epoch("20260925T214000Z")
+        rows = []
+        for m in range(0, 2 * 1440 + 60, 20):                          # d01, d02 and an hour of d03, a row every 20 min
+            e = t0 + 60 * m
+            rows.append(dict(_row(7), tick_id=report._tick_of(e),
+                             ts_rx=datetime.datetime.fromtimestamp(e, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.100Z")))
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        self.enterContext(mock.patch.object(config, "HALT", os.path.join(tmp, "no-HALT")))
+        log = os.path.join(tmp, "old-since.jsonl")
+        _write(log, rows, garbage=False)
+        for extra in ([], ["--t0", "20260925T214000Z"]):
+            with self.subTest(argv=extra):
+                got = {}
+                for since in (None, "0999-01-01", "0001-01-01"):
+                    buf = io.StringIO()
+                    argv = ["--log", log, "--health"] + extra + (["--since", since] if since else [])
+                    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+                        self.assertEqual(report.main(argv, now=t0 + 3 * 86400), 0, since)
+                    got[since] = buf.getvalue().replace(f", since {since}", "", 1)
+                self.assertIn(f"  rows {len(rows)} ({len(rows)} ticks, ", got["0999-01-01"])
+                self.assertEqual(got["0999-01-01"], got[None])               # the same page as no --since at all
+                self.assertEqual(got["0001-01-01"], got[None])
+
     def test_a_row_stamped_after_the_clock_closes_no_day(self):
         # a forward clock step (then back) leaves a row stamped in the future; `last` took it, so every
         # day before it closed: the open day turned BAD on its pending rows and the days between were
