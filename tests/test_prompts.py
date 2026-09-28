@@ -1,6 +1,6 @@
 """loop.prompts, offline: the committed prompts/ tree plus temp copies of it.
 Nothing here writes under prompts/ -- bin/promote is the only writer."""
-import json, os, tempfile, unittest
+import json, os, subprocess, sys, tempfile, unittest
 from fixture_prompts import pin_v1
 from loop import config, prompts
 
@@ -55,6 +55,30 @@ class PromptsTest(unittest.TestCase):
         changed["action"]["instructions"] += "."                         # one character
         self._save("v2.json", changed)
         self.assertNotEqual(prompts.sha("v2", root=self.tmp), prompts.sha("v1"))
+
+    def test_a_non_ascii_prompt_loads_to_the_same_sha_under_a_c_locale(self):
+        # v2.json holds an em dash. Read with the locale's encoding, a C locale refused it (and a
+        # Latin-1 one would read other characters, so another sha): load() and current() read UTF-8.
+        doc = _copy(self.v1)
+        doc["version"] = "v9"
+        doc["action"]["instructions"] += " — and flat otherwise."
+        with open(os.path.join(self.tmp, "v9.json"), "w", encoding="utf-8") as fh:
+            json.dump(doc, fh, indent=2, ensure_ascii=False)
+        with open(os.path.join(self.tmp, "CURRENT"), "w", encoding="utf-8") as fh:
+            fh.write("v9\n")
+        want = [prompts.current(self.tmp), prompts.sha("v9", self.tmp)]
+        self.assertEqual(want[1], prompts.sha_of(doc))
+        code = ("import locale, sys\nfrom loop import prompts\nprint(locale.getpreferredencoding(False))\n"
+                "print(prompts.current(sys.argv[1]))\nprint(prompts.sha('v9', sys.argv[1]))\n")
+        env = {**os.environ, "LC_ALL": "C", "LANG": "C", "PYTHONUTF8": "0", "PYTHONCOERCECLOCALE": "0",
+               "PYTHONIOENCODING": "utf-8"}
+        r = subprocess.run([sys.executable, "-c", code, self.tmp], cwd=config.REPO, env=env,
+                           capture_output=True, text=True, timeout=60)
+        enc = (r.stdout.splitlines() or [""])[0].lower().replace("-", "").replace("_", "")
+        if enc in ("utf8", ""):
+            self.skipTest(f"this interpreter reads UTF-8 under LC_ALL=C anyway ({r.stdout!r} {r.stderr[-200:]!r})")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.splitlines()[1:], want)
 
     # --- CONTRACT §2 wire shapes ------------------------------------------------
     def test_wire_shapes(self):
