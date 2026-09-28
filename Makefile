@@ -6,7 +6,7 @@
 # CI) uses the python3 on PATH. `make PY=... test` overrides either.
 PY ?= $(shell test -x /opt/homebrew/bin/python3 && echo /opt/homebrew/bin/python3 || command -v python3)
 
-.PHONY: test dry run report dash status inference-smoke
+.PHONY: test dry run report dash status inference-smoke results
 
 test:
 	$(PY) -m unittest discover -s tests
@@ -34,3 +34,9 @@ status:
 # result. The sample form, `python3 -m loop.inference --sample --out RESULTS.md`, refuses until day 28.
 inference-smoke:
 	$(PY) -m loop.inference --pre-t0
+
+# Day 28 (2026-10-23 21:40Z or later; loop/inference.py refuses before then, exit 3): the one run of
+# PREREG §4-§5 on the sample, written to RESULTS.md and committed beside PREREG.md (§10). By hand,
+# once; the stop rules (PREREG §8) are read from its output.
+results:
+	$(PY) -m loop.inference --sample --out RESULTS.md
