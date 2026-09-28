@@ -222,7 +222,7 @@ def ask(state, questions):
                 raise JevError(err.kind, f"{err.detail}; retry not sent: cannot append to {config.SENDS}",
                                err.status, kpath)
             raise JevError("ledger", f"cannot append to {config.SENDS}; nothing sent", key_path=kpath)
-        t0 = time.monotonic()
+        t0, refused = time.monotonic(), False
         try:
             with urllib.request.urlopen(req, timeout=config.JEV_TIMEOUT_S) as r:
                 raw = r.read()
@@ -237,11 +237,15 @@ def ask(state, questions):
             err, wait = JevError("timeout", _why(e), None, kpath), RETRY_S
         except ValueError:
             # Raised locally before a byte leaves (http.client refusing a header or URL). Its
-            # message can quote the Authorization header, so it is dropped, never chained.
-            raise JevError("parse", "request refused locally (ValueError; message withheld)",
-                           key_path=kpath) from None
+            # message can quote the Authorization header, so it is dropped, never chained: the
+            # JevError is raised below, outside this clause, so it is not even kept as
+            # __context__ (`from None` only hides a context from display).
+            refused = True
         else:
             return _parse(raw, questions, int((time.monotonic() - t0) * 1000), kpath)
+        if refused:
+            raise JevError("parse", "request refused locally (ValueError; message withheld)",
+                           key_path=kpath) from None
         if attempt == 1:
             time.sleep(wait)
     raise err

@@ -362,6 +362,7 @@ class JevTest(unittest.TestCase):
         self.assertEqual(e.kind, "parse")
         self.assertIsNone(e.__cause__)
         self.assertTrue(e.__suppress_context__)
+        self.assertIsNone(e.__context__)                               # not merely hidden: not kept at all
         self.assertNotIn(KEY, str(e) + repr(vars(e)))
         self.assertEqual(self.urlopen.call_count, 1)                   # no retry
         self.assertEqual(len(self.rows()), 2)                          # header + the attempt's ledger row
