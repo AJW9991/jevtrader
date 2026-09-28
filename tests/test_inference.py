@@ -336,6 +336,52 @@ class PreT0Cut(unittest.TestCase):
         self.assertIn("rows before 2026-09-25T21:35Z", out)
 
 
+class SealedCopy(unittest.TestCase):
+    """A log holding rows of the repository's sealed sample (PREREG §11: 2026-09-25 21:40Z + 28 d) is read on
+    the real clock wherever it lives: a copy of the live log with --now, another --t0 or another --prereg
+    is not a way to look before day 28, and --pre-t0 cuts at the repository's seal whatever --prereg says."""
+    SEALED = report._t0("2026-09-25T21:40")
+    BEFORE_END = datetime.datetime(2026, 10, 1, tzinfo=datetime.timezone.utc)
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp()
+        cls.log = os.path.join(cls.tmp, "copy.jsonl")
+        _write(cls.log, _minutes(cls.SEALED - 600, cls.SEALED + 42 * 60, mid=lambda e: 100.0 + (e % 3600) / 600.0), garbage=False)
+        cls.none = _exclusions(os.path.join(cls.tmp, "none.tsv"))     # 10 rows before the seal, 42 inside the sample
+        cls.unsealed = os.path.join(cls.tmp, "PREREG.md")
+        with open(cls.unsealed, "w") as fh:
+            fh.write("# a PREREG with no T0 line\n")
+
+    def test_sample_with_now_is_refused_before_the_real_end(self):
+        with mock.patch.object(inference, "bootstrap", side_effect=AssertionError("the draw ran")):
+            code, out, err = _main(["--sample", "--log", self.log, "--t0", "2026-09-25T21:40", "--now", "2026-10-24T00:00",
+                                    "--resamples", "20", "--exclusions", self.none], now=self.BEFORE_END)
+        self.assertEqual(code, 3, err)
+        self.assertIn(f"refusing to look: {self.log} holds 42 rows of the sealed sample [2026-09-25T21:40Z, 2026-10-23T21:40Z)"
+                      " and it is 2026-10-01T00:00Z: a copy of the live log is read on the real clock", err)
+        self.assertEqual(out, "")
+
+    def test_another_t0_or_prereg_does_not_help(self):
+        with mock.patch.object(inference, "bootstrap", side_effect=AssertionError("the draw ran")):
+            code, _, err = _main(["--sample", "--log", self.log, "--t0", "2026-09-25T21:30", "--prereg", self.unsealed, "--now",
+                                  "2026-10-24T00:00", "--resamples", "20", "--exclusions", self.none], now=self.BEFORE_END)
+        self.assertEqual(code, 3, err)
+        self.assertIn("holds 42 rows of the sealed sample", err)
+
+    def test_runs_after_the_real_end(self):
+        code, out, err = _main(["--sample", "--log", self.log, "--t0", "2026-09-25T21:40", "--resamples", "20",
+                                "--exclusions", self.none, "--accept-pending"], now=AFTER_SEALED_END)
+        self.assertEqual(code, 0, err)
+        self.assertIn("T0 2026-09-25T21:40Z", out)
+
+    def test_pre_t0_cuts_at_the_repository_seal_whatever_prereg_says(self):
+        code, out, err = _main(["--pre-t0", "--log", self.log, "--t0", "2026-09-26T00:00", "--prereg", self.unsealed,
+                                "--resamples", "20", "--exclusions", self.none], now=self.BEFORE_END)
+        self.assertEqual(code, 0, err)
+        self.assertIn("rows before 2026-09-25T21:40Z (the earlier of --t0 and PREREG §11's T0)", out)
+
+
 class Reading(unittest.TestCase):
     """PREREG §8.1-§8.2's stop rules and §5/§9's reading, each on a line of its own, from the verdicts."""
 
@@ -551,7 +597,7 @@ class Pending(unittest.TestCase):
 
     def _run(self, log, *extra):
         return _main(["--sample", "--log", log, "--t0", T0S, "--now", "2026-10-21T10:00", "--resamples", "40",
-                      "--exclusions", self.ex, *extra])
+                      "--exclusions", self.ex, *extra], now=AFTER_SEALED_END)
 
     def test_units_whose_t_plus_h_the_log_has_not_reached_refuse_the_run(self):
         code, out, err = self._run(self.stopped)
@@ -637,7 +683,7 @@ class Pinned(unittest.TestCase):
         self.assertAlmostEqual(ba["mean"], 0.5165563466, places=9)          # the same number, pasted
         self.assertEqual(ba["mean"], sum(_block_sums(book.paired(self.rows, self.outs, "b", "a", "argmax", 0.0))) / 2688)
         code, out, err = _main(["--sample", "--log", self.log, "--t0", T0S, "--now", "2026-10-21T10:00", "--resamples", "20",
-                                "--exclusions", self.ex])
+                                "--exclusions", self.ex], now=AFTER_SEALED_END)
         self.assertEqual(code, 0, err)
         self.assertIn("  stop rule 2: mean S_k(B-A) = 0.5166 -> does not fire", out)
 
@@ -686,7 +732,7 @@ class Pinned(unittest.TestCase):
             h = inference.h2(report.in_sample(outcomes.load(path, []), T0), outcomes.join(outcomes.load(path, [])), T0, resamples=20)
         self.assertEqual((h["n"], h["degenerate"], h["lower"], h["reject"]), (4, "no variance in ret", None, False))
         code, out, err = _main(["--sample", "--log", path, "--t0", T0S, "--now", "2026-10-21T10:00", "--resamples", "20",
-                                "--exclusions", self.ex])
+                                "--exclusions", self.ex], now=AFTER_SEALED_END)
         self.assertEqual(code, 0, err)
         self.assertIn("n units 4 (blocks with a live row 4; dropped none): not supported: no variance in ret (PREREG §5 degenerate case)", out)
 
@@ -699,7 +745,7 @@ class Pinned(unittest.TestCase):
         h = inference.h2(scope, outcomes.join(all_rows), T0, resamples=20)
         self.assertEqual([(k, round(y, 9)) for k, _, y in h["units"]], [(2687, round(1e4 * math.log(100.0 / 99.85), 9))])
         code, out, err = _main(["--sample", "--log", path, "--t0", T0S, "--now", "2026-10-21T10:02", "--resamples", "20",
-                                "--exclusions", self.ex])                    # and the run itself joins over the whole log
+                                "--exclusions", self.ex], now=AFTER_SEALED_END)                    # and the run itself joins over the whole log
         self.assertEqual(code, 0, err)
         self.assertIn("  n units 1 (blocks with a live row 1; dropped none)", out)
 
@@ -708,14 +754,14 @@ class Pinned(unittest.TestCase):
         full = self._write(_end_rows())
         args = ["--sample", "--t0", T0S, "--resamples", "20", "--exclusions", self.ex]
         with mock.patch.object(outcomes, "load", side_effect=AssertionError("the log was opened")):
-            code, out, err = _main(args + ["--log", full, "--now", "2026-10-21T09:59"])
+            code, out, err = _main(args + ["--log", full, "--now", "2026-10-21T09:59"], now=AFTER_SEALED_END)
         self.assertEqual((code, out), (3, ""))
         self.assertIn("refusing to look: the sample ends 2026-10-21T10:00Z and it is 2026-10-21T09:59Z", err)
-        code, out, err = _main(args + ["--log", full, "--now", "2026-10-21T10:00"])                    # the log has the t + h rows
+        code, out, err = _main(args + ["--log", full, "--now", "2026-10-21T10:00"], now=AFTER_SEALED_END)                    # the log has the t + h rows
         self.assertEqual(code, 0, err)
-        code, out, err = _main(args + ["--log", stopped, "--now", "2026-10-21T10:00"])                 # it does not: refused ...
+        code, out, err = _main(args + ["--log", stopped, "--now", "2026-10-21T10:00"], now=AFTER_SEALED_END)                 # it does not: refused ...
         self.assertEqual(code, 3, err)
-        code, out, err = _main(args + ["--log", stopped, "--now", "2026-10-21T10:00", "--accept-pending"])   # ... unless it stopped
+        code, out, err = _main(args + ["--log", stopped, "--now", "2026-10-21T10:00", "--accept-pending"], now=AFTER_SEALED_END)   # ... unless it stopped
         self.assertEqual(code, 0, err)
 
 

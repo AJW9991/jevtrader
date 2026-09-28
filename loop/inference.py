@@ -11,7 +11,10 @@ in the header, so a run that overrode the clock says so in its own output. On th
 (--log resolving to config.DECISIONS) nothing may move the clock or the anchor: --now, a --t0
 other than PREREG §11's and another --prereg are refused (exit 3) in both modes, and so is
 --sample at any --resamples but 10,000; --pre-t0 cuts at the EARLIER of --t0 and the sealed
-T0, so a later --t0 never pulls a sample row into the smoke. The clock is not
+T0, so a later --t0 never pulls a sample row into the smoke (the seal is read from the
+repository's own PREREG.md as well as from --prereg's). A copy of the live log is the live log
+while the sample runs: a log holding a row of the repository's sealed sample refuses --sample
+until the sample's end on this checkout's real clock, whatever --now, --t0 or --prereg say. The clock is not
 the whole guard: the last block's H2 unit needs the row at t + 900 s +- 30 s, which is written
 up to ~15.5 min after T0 + 28 d, so --sample also refuses (exit 3) while any kept block's
 first live row has a gap outcome whose t + h the log has not reached (pending_units); a
@@ -495,6 +498,7 @@ def main(argv=None, now=None):
     ap.add_argument("--accept-pending", action="store_true",
                     help="--sample on a log that really stopped: count the units whose t + h it never reached as gaps (printed)")
     args = ap.parse_args(argv)
+    real_now = now or datetime.datetime.now(datetime.timezone.utc)   # this checkout's clock; --now never moves it
     if args.resamples < 1:
         ap.error(f"--resamples wants a positive count, got {args.resamples}")
     live_log = os.path.realpath(args.log) == os.path.realpath(config.DECISIONS)   # the launchd log, not a copy or a fixture
@@ -513,6 +517,7 @@ def main(argv=None, now=None):
     if t0 is None:
         ap.error("no T0: PREREG.md §11 is unsealed and no --t0 given")
     sealed = _read_t0(args.prereg)                          # PREREG §11's T0 (None before sealing)
+    sealed_repo = _read_t0(os.path.join(config.REPO, "PREREG.md"))   # the repository's own seal, whatever --prereg names
     if live_log:                                            # the clock and T0 of the live log are the real ones, in both modes
         why = None
         if args.now:
@@ -553,6 +558,14 @@ def main(argv=None, now=None):
         sys.stderr.write(f"inference: no log at {args.log}\n")
         return 2
     rows, bad, sha, nbytes = read_log(args.log)             # one read: the sha is of the bytes the rows came from
+    if args.sample and sealed_repo is not None and real_now.timestamp() < sealed_repo + N_DAYS * 86400:
+        held = report.in_sample(rows, sealed_repo)         # a copy of the live log is the live log: read on the real clock
+        if held:
+            sys.stderr.write(f"inference: refusing to look: {args.log} holds {len(held)} rows of the sealed sample"
+                             f" [{report._iso_minute(sealed_repo)}, {report._iso_minute(sealed_repo + N_DAYS * 86400)}) and it is"
+                             f" {real_now.strftime('%Y-%m-%dT%H:%MZ')}: a copy of the live log is read on the real clock, whatever"
+                             " --now, --t0 or --prereg say (PREREG §8.4-§8.5; --pre-t0 runs the shakedown rows)\n")
+            return EXIT_NOT_YET
     outs = outcomes.join(rows)
     cut = None
     if args.sample:
@@ -561,7 +574,7 @@ def main(argv=None, now=None):
         kept = N_DAYS - len(excluded)
     else:
         mode = "pre-t0"
-        cut = t0 if sealed is None else min(t0, sealed)     # a later --t0 never pulls a sample row into the smoke
+        cut = min([t0] + [s for s in (sealed, sealed_repo) if s is not None])   # a later --t0 or another --prereg never pulls a sample row into the smoke
         scope = [r for r in rows if report.tick_epoch(r["tick_id"]) < cut]
         anchor = report.tick_epoch(min(r["tick_id"] for r in scope)) if scope else t0
         excluded, excl_lines = set(), []                    # exclusions name sample days; none apply before T0
