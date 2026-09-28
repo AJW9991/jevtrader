@@ -112,6 +112,16 @@ def _sh_env(tc, tmp=None, **extra):
     return env
 
 
+def _tree_copy(tc):
+    """A copy of the code propose.sh runs (loop/ and nightly/, no bytecode) in a temp dir, removed after
+    the test `tc`. A test that points --dry --root at "the repo" points it at this copy and runs the
+    copy's propose.sh: a guard that failed would write the fixture into the copy, never the checkout."""
+    copy = os.path.join(tc.enterContext(tempfile.TemporaryDirectory()), "tree")
+    for d in ("loop", "nightly"):
+        shutil.copytree(os.path.join(REPO, d), os.path.join(copy, d), ignore=shutil.ignore_patterns("__pycache__"))
+    return copy
+
+
 def _alive(pid):
     """True while `pid` is a live process: gone, or a zombie waiting for its reaper (Linux /proc), is not."""
     try:
@@ -982,6 +992,17 @@ class ProposeDryTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(os.path.exists(os.path.join(tmp, "sub", "proposals", "2026-09-22.json")))
         self.assertFalse(os.path.exists(os.path.join(REPO, "sub")))
+
+    def test_dry_refuses_the_repo_when_the_script_is_run_by_a_double_slash_path(self):
+        # bash's `pwd -P` keeps a leading '//' that os.path.realpath drops, so REPO was "//<repo>" and
+        # ROOT_REAL "/<repo>": the check compared the two strings and the fixture went into the repo's
+        # proposals/ (61ebbb1 compares REPO_REAL). Run on a copy of the tree, never the checkout.
+        copy = _tree_copy(self)
+        r = subprocess.run(["/bin/bash", "/" + os.path.join(copy, "nightly", "propose.sh"), "--dry", "--date", "2026-09-23",
+                            "--root", copy], capture_output=True, text=True, timeout=120, env=_sh_env(self))
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("--dry writes fixture files; pass --root DIR outside the repo", r.stderr)
+        self.assertEqual(sorted(os.listdir(copy)), ["loop", "nightly"])        # no proposals/, logs/ or data/
 
     def test_a_committed_table_also_refuses_a_second_run(self):
         # the json is gitignored: after a re-clone only the .md is there, and a rerun would rewrite
