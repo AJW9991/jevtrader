@@ -9,28 +9,36 @@ outcomes.load and outcomes.join, in a subprocess of this interpreter, and this p
 and tick_ids only: the rows each tree read, the lines each skipped and the whole rows the
 newer reader kept back from a torn line, the priced tick_ids with more than one row, the
 live answered rows with both columns null, and the ticks whose joined outcome differs. Never
-a return, a PnL or a statistic (CLAUDE.md: no section 4-7 look), and never a write. It
+a return, a PnL or a statistic (CLAUDE.md: no section 4-7 look), and never a write (the
+probes run isolated, -I, and write no bytecode, -B; each checks the loop/ it imported is its
+tree's, so a tree without loop/__init__.py can never silently be the checkout). It
 exists for HANDOFF.md's counts before a merge: if every count is 0, the merge changes no
 existing reading of the log. Exit 0 when both trees read the log, 2 when one cannot.
 """
 import argparse, json, os, subprocess, sys
 
 PROBE = r'''
-import json, sys
+import json, math, os, sys
 sys.path.insert(0, sys.argv[1])
 from loop import outcomes
+here, want = os.path.realpath(os.path.dirname(outcomes.__file__)), os.path.realpath(os.path.join(sys.argv[1], "loop"))
+if here != want:
+    sys.exit(f"loop.outcomes came from {here}, not the tree's {want}")
 bad = []
 rows = outcomes.load(sys.argv[2], bad)
 outs = outcomes.join(rows)
 priced = {}
+def is_priced(r):
+    m = r.get("mid")
+    return isinstance(m, (int, float)) and not isinstance(m, bool) and math.isfinite(m) and m > 0
 for r in rows:
-    if r.get("mid") is not None:
+    if is_priced(r):
         priced[r["tick_id"]] = priced.get(r["tick_id"], 0) + 1
 def argmax(r, arm):
     return ((r.get("columns") or {}).get(arm) or {}).get("argmax")
 nullcols = sum(1 for r in rows if r.get("mode") == "live" and r.get("absence") is None
                and argmax(r, "a") is None and argmax(r, "b") is None)
-print(json.dumps({"rows": len(rows), "skipped": len(bad), "kept": sum(1 for b in bad if "kept" in str(b[1])),
+print(json.dumps({"rows": len(rows), "skipped": len({b[0] for b in bad}), "kept": len({b[0] for b in bad if "kept" in str(b[1])}),
                   "outs": {t: [o.get("mid_h"), o.get("ret_h_bps"), o.get("label"), o.get("absence")] for t, o in outs.items()},
                   "dup_priced": sorted(t for t, n in priced.items() if n > 1), "nullcols_live": nullcols}))
 '''
@@ -42,7 +50,10 @@ def read_with(tree, log):
     """The probe's dict for one tree, or (None, stderr) when the tree cannot read the log."""
     if not os.path.isdir(os.path.join(tree, "loop")):
         return None, f"{tree} holds no loop/ directory"
-    p = subprocess.run([sys.executable, "-c", PROBE, os.path.abspath(tree), log], capture_output=True, text=True)
+    if not os.path.isfile(os.path.join(tree, "loop", "outcomes.py")):
+        return None, f"{tree}/loop holds no outcomes.py"
+    p = subprocess.run([sys.executable, "-I", "-B", "-c", PROBE, os.path.abspath(tree), os.path.abspath(log)],
+                       capture_output=True, text=True)
     if p.returncode != 0:
         return None, p.stderr.strip().splitlines()[-1] if p.stderr.strip() else f"exit {p.returncode}"
     return json.loads(p.stdout), None
@@ -53,8 +64,8 @@ def lines(old, new):
     differ = [t for t in sorted(set(old["outs"]) | set(new["outs"])) if old["outs"].get(t) != new["outs"].get(t)]
     head = lambda xs: (" " + " ".join(xs[:SHOWN]) + (" ..." if len(xs) > SHOWN else "")) if xs else ""
     return [
-        f"rows read: old {old['rows']} / new {new['rows']}" + ("" if old["rows"] == new["rows"] else "  (a whole row glued onto a torn line is read by the new tree only)"),
-        f"lines skipped: old {old['skipped']} / new {new['skipped']}; whole rows kept back from a torn line by the new tree: {new['kept']}",
+        f"rows read: old {old['rows']} / new {new['rows']}" + ("" if old["rows"] == new["rows"] else "  (the trees' load() read different rows; the next line says how many lines the new one recovers)"),
+        f"lines skipped: old {old['skipped']} / new {new['skipped']}; lines from which the new tree recovered a whole row: {new['kept']}",
         f"priced tick_ids with more than one row: {len(new['dup_priced'])}" + head(new["dup_priced"]),
         f"live answered rows with both columns null (book._intent): {new['nullcols_live']}",
         f"ticks whose joined outcome differs old vs new: {len(differ)}" + head(differ),

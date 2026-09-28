@@ -42,7 +42,7 @@ class ReadersDiff(unittest.TestCase):
         code, out, err = _run(REPO, REPO, "--log", self.log)
         self.assertEqual(code, 0, err)
         self.assertIn("rows read: old 41 / new 41\n", out)
-        self.assertIn("lines skipped: old 1 / new 1; whole rows kept back from a torn line by the new tree: 1\n", out)
+        self.assertIn("lines skipped: old 1 / new 1; lines from which the new tree recovered a whole row: 1\n", out)
         self.assertIn("priced tick_ids with more than one row: 1 20260923T100700Z\n", out)
         self.assertIn("live answered rows with both columns null (book._intent): 0\n", out)
         self.assertIn("ticks whose joined outcome differs old vs new: 0\n", out)
@@ -58,6 +58,28 @@ class ReadersDiff(unittest.TestCase):
         self.assertEqual(code, 0)
         for token in ("mid_h", "ret_h", "bps", "101.0", "100.0", "up", "down", "flat", "S_k", "H1", "H2", "r("):
             self.assertNotIn(token, out.replace("H2 unit", ""), token)
+
+    def test_an_empty_loop_is_refused_even_run_from_the_checkout(self):
+        # run from the repository root (the documented use: --log defaults to a relative path), an old
+        # tree whose loop/ is empty or has no __init__.py must not silently import the checkout's loop/
+        empty = os.path.join(self.tmp, "empty")
+        os.makedirs(os.path.join(empty, "loop"), exist_ok=True)
+        code, out, err = _run(empty, REPO, "--log", self.log)
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("holds no outcomes.py", err)
+        bare = os.path.join(self.tmp, "bare")                       # a namespace package: outcomes.py, no __init__.py
+        shutil.copytree(os.path.join(REPO, "loop"), os.path.join(bare, "loop"), ignore=shutil.ignore_patterns("__pycache__", "__init__.py"))
+        code, out, err = _run(bare, REPO, "--log", self.log)
+        self.assertIn(code, (0, 2), err)
+        if code == 0:                                                # it read with the tree's own code
+            self.assertIn(f"read by old {bare}", out)
+
+    def test_it_writes_no_bytecode_into_either_tree(self):
+        pyc = os.path.join(self.old, "loop", "__pycache__")
+        shutil.rmtree(pyc, ignore_errors=True)
+        code, _, err = _run(self.old, REPO, "--log", self.log)
+        self.assertEqual(code, 0, err)
+        self.assertFalse(os.path.exists(pyc))
 
     def test_a_tree_without_loop_or_a_missing_log_is_said_so(self):
         code, out, err = _run(self.tmp, REPO, "--log", self.log)
