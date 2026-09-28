@@ -28,6 +28,40 @@ def _counting_parses():
     with mock.patch.object(outcomes, "_DECODER", Counting()):
         yield n
 
+
+def _glued_parsing_every_row_start(line):
+    """outcomes._glued as it was at 1e7faeb (quadratic when a row nests row-like objects): after the
+    forward pass, every row start that begins like a row, right to left, is parsed, and one whose
+    value ends where the next rescued piece begins and carries the writer's keys is kept. The
+    reference the linear rescue must agree with."""
+    dec, out, pos, end = outcomes._DECODER, [], 0, len(line.rstrip())
+    while True:
+        while pos < end and line[pos].isspace():
+            pos += 1
+        if pos >= end:
+            return [(v, False) for v in out]
+        try:
+            v, pos = dec.raw_decode(line, pos)
+        except (ValueError, RecursionError):
+            break
+        out.append(v)
+    rescued, right, hi = [], end, end
+    while True:
+        i = line.rfind(outcomes.ROW_START, pos + 1, hi)
+        if i <= pos:
+            break
+        hi = i + len(outcomes.ROW_START) - 1
+        if not outcomes._ROW_HEAD.match(line, i):
+            continue
+        try:
+            v, stop = dec.raw_decode(line, i)
+        except (ValueError, RecursionError):
+            continue
+        if line[stop:right].strip() == "" and outcomes._writer_row(v):
+            rescued.insert(0, v)
+            right = i
+    return [(v, False) for v in out] + [(v, True) for v in rescued]
+
 T0 = datetime.datetime(2026, 9, 23, 10, 0, 0, tzinfo=datetime.timezone.utc)
 H = config.HORIZON_S
 
@@ -333,9 +367,9 @@ class Load(unittest.TestCase):
 
     def test_a_torn_row_nesting_many_v_objects_costs_no_parse_per_level(self):
         # a torn row whose kept answer nests {"v":{"v":...}} thousands deep: every nested row start used
-        # to be parsed (each through the rest of the nest), quadratic in the depth; only a candidate that
-        # begins like a row is parsed now. Counted in parses, not seconds: the old reader's time sat at
-        # the old 0.5 s bound under 3.10/3.11 and passed about half the time; its count was 5972
+        # to be parsed (each through the rest of the nest), quadratic in the depth; no level is parsed
+        # now. Counted in parses, not seconds: the old reader's time sat at the old 0.5 s bound under
+        # 3.10/3.11 and passed about half the time; its count was 5972
         p = os.path.join(_tmpdir(self), "d.jsonl")
         depth = 10000
         nest = '{"v":' * depth + "1" + "}" * depth
@@ -347,6 +381,101 @@ class Load(unittest.TestCase):
             self.assertEqual(outcomes.load(p, bad), [])
         self.assertLessEqual(parses[0], 2, parses)                      # the forward attempt, no parse per level
         self.assertEqual(len(bad), 1)
+
+    def test_a_torn_row_nesting_objects_that_begin_like_a_row_costs_no_parse_per_level(self):
+        # objects that begin as a row does ({"v":N,"tick_id":"), nested in a kept answer, were parsed
+        # one per level, each through the rest of the nest (depth 8000: 9 s in every reader, the uncapped
+        # digest included). Torn inside such a nest with a whole row glued on, and whole inside a row
+        # glued onto a torn head: the whole row is kept, and the parses are one forward, one per kept
+        # row and at most one that fails, whatever the depth (the reader of 1e7faeb: 452 and 602 here)
+        p = os.path.join(_tmpdir(self), "d.jsonl")
+        unit, depth = '{"v":1,"tick_id":"x","a":', 600                  # under 3.11's parser depth: the whole nest parses
+        nest = unit * depth + "1" + "}" * depth
+        j = lambda r: json.dumps(r, separators=(",", ":"))
+        a, b = j(dict(_row(0, 100.0), answers="X")).replace('"X"', nest), j(_row(60, 101.0))
+        b_nesting = j(dict(_row(60, 101.0), answers="X")).replace('"X"', nest)
+        for line, want in ((a[:a.index(nest) + len(unit) * depth * 3 // 4] + b, b), (a[:40] + b_nesting, b_nesting)):
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+            bad = []
+            with _counting_parses() as parses:
+                rows = outcomes.load(p, bad)
+            self.assertEqual(rows, [json.loads(want)])                     # a nest that is the row's comes back whole
+            self.assertEqual(len(bad), 1)
+            self.assertIn("the whole row appended onto the torn line is kept", bad[0][1])
+            self.assertLessEqual(parses[0], 3, parses)
+
+    def test_the_rescue_keeps_what_parsing_every_row_start_kept(self):
+        # the rescue parses only the start _opening finds; on seeded random torn and glued lines (rows
+        # whose answers nest row-like and "v"-first objects or hold a row serialized in a string, strings
+        # full of quotes, backslashes and braces, whitespace between pieces) it returns exactly what
+        # parsing every start that begins like a row did
+        import random
+        rng = random.Random(20260928)
+        texts = ['a', '{"v":1,"tick_id":"', '\\', '"', '\\"', '}', '{', '[', ']', '{"v":', '\u00e9', ' ', ',"x":']
+
+        def text():
+            return "".join(rng.choice(texts) for _ in range(rng.randint(0, 4)))
+
+        def value(d):
+            k = rng.random()
+            if d <= 0 or k < 0.3:
+                return rng.choice([1, 2.5, None, True, text()])
+            if k < 0.45:
+                return [value(d - 1) for _ in range(rng.randint(0, 3))]
+            if k < 0.6:
+                return {"v": rng.randint(0, 2), "tick_id": text(), "a": value(d - 1)}
+            if k < 0.7:
+                return {"v": value(d - 1)}
+            if k < 0.8:
+                return dict(_row(0, 1.0), n=value(d - 1))                 # a whole row, nested in an answer
+            if k < 0.85:
+                return json.dumps(dict(_row(0, 1.0), n=value(d - 1)))      # a row serialized in a string: escaped quotes
+            return {text(): value(d - 1) for _ in range(rng.randint(0, 3))}
+
+        def piece(m):
+            r = dict(_row(60 * m, 100.0 + m), answers=value(rng.randint(0, 5)))
+            s = json.dumps(r, separators=(",", ":") if rng.random() < 0.8 else None, ensure_ascii=rng.random() < 0.5)
+            k = rng.random()
+            if k < 0.5:
+                return s
+            if k < 0.8:
+                return s[:rng.randint(1, len(s) - 1)]                    # torn
+            if k < 0.9:
+                return json.dumps(value(3))
+            return rng.choice(["x", " ", "}", '"', "\\", "{", '{"v":'])
+        rescues = 0
+        for n in range(1500):
+            line = "".join(piece(n + k) + rng.choice(["", "", " ", "\t", "\u00a0"]) for k in range(rng.randint(1, 5)))
+            got = outcomes._glued(line)
+            self.assertEqual(got, _glued_parsing_every_row_start(line), line)
+            rescues += any(rescued for _, rescued in got)
+        self.assertGreater(rescues, 300)                                  # the rescue was exercised, not skipped
+
+    def test_a_whole_row_with_text_after_it_is_not_rescued(self):
+        # a piece is taken only if nothing but whitespace follows it: here the backward read from the
+        # line's last brace lands on the row's own start (the '"' after the row turns the read inside
+        # out, the escaped quote in its answer turns it back), and the row is still not taken
+        p = os.path.join(_tmpdir(self), "d.jsonl")
+        b = json.dumps(dict(_row(60, 101.0), answers={"x": 'a"b'}), separators=(",", ":"))
+        self.assertEqual(outcomes._opening("x" + b + '"}}', 0, len(b) + 4), 1)
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write("x" + b + '"}}\n')
+        bad = []
+        self.assertEqual(outcomes.load(p, bad), [])
+        self.assertEqual([n for n, _ in bad], [1])
+        self.assertNotIn("kept", bad[0][1])
+
+    def test_a_whole_row_that_does_not_begin_like_a_row_is_not_rescued(self):
+        # only a piece that begins as the writer's rows do ({"v":N,"tick_id":") is parsed: the same row
+        # with its keys in another order, glued onto a torn head, is not taken
+        p = os.path.join(_tmpdir(self), "d.jsonl")
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(_row(0, 100.0))[:40] + json.dumps(_row(60, 101.0), sort_keys=True) + "\n")
+        bad = []
+        self.assertEqual(outcomes.load(p, bad), [])
+        self.assertEqual([n for n, _ in bad], [1])
+        self.assertNotIn("kept", bad[0][1])
 
     def test_a_long_line_of_glued_rows_costs_no_recursion(self):
         p = os.path.join(_tmpdir(self), "d.jsonl")

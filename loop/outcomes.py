@@ -216,10 +216,14 @@ def _glued(line):
     ended, so nothing nested inside a row can surface here. Where a value does not parse (a torn
     row), the whole rows after it are rescued from the right: each from a row start whose value ends
     exactly where the next rescued piece (or the line) begins, and each must carry the writer's keys
-    (_writer_row), so an object nested in the torn row is never taken for a row. Only a candidate that
-    begins like a row ({"v":N,"tick_id":") is parsed, so a torn row nesting many "v"-first objects
-    costs no parse per level; a depth past the parser's limit is a failed piece, not an exception. Each
-    value is then read as a row only if _not_row says so."""
+    (_writer_row), so an object nested in the torn row is never taken for a row. At most one object
+    can end exactly there (one nested in another closes before it, and one begun inside another's
+    string cannot close where that one does), _opening finds where it begins, and only that start is
+    parsed, and only if it begins like a row ({"v":N,"tick_id":"): one parse per rescued piece and at
+    most one that fails, so the rescue is linear in the line however deeply a torn row nests objects,
+    row-like or not. (Until 2026-09-28 every start that began like a row was parsed, right to left,
+    each through the rest of its nest; the same pieces come out.) A depth past the parser's limit is
+    a failed piece, not an exception. Each value is then read as a row only if _not_row says so."""
     out, pos, end = [], 0, len(line.rstrip())
     while True:
         while pos < end and line[pos].isspace():
@@ -231,19 +235,49 @@ def _glued(line):
         except (ValueError, RecursionError):
             break
         out.append(v)
-    rescued, right, hi = [], end, end
+    rescued, right = [], end
     while True:
-        i = line.rfind(ROW_START, pos + 1, hi)
-        if i <= pos:
+        i = _opening(line, pos, right)                          # the one start whose value can end at `right`
+        if i is None or not _ROW_HEAD.match(line, i):
             break
-        hi = i + len(ROW_START) - 1                             # the next candidate starts left of this one
-        if not _ROW_HEAD.match(line, i):                        # not a row's head: no parse (a torn row nesting
-            continue                                            # thousands of {"v": objects cost a parse each)
         try:
             v, stop = _DECODER.raw_decode(line, i)
         except (ValueError, RecursionError):
-            continue
-        if line[stop:right].strip() == "" and _writer_row(v):
-            rescued.insert(0, v)
-            right = i
-    return [(v, False) for v in out] + [(v, True) for v in rescued]
+            break                                               # and no other start can give a piece ending there
+        if line[stop:right].strip() != "" or not _writer_row(v):
+            break
+        rescued.append(v)
+        right = i
+    return [(v, False) for v in out] + [(v, True) for v in reversed(rescued)]
+
+
+def _opening(line, lo, right):
+    """Where the object begins whose closing brace is the last non-space character before `right`, if
+    after `lo`; else None. Read backward as JSON is written: the first quote met outside a string
+    closes one, a quote inside one opens it unless an odd run of backslashes escapes it, and braces
+    and brackets count only outside strings. On text that is one object ending there this is exactly
+    that object's start; on any other text the parse from it is still the judge. One pass over the
+    characters it reads."""
+    k = right
+    while k > lo + 1 and line[k - 1].isspace():
+        k -= 1
+    if k <= lo + 1 or line[k - 1] != "}":
+        return None
+    depth, in_string = 0, False
+    for j in range(k - 1, lo, -1):
+        c = line[j]
+        if in_string:
+            if c == '"':
+                b = j
+                while b > lo and line[b - 1] == "\\":
+                    b -= 1
+                in_string = (j - b) % 2 == 1                    # an odd run of backslashes escapes this quote
+        elif c == '"':
+            in_string = True
+        elif c == "}" or c == "]":
+            depth += 1
+        elif c == "{" or c == "[":
+            depth -= 1
+            if depth == 0:
+                return j if c == "{" else None
+    return None

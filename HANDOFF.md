@@ -117,7 +117,8 @@ and says so) · `make dash` · `make inference-smoke` · `make results` (day 28;
 - outcomes: the live decision speaks for its tick when two rows share it; ties in whole ms; a
   whole row glued onto a torn line is kept, and so are whole rows that lost their newlines (read
   forward from the line's start; after a torn row only pieces with the writer's keys, so an object
-  nested in a row is never a row; one skip entry per line; linear in the line). book: null columns hold C too (SPEC §10; latent).
+  nested in a row is never a row; one skip entry per line; linear in the line however deeply a torn
+  row nests objects, row-like or not: one parse per value read and at most two that fail). book: null columns hold C too (SPEC §10; latent).
 - **The outcomes and book changes are READERS** (an auditor of the whole diff, 2026-09-28): every
   report, digest and inference run re-reads the whole log with them. On a tick with two or more
   rows, on a torn line with a whole row glued to it, or on an exact-millisecond tie, `join`/`load`
