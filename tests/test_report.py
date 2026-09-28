@@ -1142,6 +1142,32 @@ class PerDay(unittest.TestCase):
         self.assertIn("BAD days 1: d28", buf.getvalue())
         self.assertNotIn("d29", buf.getvalue())                                  # the two hours after the sample are not a sample day
 
+    def test_the_first_line_counts_the_tables_days(self):
+        # with --t0 the first line counted UTC dates: a whole [T0, T0 + 28 d) sample from 21:40Z touches 29 of
+        # them, so the day-14 look and `make health` printed "29 days" above a table of d01..d28
+        t0 = report.tick_epoch("20260925T214000Z")
+        rows = []
+        for m in range(0, report.SAMPLE_DAYS * 1440, 60):                # a row an hour, the whole sample
+            e = t0 + 60 * m
+            rows.append(dict(_row(7), tick_id=report._tick_of(e),
+                             ts_rx=datetime.datetime.fromtimestamp(e, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.100Z")))
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        self.enterContext(mock.patch.object(config, "HALT", os.path.join(tmp, "no-HALT")))
+        h = report.health(rows, outcomes.join(rows), t0=t0)
+        self.assertEqual([d["day"] for d in h["days"]], [f"d{j:02d}" for j in range(1, 29)])
+        self.assertIn("(672 ticks, 28 days, 20260925T214000Z..20261023T204000Z)", h["lines"][0])
+        cal = report.health(rows, outcomes.join(rows))                    # no T0: UTC calendar days, as the table's
+        self.assertEqual(len(cal["days"]), 29)
+        self.assertIn("(672 ticks, 29 days, ", cal["lines"][0])
+        half = [r for r in rows if report.tick_epoch(r["tick_id"]) < t0 + 14.5 * 86400]   # the day-14 look's log
+        self.assertIn("(348 ticks, 15 days, ", report.health(half, outcomes.join(half), t0=t0)["lines"][0])
+        log = os.path.join(tmp, "sample.jsonl")
+        _write(log, rows, garbage=False)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(report.main(["--log", log, "--health", "--t0", "20260925T214000Z"], now=t0 + 29 * 86400), 0)
+        self.assertIn("  rows 672 (672 ticks, 28 days, ", buf.getvalue())
+
     def test_a_token_count_past_a_floats_range_is_named_not_a_crash(self):
         # report._num ran math.isfinite on the int, which raises OverflowError: the day-14 health look,
         # the dash and status all died on one such row. It is left out of the sum and named.

@@ -144,7 +144,8 @@ def health(rows, outs, bad=(), t0=None, last=None, now=None, since=None):
     dry = [r for r in rows if r.get("mode") == "dry"]
     absence = collections.Counter(r["absence"] for r in rows if r.get("absence") is not None)
     ticks = sorted({r["tick_id"] for r in rows})
-    days = sorted({t[:8] for t in ticks})
+    days = sorted({day_of(t, t0) for t in ticks})   # the table's days: T0-anchored dNN with T0, else UTC dates (a
+                                                    # 28-day sample from 21:40Z touches 29 dates and would read "29 days")
     priced = {r["tick_id"] for r in rows if _num(r.get("mid"))}          # a tick can have an outcome only with a mid
     filled = sum(1 for t in priced if (outs.get(t) or {}).get("absence") is None)
     # attempted = the send happened or was tried: live rows that got past the feed and the guards
