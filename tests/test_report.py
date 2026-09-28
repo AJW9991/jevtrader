@@ -24,6 +24,7 @@ import contextlib, datetime, io, json, math, os, shutil, tempfile, unittest
 from unittest import mock
 
 from fixture_prereg import pin_prereg
+import synth
 from loop import book, config, outcomes, report, rules, state
 
 MINUTES = tuple(range(0, 20)) + tuple(range(22, 42))       # 40 ticks, minutes 20 and 21 missing
@@ -889,7 +890,7 @@ class Withheld(unittest.TestCase):
             self.assertIn(t, out)
         for t in report.TITLES[3:]:
             self.assertNotIn(t, out)
-        for word in ("H1 cell", "H2 statistic", "Pearson", "Brier", "pair B-C", "P(correct)"):
+        for word in ("H1 cell", "H2 statistic", "Pearson", "Brier", "pair B-C", "P(correct)", "by arm B's prompt version"):
             self.assertNotIn(word, out)
         self.assertEqual(err, "")
         # --t0 and --since do not lift it; --health is the look and needs no notice
@@ -906,6 +907,7 @@ class Withheld(unittest.TestCase):
         self.assertNotIn("WITHHELD", out)
         for t in report.TITLES:
             self.assertIn(t, out)
+        self.assertIn("H1 cell by arm B's prompt version", out)                  # the per-version lines sit in §4.5
         self.assertIn("report: --unblind: sections 4-7 printed on sample rows before 2026-10-23T21:40Z; this is a look (PREREG §8.4)", err)
 
     def test_after_the_sample_and_before_t0_print_in_full(self):
@@ -939,6 +941,66 @@ class Withheld(unittest.TestCase):
         h = report.health(dry + [dict(_row(30), tick_id="20260925T100000Z", ts_rx="2026-09-25T10:00:00.100Z")], outcomes.join(dry))
         self.assertEqual(h["empty_days"], [])
         self.assertNotIn("NO LIVE ROWS", "\n".join(h["lines"]))
+
+
+class ByVersion(unittest.TestCase):
+    """report §4.5's H1 cell by arm B's prompt version (descriptive, not in PREREG; withheld with the
+    rest of §4-§7, see Withheld): a tick's version is its answered live row's prompt_b, carried
+    forward over ticks with none, and a version's blocks run from its first tick's to its last's."""
+
+    def _rows(self, spec):
+        # spec: [(minute, prompt_b or None for an absence, ts_rx suffix)]
+        out = []
+        for m, v, ms in spec:
+            r = {"tick_id": f"20260926T00{m:02d}00Z", "ts_rx": f"2026-09-26T00:{m:02d}:00.{ms}Z", "mode": "live",
+                 "absence": None if v else "jev", "answers": {"a_action": {}} if v else None, "prompt_b": v or "v9"}
+            out.append(r)
+        return out
+
+    def test_a_hand_built_log(self):
+        rows = self._rows([(0, "v1", 100), (1, "v1", 100), (2, "v1", 100), (3, "v2", 100), (4, "v2", 100),
+                           (5, "v2", 100), (6, None, 100), (12, "v2", 100)])
+        d = [(r["tick_id"], x) for r, x in zip(rows, (1.0, 2.0, -1.0, 4.0, 0.0, 1.0, -2.0, 0.5))]
+        kof = {r["tick_id"]: k for r, k in zip(rows, (0, 0, 0, 1, 1, 1, 1, 3))}        # block 2 holds no tick
+        dis = {rows[1]["tick_id"], rows[4]["tick_id"]}
+        got, lines = report.by_version(rows, d, dis, kof)
+        self.assertEqual(got, [("v1", "20260926T000000Z", "20260926T000200Z", 3, 1),
+                               ("v2", "20260926T000300Z", "20260926T001200Z", 5, 3)])   # the absence at :06 is v2's, not "v9"
+        self.assertEqual(lines[4].split(), ["v1", "2026-09-26T00:00Z", "2026-09-26T00:02Z", "3", "1", "2.000", "1", "100.0%", "2.000"])
+        # v2: S_1 = 4 + 0 + 1 - 2 = 3, S_2 = 0 (empty, inside the span), S_3 = 0.5: mean 3.5 / 3; dis block 1 only
+        self.assertEqual(lines[5].split(), ["v2", "2026-09-26T00:03Z", "2026-09-26T00:12Z", "5", "3", "1.167", "1", "33.3%", "3.000"])
+
+    def test_two_answered_rows_on_one_tick_take_the_later_ones_version(self):
+        rows = self._rows([(0, "v1", 100), (1, "v1", 100), (1, "v2", 500), (2, "v2", 100)])
+        d = [("20260926T000000Z", 1.0), ("20260926T000100Z", 1.0), ("20260926T000200Z", 1.0)]
+        kof = {t: 0 for t, _ in d}
+        got, _ = report.by_version(rows, d, set(), kof)
+        self.assertEqual([(v, n) for v, _, _, n, _ in got], [("v1", 1), ("v2", 2)])
+
+    def test_no_answered_live_row_says_so(self):
+        got, lines = report.by_version(self._rows([(0, None, 100)]), [("20260926T000000Z", 0.0)], set(), {"20260926T000000Z": 0})
+        self.assertEqual(got, [])
+        self.assertEqual(lines, ["  by arm B's prompt version: no answered live row names one"])
+
+    def test_a_synthetic_sample_with_two_promotions(self):
+        rows = synth.rows(3, days=2.0, pre_hours=0.0, promotions_h=(10.0, 30.0))
+        t0 = report.tick_epoch("20260925T214000Z")
+        rows = report.in_sample(rows, t0)
+        tb = report.table(rows, outcomes.join(rows), t0)
+        vs = tb["versions"]
+        self.assertEqual([v for v, *_ in vs], ["v1", "v2", "v3"])
+        self.assertEqual([a for _, a, *_ in vs], ["20260925T214100Z", "20260926T074000Z", "20260927T034000Z"])   # T0 + 10 h, + 30 h
+        d = tb["cells"][report.PRIMARY]["all"]["d"]
+        self.assertEqual(sum(n for *_, n, _ in vs), len(d))                             # every tick is in one version
+        text = "\n".join(tb["lines"])
+        self.assertLess(text.index("H1 cell (PREREG §4)"), text.index("H1 cell by arm B's prompt version"))
+        self.assertLess(text.index("H1 cell by arm B's prompt version"), text.index("pair B-C"))
+        # the per-version sums add up to the cell's: sum over versions of mean_S x blocks = sum of d_t
+        names = {v for v, *_ in vs}
+        mean = {ln.split()[0]: float(ln.split()[5]) for ln in tb["lines"] if ln.startswith("    ") and ln.split()[0] in names}
+        self.assertEqual(set(mean), names)
+        total = sum(mean[v] * b for v, *_, b in vs)
+        self.assertAlmostEqual(total, sum(x for _, x in d), delta=0.0005 * sum(b for *_, b in vs))
 
 
 class PerDay(unittest.TestCase):

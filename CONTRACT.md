@@ -308,7 +308,11 @@ Print, plain text, in this order:
    first tick), n blocks, mean S_k, disagreement blocks and their share, mean S_k
    on them. `--t0` cuts the rows to [T0, T0 + 28 d) before any replay, so every
    arm starts flat at T0. (This replaced an every-15th-tick d_t, which PREREG §3
-   says is not the statistic.)
+   says is not the statistic.) Under the H1 cell, the same cell by arm B's prompt
+   version (the rewrite's iterations; 2026-09-28, approved by Alex): per version its
+   first and last tick, ticks, blocks from its first tick's to its last tick's, mean
+   S_k, disagreement blocks and mean S_k on them. Descriptive and not in PREREG;
+   withheld with the rest of §4-§7 on sample rows until day 28.
 6. H2, the direction lean (PREREG §5; 2026-09-24, decided by Alex: H2 moves
    to the direction probabilities): lean_t = `up15.noul − down15.noul` (the
    `v1` nouls, shared by A and B) against `ret_h_bps` of the outcome join

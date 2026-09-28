@@ -504,6 +504,55 @@ def _cell(px, py, dis):
             "hit": _rate(sum(1 for v in dd if v > 0), len(dd)), "d": d}
 
 
+def by_version(rows, d, dis, kof):
+    """The H1 cell by arm B's prompt version, the nightly rewrite's iterations: descriptive, not in
+    PREREG (approved 2026-09-28 as a report line, read only after day 28 like the rest of §4-§7).
+    d: the primary cell's (tick, d_t) in tick order; dis: its disagreement ticks; kof: tick -> block.
+    A tick's version is the prompt_b of its answered live row (the latest ts_rx if two disagree), and
+    a tick with none (an absence) takes the version in force before it (the first version for ticks
+    before any). A version's blocks run from the block of its first tick to the block of its last,
+    an empty one inside counted as S_k = 0 as PREREG §3 keeps it; the block a promotion splits
+    counts under both versions, each with its own ticks' d_t; excluded days are not removed; the
+    replay runs straight through a promotion (a position opened under one version is closed under
+    the next). Returns [(version, first tick, last tick, ticks, blocks)] and the lines."""
+    named = {}
+    for r in rows:
+        v = r.get("prompt_b")
+        if _live(r) and r.get("answers") and isinstance(v, str) and v:
+            t, ts = r["tick_id"], str(r.get("ts_rx") or "")
+            if t not in named or ts >= named[t][0]:
+                named[t] = (ts, v)
+    first = next((named[t][1] for t in sorted(named)), None)
+    if first is None or not d:
+        return [], ["  by arm B's prompt version: no answered live row names one"]
+    per, cur = {}, first
+    for t, v in d:
+        cur = named[t][1] if t in named else cur
+        per.setdefault(cur, []).append((t, v))
+    out, lines = [], [
+        "  H1 cell by arm B's prompt version (the rewrite's iterations), descriptive and NOT in PREREG: a version's",
+        "  blocks run from its first tick's to its last tick's (the block a promotion splits counts under both, each",
+        "  with its own ticks), excluded days are not removed, and the replay runs straight through a promotion",
+        f"    {'version':<9}{'first tick':<18}{'last tick':<18}{'ticks':>7}{'blocks':>7}{'mean_S':>9}{'dis':>6}{'dis%':>7}{'mean_S|dis':>12}"]
+    for v, dv in per.items():                                          # in order of first tick: dicts keep insertion order
+        S, hot = collections.defaultdict(float), set()
+        for t, x in dv:
+            k = kof[t]
+            if k < 0:
+                continue
+            S[k] += x
+            if t in dis:
+                hot.add(k)
+        span = range(min(S), max(S) + 1) if S else range(0)          # an empty block inside the span is S_k = 0, as PREREG §3 keeps it
+        sv = [S.get(k, 0.0) for k in span]
+        sd = [S[k] for k in S if k in hot]
+        a, b = dv[0][0], dv[-1][0]
+        out.append((v, a, b, len(dv), len(sv)))
+        lines.append(f"    {v:<9}{_iso_minute(tick_epoch(a)):<18}{_iso_minute(tick_epoch(b)):<18}{len(dv):>7,}{len(sv):>7,}"
+                     f"{_f(_mean(sv)):>9}{len(sd):>6}{_r(_rate(len(sd), len(sv))):>7}{_f(_mean(sd)):>12}")
+    return out, lines
+
+
 def table(rows, outs, t0=None, last=None):
     """t0: T0 as epoch seconds (the rows are already cut to the sample), or None: blocks are
     then anchored at the first tick of the log. last: the whole log's last tick (epoch), so the
@@ -588,12 +637,15 @@ def table(rows, outs, t0=None, last=None):
                              f"{_r(a['hit']):>8}{_f(tpd[0], 1):>8}{_f(tpd[1], 1):>8}"
                              f"  |        {b['n']:>6}{b['dis']:>6}{_r(b['share']):>7}{_f(b['mean']):>10}{_f(b['mean_dis']):>12}")
     pb = cells[PRIMARY]["blocks"]
+    pdis = _disagreement(rep(PRIMARY[0], PRIMARY[2], PRIMARY[3]), rep(PRIMARY[1], PRIMARY[2], PRIMARY[3]))
+    versions, vlines = by_version(rows, cells[PRIMARY]["all"]["d"], pdis, kof)
+    lines[head_n:head_n] = vlines
     lines.insert(head_n, f"  H1 cell (PREREG §4), mean S_k at the primary cell, descriptive here (the statistic is loop.inference's, over"
                     f" the sample's {SAMPLE_DAYS * 86400 // BLOCK_S} blocks with excluded days dropped): {_f(pb['mean'])} bps over {pb['n']} blocks;"
                     f" disagreement blocks {pb['dis']} ({_r(pb['share'])}), mean S_k on them {_f(pb['mean_dis'])}"
                     + (f"; {pb['pre']} ticks before the anchor left out" if pb["pre"] else ""))
     return {"lines": lines, "cells": cells, "per_arm": per_arm, "per_arm_venue": per_arm_venue, "fees": fees,
-            "anchor": anchor}
+            "anchor": anchor, "versions": versions}
 
 
 # ---- §4.6 H2: the direction lean against the 15-minute return (PREREG §5) -------------------
