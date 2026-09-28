@@ -26,7 +26,8 @@ def _root(root):
 
 
 def load(version, root=None):
-    """prompts/<version>.json as a dict. `root` exists for tests and bin/promote's dry run."""
+    """prompts/<version>.json as a dict. `root` exists for the tests and the --prompts flag of bin/promote,
+    nightly.digest, nightly.policy_table and loop.dash."""
     if not isinstance(version, str) or not _VERSION.match(version):
         raise PromptError(f"not a version name: {version!r}")
     p = os.path.join(_root(root), version + ".json")

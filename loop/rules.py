@@ -7,8 +7,9 @@ it computes — a column is something the report compares, never something the t
 obeys. Every cut is imported from config.py: 0.99 is the one measured tail (JEV
 PROTOCOL 2.2); 0.50/0.70/0.85 are the unmeasured band this project exists to measure.
 
-Null answers (dry mode, a feed or Jev absence) → every column None, keys intact, so a
-row always carries the same shape and the report joins on keys, never on presence.
+Null answers → null_columns(): every column None, keys intact, for a caller that asks. The
+tick's dry, HALT and absence rows keep new_row's `columns: {a: null, b: null}` (SPEC §2) and
+book._intent reads both shapes; the report joins on keys, never on presence.
 Missing optional fields read as no signal: confidence → 0.0 (every c* holds),
 probabilities → {} (pbuy holds), noul → 0.0 (no veto, no tail). A choice outside
 buy/sell/hold is refused: an intent the book cannot map must not reach the log. So is a
@@ -82,7 +83,7 @@ def columns(action_answer, skip_answer, up15, down15):
 def for_arm(answers, arm):
     """The row's `columns[arm]`: arm "a" reads a_action, "b" reads b_action; skip, up15
     and down15 are one answer shared by both arms (one request, one state). None in →
-    null_columns() out, so cycle.py's dry and absence paths need no special case."""
+    null_columns() out (the tick itself never calls this on its dry or absence paths)."""
     if answers is None:
         return null_columns()
     return columns(answers.get(arm + "_action"), answers.get("skip"),

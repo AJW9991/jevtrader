@@ -1,16 +1,16 @@
 """loop/status.py -- the morning check as one command, `make status`: a dozen lines on the
 loop's health from the heartbeat, data/HALT, the log, proposals/ and logs/propose.log.
 
-    python3 -m loop.status [--log FILE] [--t0 YYYY-MM-DDTHH:MM|tick_id] [--now YYYY-MM-DDTHH:MM]
+    python3 -m loop.status [--log FILE] [--t0 YYYY-MM-DDTHH:MM|tick_id] [--prereg FILE] [--now YYYY-MM-DDTHH:MM]
 
-Health only, by construction (PREREG §8.4): it reads report.health and report.days_table
-(report §1: rows, absences, fill, errors, spend, drift, the per-day stop-rule-3 table) and
-nothing that replays a book, joins a return to an answer, or prints a confidence, so no H1, H2,
+Health only, by construction (PREREG §8.4): it reads report.days_table (report §1's per-day
+stop-rule-3 table) and cycle.spend_today, plus the heartbeat, HALT, the last row (its DRIFT
+flag), proposals/ and logs/propose.log, and nothing that replays a book, joins a return to an answer, or prints a confidence, so no H1, H2,
 pair, calibration or confidence number can appear here by accident; tests/test_status.py holds
 it to that, as test_dash.py holds the dash. It writes nothing. What HANDOFF.md's "Watch" list
 asks a person to read each morning -- `cat data/heartbeat`, `ls proposals/`, `tail
-logs/propose.log`, the per-day table -- is here in one screen, and a HALT or a stale
-heartbeat is the first line.
+logs/propose.log`, the per-day table -- is here in one screen, and a stale heartbeat or
+a HALT is in the first lines under the title.
 """
 import argparse, collections, datetime, glob, os, sys
 
@@ -43,7 +43,7 @@ def _halt_line(path=None):
         since = datetime.datetime.fromtimestamp(os.path.getmtime(path), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
     except OSError:
         why, since = "?", "?"
-    return f"HALT PRESENT since {since}: {why or '(empty file)'} -- nothing is sent until a person clears it (STEPS §7)"
+    return f"HALT PRESENT since {since}: {why or '(empty file)'} -- nothing is sent until a person clears it (STEPS §5)"
 
 
 def _last_row_line(rows):

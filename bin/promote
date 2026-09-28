@@ -11,7 +11,8 @@ promote must be its own commit: every row after it names prompt_b_sha, and that 
 must point at one committed text, not at a working copy someone was still editing.
 It also refuses while the git tag PREREG_TAG (prereg-v1) is missing: PREREG §10
 requires the tag to exist before the first row whose prompt_b is not v1, and that
-ordering is the only thing that makes it a PRE-registration. No flag skips any of
+ordering is the only thing that makes it a PRE-registration. It refuses without a tty, and when the json's
+sha256 differs from the `proposal sha256` line of the table beside it. No flag skips any of
 these refusals. --repo only names the git tree the clean-tree and tag checks read
 (default: the checkout this file lives in) and --prompts the prompts root; both exist
 for tests (which replace subprocess.run for git rather than point --repo elsewhere),

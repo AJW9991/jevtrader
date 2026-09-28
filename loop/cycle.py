@@ -11,8 +11,10 @@ key (jev.py names its path in the row, never its value), or open any file when
 the resolved repo path sits under a forbidden prefix -- that check runs first
 and exits 3, the one exit besides a usage error (2) that is not 0.
 
-Every path past the path guard writes exactly one row; `absence` names the FIRST
-step that did not happen:
+Every tick past the path guard and data/ writes exactly one row (a HALT, spend-trip or
+lock row included) unless SIGTERM stops it before the write begins, the watchdog lands in
+the guards before the lock, or the append itself fails (logged, exit 0); `absence` names
+the FIRST step that did not happen:
   halt   the send, and only the send: data/HALT was present, or this tick tripped
          the spend guard and wrote it. HALT stops SENDS (PROTOCOL §3.8, SPEC §13.2):
          the lock, the feed, the state, rule_c and the prompt shas all still run and
@@ -39,7 +41,8 @@ released and the exit is 0.
 Timing: --forever sleeps to the next multiple of CADENCE_S computed from
 time.time() each round, so a slow tick shortens the next wait instead of
 shifting every later tick. --once (launchd's calendar minute) sleeps to the
-boundary first only when it starts in a minute's last 2 s. A 50 s SIGALRM
+boundary first only when it starts in a minute's last 2 s AND data/heartbeat shows
+this minute already has its row (a late fire keeps its minute). A 50 s SIGALRM
 watchdog wraps each tick (macOS has no `timeout`): feed is 3 x 10 s and jev is
 20 + 5 + 20 s, 75 s worst case, so the alarm CAN land inside the send, and the
 row then says so. Past the lock the

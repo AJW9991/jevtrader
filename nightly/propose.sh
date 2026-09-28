@@ -14,12 +14,13 @@
 # unset after); exit non-zero on a failure -- launchd throttles a failing job and
 # hides why, so every failure is one line in logs/propose.log and exit 0. The two
 # non-zero exits are the usage error (2) and the path guard (3), both before any work.
-# One run per date: a DATE whose proposals/<date>.json exists is refused (one FAIL line).
+# One run per date: a DATE whose proposals/<date>.json or .md exists is refused (one FAIL line).
 #
-# Usage: nightly/propose.sh [--date YYYY-MM-DD] [--dry] [--root DIR]
+# Usage: nightly/propose.sh [--date YYYY-MM-DD] [--root DIR] [--dry (with --root DIR outside the repo)]
 #   --date  the UTC day to digest; default: yesterday
 #   --dry   no claude call, no Jev send: the fixture candidate below stands in for the
-#           model's reply and policy_table.py runs with --dry. Tests use this.
+#           model's reply and policy_table.py runs with --dry. Tests use this. It needs
+#           --root DIR outside the repo (else usage, exit 2): it writes fixture files.
 #   --root  where data/ logs/ proposals/ live; default: the repo. Tests pass a temp dir
 #           so no run of the suite writes a proposals/*.md into the tree (they are committed).
 set -u
@@ -41,7 +42,7 @@ CLAUDE_CAP_S="${JEVLOOP_CLAUDE_CAP_S:-2700}"   # 45 min awake: the first two nig
 PROMPTS_ROOT="${JEVLOOP_PROMPTS:-}"
 ROOT="$REPO"; DATE=""; DRY=0
 
-usage() { echo "usage: $0 [--date YYYY-MM-DD] [--dry] [--root DIR]" >&2; exit 2; }
+usage() { echo "usage: $0 [--date YYYY-MM-DD] [--root DIR] [--dry (with --root DIR outside the repo)]" >&2; exit 2; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --date) [ $# -ge 2 ] || usage; DATE="$2"; shift 2 ;;    # a trailing --date: `shift 2` would fail and loop forever
@@ -205,8 +206,8 @@ $(cat "$DIGEST")"
 fi
 
 # 3. exactly one fenced json block -> {"candidates": [1..3 x {instructions, criteria{buy,sell,hold}}]}.
-#    A digit anywhere in a candidate's text fails the whole reply: PROMPT.md says so,
-#    and policy_table.py would refuse it anyway.
+#    A digit anywhere in a candidate's text fails the whole reply (stricter than PROMPT.md
+#    rule 4, which says the candidate is discarded unread); policy_table.py would refuse it anyway.
 "$PY" -c '
 import json, os, re, sys
 raw = open(sys.argv[1], encoding="utf-8", errors="replace").read()

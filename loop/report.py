@@ -6,6 +6,11 @@ means to stdout. May not: write a file, send anything, see the key, read prompts
 anything under the crypto repo, or print a p-value -- inference is PREREG.md's and runs
 once; this prints the numbers PREREG names, and nothing here decides anything.
 
+Blinding (CLAUDE.md): a run without --health on rows of the sealed sample prints §1-§3 and
+a WITHHELD line until T0 + 28 d; that T0 is read from the repo's own PREREG.md §11
+(dash.read_t0) whatever --prereg says; --sample takes --t0 from PREREG §11; --unblind prints
+§4-§7 and says so on stderr. Besides the log, main reads PREREG.md §11 and looks for data/HALT.
+
 Every section is one function returning its numbers and its rendered lines from a single
 computation, so a test asserts the number and the text together. The pair table (§4.5) is
 3 pairs x 11 columns x len(config.FEE_BPS_COLUMNS) fees (6 today: 198 cells, ascending; the
@@ -169,7 +174,7 @@ def health(rows, outs, bad=(), t0=None, last=None):
         f" max {_f(hz['max'], 0)} s (n {hz['n']}); isolated skipped minutes {hz['skips']}"
         + (" (a missed :00 fire; until 2026-09-27 05:18Z launchd's 60 s StartInterval ran a ~61 s grid, ~28 a day; each costs the row 15 min earlier its outcome)" if hz["skips"] else ""),
         ("  HALT: PRESENT since " + _halt_when() + " (the reason is the file's text; nothing is sent; the feed, arm C, the join and this"
-         " report go on; clearing it is a person's act, STEPS §7)") if halt else "  HALT: absent",
+         " report go on; clearing it is a person's act, STEPS §5)") if halt else "  HALT: absent",
     ] + per_day["lines"]
     return {"lines": lines, "rows": len(rows), "ticks": len(ticks), "live": len(live), "dry": len(dry),
             "days": per_day["days"], "bad_days": per_day["bad"], "empty_days": per_day["empty"], "keys": dict(keys), "shared_key_rows": shared,

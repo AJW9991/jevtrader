@@ -10,9 +10,11 @@
        digest, makes ONE `claude -p` call (subscription OAuth token from
        ~/.secondbrain-secrets/oauth_token, exported by the script, never by
        this file), writes proposals/<date>.json, then policy_table.py asks
-       Jev each candidate on the 81 synthetic states (~$0.005). It writes
-       proposals/ and nothing else: prompts/ changes only by a person
-       running bin/promote (PROTOCOL.md §3.7). Hand-installed only. -->
+       Jev each candidate and the CURRENT action question on the 81
+       synthetic states (~$0.005). It writes proposals/, the digest and
+       dash under data/, ledger rows, logs/ (and data/HALT on a rejected
+       key), never prompts/: that changes only by a person running
+       bin/promote (PROTOCOL.md §3.7). Hand-installed only. -->
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
@@ -27,7 +29,7 @@
        logged out) runs once at the next wake or login. If that is after the
        next 00:00Z, it digests a later day, and the log names the day left
        without a proposal.
-       A run for a day that already has proposals/<date>.json is refused in
+       A run for a day that already has proposals/<date>.json or .md is refused in
        one FAIL line: no second Claude call, and nothing is overwritten (the
        json is gitignored, and a table or a promote may point at it). -->
   <key>StartCalendarInterval</key>

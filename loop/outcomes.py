@@ -10,8 +10,8 @@ row would score a decision against a price it was not made about.
 Why nearest-within-half-a-cadence and not "first row in [t+h, t+h+90 s]" (the
 first form, replaced 2026-09-24 before any sample row): ts_rx is the feed-entry
 clock, i.e. the minute boundary plus timing noise (sleep overshoot and the
-guards under --forever; the StartInterval phase and interpreter start under
-launchd). A one-sided window starting AT t+h drops the t+15 row whenever its
+guards under --forever; launchd's calendar-minute fire (StartInterval's phase
+until 2026-09-27) and interpreter start). A one-sided window starting AT t+h drops the t+15 row whenever its
 noise is 1 ms smaller than t's, and then takes the t+16 row: a 15- or 16-minute
 horizon on a coin flip. A +-30 s window around t+h holds exactly one on-cadence
 row whatever the phase (rows 60 s apart always leave one within 30 s of any

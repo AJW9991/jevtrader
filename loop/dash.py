@@ -1,6 +1,8 @@
-"""loop/dash.py -- one HTML page of the loop's HEALTH, built from the log and nothing else.
+"""loop/dash.py -- one HTML page of the loop's HEALTH, built from the log, the nightly's tables,
+the heartbeat, HALT, prompts/CURRENT and PREREG §11.
 
-    python3 -m loop.dash [--log FILE] [--t0 YYYY-MM-DDTHH:MM|tick_id] [--out data/dash.html]
+    python3 -m loop.dash [--log FILE] [--t0 YYYY-MM-DDTHH:MM|tick_id] [--no-t0] [--prereg FILE]
+                         [--data DIR] [--proposals DIR] [--prompts DIR] [--out data/dash.html]
 
 Health only, by construction (PREREG §8.4): the page is report §1-§3 (health, the per-day
 stop-rule-3 table, occupancy, test-retest) plus what those already imply -- a ticks-per-hour
@@ -139,7 +141,8 @@ def absence_by_day(rows, t0=None):
     return by
 
 
-GAP_MIN = 3             # a hole of at least this many missing minutes is listed; 1-2 are the isolated skips the table counts
+GAP_MIN = 3             # a hole of at least this many missing minutes is listed; a single missing minute is the table's
+                        # isolated skip (report §1 counts holes of exactly one minute); a 2-minute hole shows in neither
 GAPS_SHOWN = 10
 
 

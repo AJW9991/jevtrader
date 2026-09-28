@@ -60,7 +60,7 @@ PAIRS = (("b", "c", "H1 (co-primary): B - C at the primary cell, alpha 0.025"),
          ("b", "a", "B - A at the primary cell: point estimate only, stop rule 2 (<= 0 stops the nightly)"))
 
 
-# ---- the draw (PREREG §5, steps 1-3; §4 says 'as above' for H1) ------------------------------
+# ---- the draw (PREREG §5, steps 1-3, applied to H1 too with its own generator: §4 does not pin the draw) ------------------------------
 def resample_indices(rng, n, L=BLOCK_LEN):
     """One circular-block resample of 0..n-1: ceil(n/L) starts, each rng.randrange(n), L
     consecutive wrapped indices from each, concatenated in draw order, the first n kept."""
