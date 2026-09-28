@@ -5,13 +5,40 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_report import _row
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+TESTS = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(TESTS)
 TOOL = os.path.join(REPO, "bin", "readers-diff")
 
 
 def _run(*argv):
     p = subprocess.run([sys.executable, TOOL, *argv], capture_output=True, text=True, cwd=REPO)
     return p.returncode, p.stdout, p.stderr
+
+
+def _send(sig):
+    """os.kill(this process, sig), the only way these tests signal themselves. Never while sig is at
+    its default action: that would end the whole test run (exit 143 or 129, no test named, the class's
+    fixtures left in TMPDIR), so a readers-diff that set SIG_DFL itself fails the test here instead."""
+    if signal.getsignal(sig) is signal.SIG_DFL:
+        raise AssertionError(f"readers-diff left {signal.Signals(sig).name} at the default action (SIG_DFL);"
+                             " not sent, it would end the whole test run")
+    os.kill(os.getpid(), sig)
+
+
+# A child that runs some of these tests against a readers-diff that sets SIG_DFL wherever it would set
+# its own handler: any handler defined in the tool's file is swapped for the default action
+MUTANT_RUN = r'''
+import os, signal, sys, unittest
+sys.path.insert(0, sys.argv[1])
+t = __import__(sys.argv[2])
+tool, real = os.path.realpath(t.TOOL), signal.signal
+
+def to_default(sig, handler):
+    code = getattr(handler, "__code__", None)
+    return real(sig, signal.SIG_DFL if code is not None and os.path.realpath(code.co_filename) == tool else handler)
+signal.signal = to_default
+sys.exit(not unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite(t.ReadersDiff(n) for n in sys.argv[3:])).wasSuccessful())
+'''
 
 
 class ReadersDiff(unittest.TestCase):
@@ -158,7 +185,7 @@ class ReadersDiff(unittest.TestCase):
                 self.addCleanup(signal.signal, sig, signal.signal(sig, unguarded))
 
                 def killed(tree, log, sig=sig):
-                    os.kill(os.getpid(), sig)                             # delivered at once to this process
+                    _send(sig)                                            # delivered at once to this process
                     return {}, None
                 with mock.patch.object(mod, "read_with", killed), mock.patch.object(mod.tempfile, "tempdir", tmpdir):
                     with self.assertRaises(SystemExit) as cm:
@@ -181,8 +208,7 @@ class ReadersDiff(unittest.TestCase):
 
                 def hung_up(tree, log, sig=sig):
                     seen.append(signal.getsignal(sig))                  # what the probe started now inherits
-                    if seen[-1] is not signal.SIG_DFL:                  # never to the default action: it would end the run
-                        os.kill(os.getpid(), sig)
+                    _send(sig)
                     return real(tree, log)
                 out = io.StringIO()
                 with mock.patch.object(mod, "read_with", hung_up), mock.patch.object(mod.tempfile, "tempdir", tmpdir), \
@@ -211,7 +237,7 @@ class ReadersDiff(unittest.TestCase):
 
         def rmtree(path, *a, **k):
             for sig in sigs:
-                os.kill(os.getpid(), sig)
+                _send(sig)
             return real(path, *a, **k)
         return rmtree
 
@@ -228,9 +254,9 @@ class ReadersDiff(unittest.TestCase):
 
         def killed(tree, log):
             try:
-                os.kill(os.getpid(), signal.SIGTERM)
+                _send(signal.SIGTERM)
             finally:
-                os.kill(os.getpid(), signal.SIGHUP)
+                _send(signal.SIGHUP)
                 cleaned.append(tree)                                       # the probe's cleanup ran to its end
             return {}, None
         burst = self._removing_amid(*[signal.SIGTERM, signal.SIGHUP] * 3)
@@ -269,7 +295,7 @@ class ReadersDiff(unittest.TestCase):
         def setting(sig, handler):
             before = real(sig, handler)
             if sig == signal.SIGTERM and handler not in handlers.values():     # the tool's own, just set
-                os.kill(os.getpid(), signal.SIGTERM)
+                _send(signal.SIGTERM)
             return before
         with mock.patch.object(mod.tempfile, "tempdir", tmpdir), mock.patch.object(mod.signal, "signal", setting):
             with self.assertRaises(SystemExit) as cm:
@@ -277,6 +303,33 @@ class ReadersDiff(unittest.TestCase):
         self.assertEqual(cm.exception.code, 128 + signal.SIGTERM)
         self.assertEqual(os.listdir(tmpdir), [])
         self.assertEqual({s: signal.getsignal(s) for s in handlers}, handlers)
+
+    def test_a_tool_that_sets_the_default_action_fails_the_signal_tests_and_ends_no_run(self):
+        # the stand-in handlers catch a readers-diff that sets no handler, not one that sets SIG_DFL
+        # itself: the tests sent it anyway, and `python3 -m unittest tests.test_readers_diff` exited 143
+        # with no test named and two fixture directories left in TMPDIR. Run in a child against such a
+        # tool, every test that sends a signal the tool took to the default action fails, by _send's
+        # message, and the run ends: exit 1, a "Ran" line, every fixture removed
+        sending = ("test_a_sigterm_or_sighup_mid_probe_still_removes_the_copy",
+                   "test_a_burst_of_signals_during_the_unwind_still_removes_the_copy",
+                   "test_a_signal_during_a_finished_runs_removal_still_stops_it",
+                   "test_a_signal_the_moment_the_handler_is_set_still_removes_the_directory")
+        tmpdir = self.enterContext(tempfile.TemporaryDirectory())
+        env = {**os.environ, "TMPDIR": tmpdir, "PYTHONPATH": REPO, "PYTHONDONTWRITEBYTECODE": "1",
+               "PYTHON_COLORS": "0"}                                            # plain text to parse on any Python
+        module = os.path.splitext(os.path.basename(__file__))[0]
+        r = subprocess.run([sys.executable, "-c", MUTANT_RUN, TESTS, module, *sending], cwd=TESTS, env=env,
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+        self.assertEqual(r.returncode, 1, f"exit {r.returncode} (a negative one is the signal that ended the run)\n{r.stderr[-3000:]}")
+        self.assertIn(f"\nRan {len(sending)} tests in ", r.stderr)
+        self.assertIn("\nFAILED (failures=5)\n", r.stderr)                     # no error: each is a failure
+        blocks = r.stderr.split("\n" + "-" * 70 + "\nRan ")[0].split("\n" + "=" * 70 + "\n")[1:]
+        self.assertEqual(sorted(b.split(" ", 2)[1] for b in blocks), sorted([sending[0], *sending]))   # both subtests of the first
+        for b in blocks:
+            self.assertTrue(b.startswith("FAIL: "), b)
+            self.assertRegex(b.rstrip().rsplit("\n", 1)[-1], r"^AssertionError: readers-diff left SIG(TERM|HUP) at the default"
+                             r" action \(SIG_DFL\); not sent", b)
+        self.assertEqual(os.listdir(tmpdir), [])                               # every cleanup ran
 
     def test_a_copy_that_cannot_be_written_is_a_message(self):
         mod = self._module()
