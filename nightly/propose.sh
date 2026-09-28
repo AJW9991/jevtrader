@@ -80,8 +80,10 @@ guard_path() {
   esac
 }
 realpath_py() {   # the path as os.path.realpath spells it, or nothing (the caller refuses): nothing too
-  # for a realpath with a newline in it, which `$(...)` would hand on without its trailing ones
-  r="$("$PY" -I -B -c 'import os, sys; r = os.path.realpath(sys.argv[1]); print("" if "\n" in r else "path:" + r)' "$1" 2>/dev/null)"
+  # for a realpath with a newline in it, which `$(...)` would hand on without its trailing ones.
+  # Written as bytes: print() of a name that is not UTF-8 raises under a strict UTF-8 locale, and
+  # the empty answer would refuse a good path with a message that does not name the cause
+  r="$("$PY" -I -B -c 'import os, sys; r = os.fsencode(os.path.realpath(sys.argv[1])); sys.stdout.buffer.write(b"" if b"\n" in r else b"path:" + r + b"\n")' "$1" 2>/dev/null)"
   case "$r" in path:/*) printf '%s\n' "${r#path:}" ;; esac
 }
 # A --root with a newline in it is refused: `$(...)` strips trailing newlines, so the path the guard

@@ -1721,6 +1721,26 @@ class Capped(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(env["HOME"], "root2")))
         self.assertEqual(os.listdir(elsewhere), [])                           # nor under a sibling's target
 
+    def test_realpath_py_answers_for_a_name_that_is_not_utf8_whatever_stdout_encodes(self):
+        # realpath_py printed the path as text: under a strict UTF-8 locale print() raised on a name that is not
+        # UTF-8, the error went to /dev/null, and the empty answer refused a good directory as 'cannot resolve
+        # (or its name has a newline)' (round-4c checker, Linux only: APFS names are UTF-8). It writes bytes
+        # now. Its snippet is run as propose.sh has it, without -I so PYTHONIOENCODING can make stdout strict.
+        with open(os.path.join(REPO, "nightly", "propose.sh"), encoding="utf-8") as fh:
+            body = re.search(r"(?ms)^realpath_py\(\) \{.*?-c '([^']*)'", fh.read()).group(1)
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        odd = os.path.join(os.fsencode(tmp), b"a\xffb")
+        try:
+            os.mkdir(odd)
+        except OSError as e:                                                  # a filesystem that takes only UTF-8 names
+            self.skipTest(f"cannot make a directory whose name is not UTF-8 here: {e}")
+        env = {**os.environ, "PYTHONIOENCODING": "utf-8:strict"}
+        r = subprocess.run([sys.executable, "-B", "-c", body, odd], capture_output=True, timeout=60, env=env)
+        self.assertEqual((r.returncode, r.stdout), (0, b"path:" + os.path.realpath(odd) + b"\n"), r.stderr)
+        r = subprocess.run([sys.executable, "-B", "-c", body, os.path.join(os.fsencode(tmp), b"x\ny")],
+                           capture_output=True, timeout=60, env=env)
+        self.assertEqual((r.returncode, r.stdout), (0, b""))                 # a newline still gives nothing
+
     def test_the_guard_never_imports_the_working_directory_and_refuses_when_it_cannot_answer(self):
         # 2026-09-28 (second pre-merge pass): the guard's python had the cwd on sys.path, after the repo
         # (so loop/ always came from the repo) but before the standard library: started from inside
