@@ -188,7 +188,8 @@ _SIG = re.compile(r"^In force from: `([^`]*)`\s+Signed: `([^`]*)`", re.M)
 
 
 def signed():
-    """True only when PROTOCOL.md's last line carries both fields. PROTOCOL.md says
+    """True only when PROTOCOL.md's `In force from: ... Signed: ...` line, found by
+    search wherever it sits in the file, carries both fields. PROTOCOL.md says
     nothing here sends before Alex signs it; until 2026-09-24 that rested on nobody
     running a non-dry tick while a key file existed -- and the shared key does exist.
     The check sits in ask(), which every send in cycle and policy_table goes through,
