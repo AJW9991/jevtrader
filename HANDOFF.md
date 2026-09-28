@@ -126,9 +126,10 @@ and says so) · `make dash` · `make inference-smoke` · `make results` (day 28;
 
 - nightly/capped.py: the capped claude call runs in its own process group, and the cap ends the
   whole group (a helper the CLI forked no longer outlives it); SIGTERM, SIGINT and SIGHUP sent to
-  capped are passed on to that group. The one cost: if capped itself were SIGKILLed (a bootout
-  whose SIGTERM went unanswered for launchd's 20 s), the call would outlive it, where launchd's
-  group kill used to take both. Exit codes are unchanged.
+  capped (and SIGQUIT) are passed on to that group, and whatever the command leaves running is
+  ended when it exits (launchd's cleanup of the job's group no longer reaches it). The one cost:
+  if capped itself were SIGKILLed (a bootout whose SIGTERM went unanswered for launchd's 20 s),
+  the call would outlive it; ^Z at a terminal stops capped, not the call. Exit codes unchanged.
 
 - Found by a six-lens bug hunt (66 agents, each finding refuted or confirmed by three skeptics),
   2026-09-28, each fixed with a test: the spend guard trips (HALT) on a log that exists but cannot

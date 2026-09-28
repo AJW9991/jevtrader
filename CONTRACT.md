@@ -369,7 +369,8 @@ directory; 2026-09-28):
 
 $(cat data/digest-<date>.md)" --tools "" --restricted --strict-mcp-config --settings
 nightly/settings.json --output-format text` (`capped.py`: 45 min of AWAKE time, monotonic,
-exit 124 when it fires; the CLI's version and the temp cwd are logged); extract exactly one
+exit 124 when it fires; the command runs in a process group of its own, which the cap ends,
+which ends when the command exits, and to which SIGTERM/SIGINT/SIGHUP/SIGQUIT are passed on; the CLI's version and the temp cwd are logged); extract exactly one
 fenced ```json block; validate it is `{"candidates": [ {"instructions": str, "criteria":
 {"buy","sell","hold"}} , ... ]}` with 1–3 entries and no digit; write `proposals/<date>.json`
 (refused, before the digest and any call, when `proposals/<date>.json` or `.md` exists: a

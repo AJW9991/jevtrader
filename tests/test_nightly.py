@@ -1330,6 +1330,26 @@ class Capped(unittest.TestCase):
         self.assertEqual(p.wait(timeout=10), 128 + signal.SIGTERM)
         self.assertEqual(_gone(grandchild), [])
 
+    def test_what_the_command_leaves_running_is_ended_when_it_exits(self):
+        # 2026-09-28 (pre-merge verifier): in a session of its own, a helper the command forked and left
+        # running escaped launchd's cleanup of the job's group after a NORMAL exit; capped ends the group
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        pids = os.path.join(tmp, "pids")
+        r = self._run("30", "--", "sh", "-c", f'sleep 30 >/dev/null 2>&1 & echo $! >"{pids}"; exit 3')
+        self.assertEqual(r.returncode, 3, r.stderr)                     # the command's own code, unchanged
+        self.assertEqual(_gone(_pids(pids, 1)), [], "a process the command left behind outlived capped")
+
+    def test_sigquit_is_passed_on_too(self):
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        pids = os.path.join(tmp, "pids")
+        p = subprocess.Popen([self.PY, "-m", "nightly.capped", "30", "--", "sh", "-c", f'sleep 30 & echo $! >"{pids}"; wait'],
+                             cwd=REPO, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=_sh_env(self))
+        self.addCleanup(p.stderr.close)
+        grandchild = _pids(pids, 1)
+        p.send_signal(signal.SIGQUIT)
+        self.assertEqual(p.wait(timeout=10), 128 + signal.SIGQUIT)
+        self.assertEqual(_gone(grandchild), [])
+
     def test_usage_is_2_and_a_missing_command_is_127(self):
         self.assertEqual(self._run("x", "--", "true").returncode, 2)
         self.assertEqual(self._run("5", "true").returncode, 2)

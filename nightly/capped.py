@@ -12,7 +12,10 @@ The command runs in a session and process group of its own, and the cap ends tha
 a hung command's own children (a `sleep` in a stub, a helper the CLI forked) used to outlive it,
 since only the direct child was terminated. For the same reason a SIGTERM, SIGINT or SIGHUP sent
 to capped (launchd stopping the job, ^C at a terminal) is passed on to that group, which no
-longer receives them directly; a signal capped itself ignores is left ignored.
+longer receives them directly, and so is SIGQUIT (^\\); a signal capped itself ignores is left
+ignored. When the command exits, whatever it left running in its group is ended too (launchd's
+cleanup of the job's group no longer reaches it). ^Z at a terminal stops capped, not the command:
+a hand run is stopped with ^C.
 
 Why a cap, and why this clock. launchd never starts a second instance of a job while one is
 running, so a `claude -p` that hangs while the machine is awake would silently block every
@@ -24,7 +27,7 @@ import os, signal, subprocess, sys, time
 
 EXIT_CAPPED = 124       # GNU timeout's code, so a log line reads the same either way
 GRACE_S = 5.0           # SIGTERM to the group, then up to this long for the child, then SIGKILL to the group
-FORWARDED = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+FORWARDED = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT)
 
 
 def _signal_group(pgid, sig):
@@ -32,6 +35,21 @@ def _signal_group(pgid, sig):
         os.killpg(pgid, sig)
     except (ProcessLookupError, PermissionError):     # nothing left in the group
         pass
+
+
+def _end_group(pgid, grace=1.0):
+    """After the command has exited: SIGTERM to its process group, then SIGKILL to whatever is left
+    after `grace` seconds. A helper it forked and left running used to die with launchd's cleanup of
+    the job's group; in a session of its own it would outlive the night. No-op on an empty group."""
+    _signal_group(pgid, signal.SIGTERM)
+    deadline = time.monotonic() + grace
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(pgid, 0)
+        except (ProcessLookupError, PermissionError):
+            return
+        time.sleep(0.05)
+    _signal_group(pgid, signal.SIGKILL)
 
 
 def main(argv=None):
@@ -68,7 +86,9 @@ def main(argv=None):
         _signal_group(p.pid, s)
     try:
         rc = p.wait(timeout=cap)                            # subprocess counts time.monotonic() too
-        return 128 - rc if rc < 0 else rc                   # killed by signal N: -N from subprocess, 128 + N out
+        _end_group(p.pid)                                   # what it started and left behind: launchd's job-group
+        return 128 - rc if rc < 0 else rc                   # cleanup no longer reaches its own session
+                                                            # killed by signal N: -N from subprocess, 128 + N out
     except subprocess.TimeoutExpired:
         _signal_group(p.pid, signal.SIGTERM)
         try:
