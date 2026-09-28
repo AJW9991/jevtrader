@@ -53,7 +53,8 @@ jev-paper-loop/
   PROTOCOL.md            the carve-out Alex signs (drafted; not a builder's file)
   SPEC.md                row schema, alphabet, thresholds, arms — frozen; its sha is in every row
   PREREG.md              the 28-day test and stop rules — sealed by git tag before the first v2 tick
-  README.md  Makefile  STEPS.md
+  README.md  Makefile  STEPS.md  CLAUDE.md (working rules)  HANDOFF.md (the baton)
+  .github/workflows/test.yml   CI: make test on every push (3.12, 3.13, 3.14)
   loop/__init__.py
   loop/config.py         constants (written; import, do not edit)
   loop/feed.py           Coinbase public snapshot
@@ -64,16 +65,20 @@ jev-paper-loop/
   loop/book.py           paper execution, pure, replayed from the log
   loop/outcomes.py       the t+h join
   loop/cycle.py          one tick; --once / --forever / --dry
-  loop/report.py         make report
+  loop/report.py         make report (sections 4-7 withheld on sample rows until day 28; --health, --sample, --unblind)
+  loop/dash.py           make dash: the health page, report §1-§3 only, data/dash.html
+  loop/status.py         make status: the morning check in one screen, report §1 only
+  loop/inference.py      PREREG §4-§5 once, at day 28 (make results); refuses the sample before then
   nightly/digest.py      what the slow model may read
   nightly/policy_table.py  81 synthetic states per candidate
+  nightly/capped.py      the claude call under a cap on awake seconds
   nightly/propose.sh  nightly/PROMPT.md  nightly/settings.json
   bin/promote            the human apply step
   launchd/com.alexward.jevloop.loop.plist  launchd/com.alexward.jevloop.nightly.plist
-  prompts/v1.json        frozen (written)   prompts/CURRENT  → "v1" (one line)
+  prompts/v1.json        frozen (written)   prompts/v2.json (promoted 2026-09-26)   prompts/CURRENT  → "v2" (one line)
   fixtures/              one recorded Coinbase snapshot set, committed
-  tests/                 unittest, stdlib
-  data/   logs/   proposals/   (gitignored except proposals/*.md)
+  tests/                 unittest, stdlib; tests/fixture_prompts.py pins a v1-only prompts root (tests never read the live prompts/)
+  data/   logs/   proposals/   (gitignored except proposals/*.md and data/exclusions.tsv, versioned when it exists)
 ```
 
 ## 2. Data types (plain dicts; keys exactly as written)
@@ -148,8 +153,10 @@ works; do not use true/false).
 
 **Jev call** — `loop/jev.py::ask(state: str, questions: dict) -> dict`
 ```
-returns { "answers": {qid: {...}}, "model": str, "input_tokens": int, "latency_ms": int }
-raises JevError(kind, detail)   kind ∈ {"no-key","ledger","http-4xx","http-429","http-5xx","timeout","parse"}
+returns { "answers": {qid: {...}}, "model": str, "input_tokens": int, "latency_ms": int, "key_path": str }
+raises JevError(kind, detail)   kind ∈ {"unsigned","no-key","ledger","http-4xx","http-429","http-5xx","timeout","parse"}
+                                ("unsigned": PROTOCOL.md's signature line is unfilled, PROTOCOL §3.11; the tick adds
+                                 "watchdog" and "unexpected" of its own, SPEC §2)
 ```
 - `key()`: `$TYPESAFE_API_KEY_LOOP`, else `~/.secondbrain-secrets/typesafe-api-key-loop`,
   else `$TYPESAFE_API_KEY`, else `~/.secondbrain-secrets/typesafe-api-key`. Log
@@ -209,10 +216,12 @@ landed a millisecond earlier in its minute than t did.)
 apply(pos: dict|None, intent: str, bid, ask, fee_bps) -> (pos', fill|None)
    pos = None (flat) | {"qty": float, "entry": float}
    buy when flat  → open: qty = NOTIONAL/ask, fee = NOTIONAL*fee_bps/1e4
-   sell when long → close at bid, fee on notional
+   sell when long → close at bid, fee = qty*bid*fee_bps/1e4 (the filled value; SPEC §10)
    buy when long, sell when flat, hold → no-op (fill None)
-replay(rows, outcomes, arm: "a"|"b"|"c", column: str, fee_bps) -> {"equity": [...], "trades": [...], "pnl_bps_per_tick": {tick_id: float}}
-   mark-to-mid each tick; pnl per tick is the change in equity in bps of NOTIONAL
+replay(rows, outcomes, arm: "a"|"b"|"c", column: str, fee_bps) -> {"equity": [...], "trades": [...], "pnl_bps_per_tick": {tick_id: float},
+                                                                    "position": {tick_id: qty}, "forced_hold": int}
+   mark-to-mid each tick; pnl per tick is computed DIRECTLY (carried qty*(mid_t - mid_prev); open qty*(mid_t - ask) - fee;
+   close qty*(bid - mid_prev) - fee), in bps of NOTIONAL, so two arms with the same position give d_t == 0.0 exactly (SPEC §10)
 paired(rows, outcomes, x, y, column, fee_bps) -> [ (tick_id, d_t) ]   d_t = pnl_x - pnl_y
 ```
 Fee constants come from `config.FEE_BPS_COLUMNS` = (0, 2, 10, 25, 60, 120), ascending; the
@@ -225,8 +234,10 @@ is `config.FEE_BPS_VENUE` = 120.0, with its UNVERIFIED source in `FEE_BPS_VENUE_
 Order, every time:
 1. **Guards.** Resolved repo path must not start with either prefix in
    `config.FORBIDDEN_PREFIXES` → exit 3. `data/HALT` exists → this tick is
-   HALTED. Today's spend (sum of `jev.input_tokens` over today's rows ×
-   `config.USD_PER_MTOK` / 1e6) ≥ `config.DAILY_SPEND_HALT_USD` → write
+   HALTED. Today's spend (sum over today's rows of the billed tokens: the logged
+   `jev.input_tokens` when positive, else `config.JEV_TOKENS_IF_UNKNOWN` = 2000 for a
+   live row that reached the model, SPEC §13.3; × `config.USD_PER_MTOK` / 1e6) ≥
+   `config.DAILY_SPEND_HALT_USD` → write
    `data/HALT` with the reason; this tick is HALTED. `fcntl.flock` on
    `data/loop.lock` non-blocking; if held → `absence: "lock"`, exit 0.
    **HALT stops sends only** (PROTOCOL §3.8, SPEC §13.2): a HALTED tick runs
@@ -260,7 +271,12 @@ The tick never computes a position. Positions are replayed from the log.
 
 Print, plain text, in this order:
 1. Health: rows, live rows, absence by reason, outcome fill %, jev error %,
-   mean/p95 latency, input tokens and $ to date, distinct `model_answered`, drift count.
+   mean/p95 latency, input tokens and $ to date, distinct `model_answered`, drift count,
+   `prompt_b` versions, the key that answered (and a SHARED KEY warning, PROTOCOL §3.6),
+   the realised horizon and the isolated skipped minutes, HALT present or absent, and the
+   per-day table of PREREG §8 stop rule 3 (T0-anchored `dNN` with `--t0`; every day from d01
+   to the log's last tick, a closed day with no live row flagged NO LIVE ROWS, never BAD by
+   code: its fill is 0/0 and the exclusion is Alex's call).
 2. Adjective occupancy per dimension; flag any word > 95% (arms cannot disagree
    on a constant).
 3. Test-retest: on rows where `prompt_a_sha == prompt_b_sha`, agreement rate of
@@ -322,21 +338,35 @@ for B), up to 25 arm-B disagreement rows (state, choice,
 confidence, ret_h_bps, label) highest confidence first, the CURRENT `action`
 question verbatim, both shas. Never the key, never the raw log, never the features.
 
-`nightly/propose.sh`: `export CLAUDE_CODE_OAUTH_TOKEN=$(cat ~/.secondbrain-secrets/oauth_token)`;
-`caffeinate -i /opt/homebrew/bin/claude -p "$(cat nightly/PROMPT.md)
+`nightly/propose.sh` (as it runs; the header of the script is the authority): the digest
+first (`nightly.digest --date <date>`; exit 4 = the day has no rows, so the night ends
+there with one log line and no Claude call); then the token read from
+`~/.secondbrain-secrets/oauth_token` into `CLAUDE_CODE_OAUTH_TOKEN` for the ONE call and
+unset after, never on argv, never logged; the call itself, with the working directory an
+empty temporary directory so the CLI auto-loads no CLAUDE.md from the repo (the slow
+model sees PROMPT.md and the digest, and nothing the repo's working rules say; 2026-09-28):
+`caffeinate -i python3 nightly/capped.py 2700 -- claude -p "$(cat nightly/PROMPT.md)
 
-$(cat data/digest-<date>.md)" --tools "" --output-format text`; extract exactly
-one fenced ```json block; validate it is `{"candidates": [ {"instructions": str,
-"criteria": {"buy","sell","hold"}} , ... ]}` with 1–3 entries; write
-`proposals/<date>.json`. Then `policy_table.py proposals/<date>.json` asks Jev
-each candidate AND the CURRENT action question on the 81 synthetic state strings
-(3⁴ combinations of the alphabet; ~$0.005) and writes `proposals/<date>.md`: per
-candidate, the 81-row table of choice/confidence, the diff of its wording vs
-CURRENT, and the count of states where it differs from CURRENT and from rule_c.
+$(cat data/digest-<date>.md)" --tools "" --restricted --strict-mcp-config --settings
+nightly/settings.json --output-format text` (`capped.py`: 45 min of AWAKE time, monotonic,
+exit 124 when it fires; the CLI's version and the temp cwd are logged); extract exactly one
+fenced ```json block; validate it is `{"candidates": [ {"instructions": str, "criteria":
+{"buy","sell","hold"}} , ... ]}` with 1–3 entries and no digit; write `proposals/<date>.json`
+(refused when one exists for that date: a missed slot that fires after 00:00Z plus the
+regular slot must not spend twice or overwrite a json a table vouches for). Then
+`policy_table.py proposals/<date>.json` asks Jev each candidate AND the CURRENT action
+question on the 81 synthetic state strings (3⁴ combinations of the alphabet; ~$0.005) and
+writes `proposals/<date>.md`: per candidate, the 81-row table of choice/confidence, the diff
+of its wording vs CURRENT, the count of states where it differs from CURRENT and from
+rule_c, and the sha256 of the json it was built from (`bin/promote` checks it). Last, on
+every night whatever happened, `loop.dash` rebuilds `data/dash.html`. Every failure is one
+line in `logs/propose.log` and exit 0 (launchd throttles a failing job); the night also
+writes `data/digest-<date>.md` and `logs/claude-<date>.{txt,err}`.
 **It scores nothing against any logged outcome.** The nightly never touches
 `prompts/`. While `data/HALT` exists it sends nothing (propose.sh skips the
-table, and `policy_table.py` refuses again); a 429, or three transient failures
-in a row, end its night; a 401/403 writes `data/HALT`.
+table, and `policy_table.py` refuses again, before every send); a 429, three transient
+failures in a row, or three failures of any kind in a row end its night; a 401/403 writes
+`data/HALT`.
 
 `bin/promote proposals/<date>.json <k>`: copies candidate k to `prompts/v<N+1>.json`
 (with the other three questions carried from v1 unchanged), writes the new
