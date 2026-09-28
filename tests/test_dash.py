@@ -142,11 +142,12 @@ class Dash(unittest.TestCase):
         short = [r for r in rows if not r["tick_id"].startswith("20260923T091")]            # 09:10 .. 09:19
         strip = _strip(dash.render(short, outcomes.join(short), now=now))
         self.assertIn("<div class='cell b2' title='2026-09-23 09:00Z: 35/45 priced ticks so far, the hour in progress'></div>", strip)
-        # no row in the hour in progress is a gap once a minute of it is over; before that it is not yet
+        # no row in the hour in progress is a gap from its first minute: an hour that has begun is never not yet
         early = [r for r in rows if not r["tick_id"].startswith("20260923T09")]
         strip = _strip(dash.render(early, outcomes.join(early), now=now))
         self.assertIn("<div class='cell' title='2026-09-23 09:00Z: 0/45 priced ticks so far, the hour in progress'></div>", strip)
-        self.assertEqual(dash._hour_cell(0, 3600, 3600 + 30), ("cell future", "not yet"))
+        self.assertEqual(dash._hour_cell(0, 3600, 3600 + 30), ("cell", "0/1 priced ticks so far, the hour in progress"))
+        self.assertEqual(dash._hour_cell(0, 3600, 3600 - 1), ("cell future", "not yet"))
         self.assertEqual(dash._hour_cell(1, 3600, 3600 + 30), ("cell b4", "1/1 priced ticks so far, the hour in progress"))
         self.assertEqual(dash._hour_cell(0, 3600, 3600 + 60), ("cell", "0/2 priced ticks so far, the hour in progress"))
         # a row stamped after the clock is drawn as logged, beside the not-yet hours of its day
@@ -192,6 +193,28 @@ class Dash(unittest.TestCase):
         self.assertEqual(dash.ahead(_at(["20260923T094400Z"]), now.replace(second=0)), set())
         self.assertEqual(dash.ahead(_at(["20260923T094400Z", "20260923T094500Z"]), now), {("20260923", 9)})
         self.assertEqual(dash.ahead(_at(["20260924T000000Z"], mid=None, absence="lock"), now), {("20260924", 0)})
+
+    def test_an_hour_that_has_begun_is_never_not_yet(self):
+        # 2026-09-28 (round 4b): an hour begun under a minute before the render with no priced tick was drawn
+        # 'not yet', whatever rows it held. On the Mac during a HALT, a page rendered at 10:00:20 after the loop
+        # wrote its 10:00 row (absence halt, no mid) drew that hour dashed, not as the gap it is.
+        rows = _at([f"20260923T09{m:02d}00Z" for m in range(60)])
+        rows += _at(["20260923T100000Z"], mid=None, bid=None, ask=None, absence="halt")
+        now = datetime.datetime(2026, 9, 23, 10, 0, 20, tzinfo=datetime.timezone.utc)
+        strip = _strip(dash.render(rows, outcomes.join(rows), now=now, halt=True))
+        self.assertIn("<div class='cell' title='2026-09-23 10:00Z: 0/1 priced ticks so far, the hour in progress; absent halt 1'></div>", strip)
+        self.assertIn("<div class='lab'>2026-09-23 &middot; <b>60</b>/601</div>", strip)
+        self.assertIn("<div class='cell future' title='2026-09-23 11:00Z: not yet'></div>", strip)
+        _begun_never_dashed(self, strip, now)
+        # its first minute with no row yet reads 0/1, as the day's label counts that minute: an empty cell, never dashed
+        strip = _strip(dash.render(rows[:-1], outcomes.join(rows[:-1]), now=now))
+        self.assertIn("<div class='cell' title='2026-09-23 10:00Z: 0/1 priced ticks so far, the hour in progress'></div>", strip)
+        _begun_never_dashed(self, strip, now)
+        # the 10:00 row priced (a HALT row that got past the feed): the full first minute
+        rows[-1] = dict(rows[-1], mid=100.0, bid=99.99, ask=100.01)
+        strip = _strip(dash.render(rows, outcomes.join(rows), now=now, halt=True))
+        self.assertIn("<div class='cell b4' title='2026-09-23 10:00Z: 1/1 priced ticks so far, the hour in progress; absent halt 1'></div>", strip)
+        self.assertEqual(strip.count("cell future"), 13)                                     # 11:00 .. 23:00
 
     def test_a_days_tokens_summed_past_a_floats_range_are_not_charted_and_the_page_says_so(self):
         # 2026-09-28 (round 4): each count passes report._num, but two of int(1e308) on one day sum past a
@@ -600,6 +623,15 @@ def _within(tc, strip):
     tc.assertTrue(pairs)
     for n, of in pairs:
         tc.assertLessEqual(int(n), int(of), f"{n}/{of} on the strip")
+
+
+def _begun_never_dashed(tc, strip, now):
+    """Every dashed ('not yet') cell on the strip is an hour that had not begun at `now`."""
+    starts = [datetime.datetime.strptime(d + h, "%Y-%m-%d%H").replace(tzinfo=datetime.timezone.utc)
+              for d, h in re.findall(r"<div class='cell future' title='(\d{4}-\d\d-\d\d) (\d\d):00Z", strip)]
+    tc.assertTrue(starts)
+    for s in starts:
+        tc.assertGreater(s, now, f"{s:%Y-%m-%d %H}:00Z is dashed, begun at {now:%H:%M:%S}")
 
 
 def _capture(main, argv):

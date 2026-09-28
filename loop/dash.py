@@ -129,21 +129,25 @@ def _bin_hour(n):
 
 def _hour_cell(n, start, now, late=False):
     """(css class, title tail) of the strip's cell for the UTC hour beginning at epoch `start`, with
-    `n` priced ticks, at render time `now` (epoch). An hour over is binned by _bin_hour. An hour not
-    begun with no row, or begun under a minute ago with none yet, is 'not yet' (a dashed cell), never
-    a gap. The hour in progress reads n of the minutes begun, and bins by its shortfall from the
-    minutes over, so the minute under way (its row may not be written yet) is no shortfall. An hour
-    holding a row stamped after the clock (`late`, from ahead(): a clock stepped forward), priced or
-    an absence, is drawn as logged, n of 60, like an hour over, so its count is never above its
-    denominator (sixty such rows read '60/45 so far' at 09:44, and two absence rows at 15:00 read
-    'not yet', until the evening of 2026-09-28). Until 2026-09-28 every hour of today drew as a full
-    hour, so the hours after the render read 0/60 like an outage."""
+    `n` priced ticks, at render time `now` (epoch). An hour over is binned by _bin_hour. Only an hour
+    not begun that holds no row is 'not yet' (a dashed cell), never a gap; an hour that has begun
+    never is. The hour in progress reads n of the minutes begun, and bins by its shortfall from the
+    minutes over, so the minute under way (its row may not be written yet) is no shortfall; with no
+    priced tick it is an empty cell, and in its first minute it reads 0/1, as today's label counts
+    that minute (until the evening of 2026-09-28 an hour begun under a minute before the render with
+    no priced tick was 'not yet', so a HALT hour rendered at 10:00:20, its 10:00 row an absence,
+    drew dashed instead of as the gap it is). An hour holding a row stamped after the clock (`late`,
+    from ahead(): a clock stepped forward), priced or an absence, is drawn as logged, n of 60, like
+    an hour over, so its count is never above its denominator (sixty such rows read '60/45 so far'
+    at 09:44, and two absence rows at 15:00 read 'not yet', until the evening of 2026-09-28). Until
+    2026-09-28 every hour of today drew as a full hour, so the hours after the render read 0/60 like
+    an outage."""
     if now >= start + 3600 or late or (now < start and n):
         b = _bin_hour(n)
         return "cell" + (f" b{b}" if b >= 0 else ""), f"{n}/60 priced ticks"
-    begun = int((now - start) // 60) + 1 if now >= start else 0
-    if not n and begun <= 1:
+    if now < start:                                                      # not begun, and no row in it
         return "cell future", "not yet"
+    begun = int((now - start) // 60) + 1
     b = _bin_hour(60 - max(0, begun - 1 - n)) if n else -1
     return "cell" + (f" b{b}" if b >= 0 else ""), f"{n}/{begun} priced ticks so far, the hour in progress"
 
