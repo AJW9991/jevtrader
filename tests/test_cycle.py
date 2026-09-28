@@ -382,6 +382,31 @@ class CycleTest(unittest.TestCase):
                                           " is past a float's range"), reason)
         self.assertNotIn("a logged input_tokens count today is past", reason)
 
+    def test_a_sum_past_a_floats_range_is_uncounted_whatever_the_order_or_type_of_its_counts(self):
+        # the sum ran outside the overflow guard: two int counts of 1e308 and then a float count (a foreign row;
+        # jev._parse int()s the count) made int + float raise OverflowError inside sum(), so the tick raised
+        # and every later tick that UTC day exited 1 with no row and no HALT; float counts that sum to inf, or a
+        # logged Infinity, came back as math.inf and the HALT said the log "cannot be read". Each is
+        # SPEND_UNCOUNTED now: a halt row, nothing sent, and the HALT names the sum.
+        os.makedirs(self.data)
+        for name, counts in (("int, int, float", (10 ** 308, 10 ** 308, 1000.0)), ("float, int, int", (1000.0, 10 ** 308, 10 ** 308)),
+                             ("float, float", (1e308, 1e308)), ("Infinity", (float("inf"),))):
+            with self.subTest(counts=name):
+                if os.path.exists(config.HALT):
+                    os.remove(config.HALT)
+                with open(config.DECISIONS, "w", encoding="utf-8") as fh:
+                    for i, t in enumerate(counts):
+                        fh.write(json.dumps(_row(DAY + f"T01{i:02d}00Z", t)) + "\n")
+                self.assertEqual(cycle.spend_today(NOW), cycle.SPEND_UNCOUNTED)
+                self.assertEqual(cycle.main(["--once"]), 0)
+                self.assertEqual((self.rows()[-1]["absence"], self.rows()[-1]["tick_id"]), ("halt", TICK))
+                self.assert_nothing_sent()
+                with open(config.HALT, encoding="utf-8") as fh:
+                    reason = fh.read()
+                self.assertTrue(reason.startswith(cycle.HALT_SPEND + ": today's input_tokens (one logged count, or the sum of today's"
+                                                  " counts) is past a float's range"), reason)
+                self.assertNotIn("cannot be read", reason)
+
     def test_spend_widens_when_the_tail_starts_after_today(self):
         # rows stamped later than today (a clock that ran ahead, then stepped back) fill the tail, so
         # its first row is not today's: the read used to stop there and miss today's earlier rows

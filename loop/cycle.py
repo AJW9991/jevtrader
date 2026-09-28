@@ -210,7 +210,8 @@ def spend_today(now, path=None):
     only when the tail's first row is already today's, i.e. today did not fit. A missing
     log is $0. A log that exists but cannot be read (a 0200 mode or an ACL, which write_row
     still appends to; a directory; an I/O error) is math.inf: the guard cannot count, so it
-    trips and nothing is sent, as the ledger fails closed."""
+    trips and nothing is sent, as the ledger fails closed. A count, or today's sum of them, past
+    a float's range is SPEND_UNCOUNTED, in whatever order and of whatever type the counts are."""
     path = path or config.DECISIONS
     day = time.strftime("%Y%m%d", time.gmtime(now))
     try:
@@ -223,12 +224,15 @@ def spend_today(now, path=None):
         return 0.0                  # no log yet: nothing spent
     except OSError:
         return math.inf             # it exists and cannot be read: the spend cannot be counted
-    tokens = sum(billed_tokens(r) for r in rows if str(r.get("tick_id", ""))[:8] == day)
     try:
-        return tokens * config.USD_PER_MTOK / 1e6
+        tokens = sum(billed_tokens(r) for r in rows if str(r.get("tick_id", ""))[:8] == day)   # in the try: two int counts
+                                            # of 1e308 sum to an int no float holds, and a float count after them raises here
+        usd = tokens * config.USD_PER_MTOK / 1e6
     except OverflowError:                   # a server-reported count past a float's range, or counts that each fit one
                                             # and sum past it: over any limit,
         return SPEND_UNCOUNTED              # and a raise here would cost every later tick of the day its row
+    return SPEND_UNCOUNTED if usd == math.inf else usd   # float counts (a foreign row's) that sum to inf, or a logged
+                                            # Infinity: the same sum past a float's range, not a log that cannot be read
 
 
 def new_row(ts_rx, mode):

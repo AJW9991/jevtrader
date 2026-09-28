@@ -270,6 +270,14 @@ class Status(unittest.TestCase):
                       " so the next tick's guard trips (HALT)", line)
         self.assertNotIn("spend $", line)
 
+    def test_float_counts_that_sum_to_inf_are_uncounted_not_an_unreadable_log(self):
+        # float counts (a foreign row's; jev._parse int()s the count) that sum past a float's range made
+        # cycle.spend_today return math.inf, which this line reads as a log that cannot be read
+        line = self._today([1e308, 1e308])
+        self.assertIn("; spend UNCOUNTED: a token count today, or today's sum of them, is past a float's range,"
+                      " so the next tick's guard trips (HALT)", line)
+        self.assertNotIn("UNREADABLE", line)
+
     def test_no_h1_h2_pair_or_confidence_number(self):
         text = self._render("2026-09-23T10:42")
         for banned in ("H1 statistic", "H2 statistic", "pair B-C", "mean_S", "Pearson", "Brier", "calibration", "c99", "noultail", "pbuy", "confidence"):
