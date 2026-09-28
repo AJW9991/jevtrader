@@ -1,7 +1,7 @@
 """loop/status.py: the one-screen morning check renders from the log, the heartbeat, HALT, proposals/
 and logs/propose.log, says STOPPED/HALT/MISSING when they apply, and can carry no H1/H2/pair/
 confidence number because it never imports or calls the code that computes one (PREREG §8.4)."""
-import contextlib, datetime, io, os, tempfile, unittest
+import contextlib, datetime, io, os, shutil, tempfile, unittest
 from unittest import mock
 
 from loop import config, dash, outcomes, report, status
@@ -20,6 +20,7 @@ class Status(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.mkdtemp()
+        cls.addClassCleanup(shutil.rmtree, cls.tmp, ignore_errors=True)
         cls.log = os.path.join(cls.tmp, "decisions.jsonl")
         _write(cls.log, [_row(m) for m in range(42)])                 # 2026-09-23 10:00 .. 10:41, one torn line
         cls.rows = outcomes.load(cls.log, [])

@@ -1,6 +1,6 @@
 """loop/dash.py: the health page renders from a log, and can carry no H1/H2/pair/confidence number
 because every report.<name> it uses is on an allowlist of section 1-3 functions (PREREG §8.4)."""
-import ast, contextlib, io, os, re, tempfile, unittest
+import ast, contextlib, io, os, re, shutil, tempfile, unittest
 from unittest import mock
 
 from fixture_prereg import pin_prereg, text as prereg_text
@@ -73,6 +73,7 @@ class Dash(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.mkdtemp()
+        cls.addClassCleanup(shutil.rmtree, cls.tmp, ignore_errors=True)
         no_live_halt(cls, cls.tmp)                                       # a page is compared with a page
         cls.log = os.path.join(cls.tmp, "decisions.jsonl")
         _write(cls.log, [_row(m) for m in range(42)])
@@ -226,6 +227,7 @@ class Dash(unittest.TestCase):
         # propose.sh --root passes its own data/, proposals/ and (under test) a pinned prompts root,
         # so the nightly's rebuild never reads the repo's heartbeat, HALT or CURRENT (2026-09-28)
         root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
         os.makedirs(os.path.join(root, "data"))
         os.makedirs(os.path.join(root, "proposals"))
         os.makedirs(os.path.join(root, "prompts"))

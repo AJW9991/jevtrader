@@ -1,6 +1,6 @@
 """loop/inference.py: the pre-registered draw, the guard that refuses the sample before day 28,
 exclusions by T0-anchored day, and an end-to-end run on a synthetic log and on --pre-t0."""
-import contextlib, datetime, hashlib, io, json, math, os, random, sys, tempfile, unittest
+import contextlib, datetime, hashlib, io, json, math, os, random, shutil, sys, tempfile, unittest
 from unittest import mock
 
 from fixture_prereg import pin_prereg
@@ -128,6 +128,7 @@ class DaysAndExclusions(unittest.TestCase):
 
     def test_exclusions_parse_dNN_or_NN_and_refuse_junk(self):
         tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
         p = os.path.join(tmp, "exclusions.tsv")
         with open(p, "w") as fh:
             fh.write("day\tfill%\tjev-err%\treason\nd03\t90.0%\t0.0%\tasleep\n\n7\t80.0%\t0.0%\tfeed down\n")
@@ -149,6 +150,7 @@ class Guard(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.mkdtemp()
+        cls.addClassCleanup(shutil.rmtree, cls.tmp, ignore_errors=True)
         cls.log = os.path.join(cls.tmp, "decisions.jsonl")
         _write(cls.log, [_row(m) for m in range(42)])                # 2026-09-23 10:00 .. 10:41
         cls.t0 = "2026-09-23T10:00"
@@ -233,6 +235,7 @@ class LiveLog(unittest.TestCase):
     def setUpClass(cls):
         pin_prereg(cls)                                               # the repository's PREREG, pinned: T0 2026-09-25T21:40Z
         cls.tmp = tempfile.mkdtemp()
+        cls.addClassCleanup(shutil.rmtree, cls.tmp, ignore_errors=True)
         cls.log = os.path.join(cls.tmp, "decisions.jsonl")
         _write(cls.log, [_row(m) for m in range(42)])                # 2026-09-23, before PREREG's T0: no sample row
         cls.ex = os.path.join(cls.tmp, "exclusions.tsv")
@@ -319,6 +322,7 @@ class PreT0Cut(unittest.TestCase):
     def setUpClass(cls):
         pin_prereg(cls)
         cls.tmp = tempfile.mkdtemp()
+        cls.addClassCleanup(shutil.rmtree, cls.tmp, ignore_errors=True)
         cls.log = os.path.join(cls.tmp, "copy.jsonl")                 # not the live log: --t0 is accepted
         sealed = report._t0("2026-09-25T21:40")
         _write(cls.log, _minutes(sealed - 10 * 60, sealed + 10 * 60), garbage=False)   # 21:30 .. 21:49, ten each side
@@ -350,6 +354,7 @@ class SealedCopy(unittest.TestCase):
     def setUpClass(cls):
         pin_prereg(cls)                                               # "the repository's" seal: the pinned fixture's
         cls.tmp = tempfile.mkdtemp()
+        cls.addClassCleanup(shutil.rmtree, cls.tmp, ignore_errors=True)
         cls.log = os.path.join(cls.tmp, "copy.jsonl")
         _write(cls.log, _minutes(cls.SEALED - 600, cls.SEALED + 42 * 60, mid=lambda e: 100.0 + (e % 3600) / 600.0), garbage=False)
         cls.none = _exclusions(os.path.join(cls.tmp, "none.tsv"))     # 10 rows before the seal, 42 inside the sample
@@ -392,6 +397,7 @@ class Reading(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.mkdtemp()
+        cls.addClassCleanup(shutil.rmtree, cls.tmp, ignore_errors=True)
         cls.edge = os.path.join(cls.tmp, "edge.jsonl")              # B beats C on 16 blocks, lean tracks the return
         _write(cls.edge, _edge_rows(), garbage=False)
         cls.flat = os.path.join(cls.tmp, "flat.jsonl")              # every arm holds; lean runs against the return
@@ -477,6 +483,7 @@ class ExcludedDays(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.mkdtemp()
+        cls.addClassCleanup(shutil.rmtree, cls.tmp, ignore_errors=True)
         d2 = T0 + 86400
         outage = _at(d2 + 900 * 11, absence="feed")
         outage.update(bid=None, ask=None, mid=None, answers=None, columns={"a": None, "b": None})
@@ -547,6 +554,7 @@ class PerDay(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.mkdtemp()
+        cls.addClassCleanup(shutil.rmtree, cls.tmp, ignore_errors=True)
         cls.log = os.path.join(cls.tmp, "no-day-2.jsonl")        # 16 blocks on d01, none on d02 (no row at all), 4 on d03
         _write(cls.log, _edge_rows() + _edge_rows(blocks=4, day=3), garbage=False)
         cls.ex = _exclusions(os.path.join(cls.tmp, "ex.tsv"), [4])
@@ -590,6 +598,7 @@ class Pending(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.mkdtemp()
+        cls.addClassCleanup(shutil.rmtree, cls.tmp, ignore_errors=True)
         cls.ex = os.path.join(cls.tmp, "exclusions.tsv")
         with open(cls.ex, "w") as fh:
             fh.write("day\tfill%\tjev-err%\treason\n")
@@ -654,6 +663,7 @@ class Pinned(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.mkdtemp()
+        cls.addClassCleanup(shutil.rmtree, cls.tmp, ignore_errors=True)
 
         def load(rows):
             path = os.path.join(cls.tmp, f"{len(os.listdir(cls.tmp))}.jsonl")
@@ -775,6 +785,7 @@ class Robustness(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.mkdtemp()
+        cls.addClassCleanup(shutil.rmtree, cls.tmp, ignore_errors=True)
         cls.log = os.path.join(cls.tmp, "edge.jsonl")
         _write(cls.log, _edge_rows(blocks=4))                        # with a torn last line, as a crash leaves it
         cls.ex = _exclusions(os.path.join(cls.tmp, "ex.tsv"), [9])
@@ -793,6 +804,7 @@ class Robustness(unittest.TestCase):
         self.assertEqual((code, out), (2, ""))
         self.assertIn(f"no exclusions file at {missing}", err)
         data = tempfile.mkdtemp()                                    # the default may be absent: that is no exclusions
+        self.addCleanup(shutil.rmtree, data, ignore_errors=True)
         with mock.patch.object(inference.config, "DATA", data):
             code, out, err = self._run()
         self.assertEqual(code, 0, err)

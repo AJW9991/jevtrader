@@ -1251,6 +1251,7 @@ class Capped(unittest.TestCase):
         self.assertEqual(len(at('log "OK proposals/$DATE.json"')), 1)
         # and a --dry run against a temp root writes the page there, never into the repo's data/
         tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
         with open(os.path.join(tmp, "decisions.jsonl"), "w") as fh:
             pass
         r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry", "--date", "2026-09-22", "--root", tmp],
@@ -1291,6 +1292,7 @@ class Capped(unittest.TestCase):
         # python is absent, rather than falling back to whatever python3 is on PATH
         if not os.path.exists("/opt/homebrew/bin/python3"):
             tmp = tempfile.mkdtemp()
+            self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
             r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry", "--date", "2026-09-22", "--root", tmp],
                                capture_output=True, text=True, timeout=30, env=_sh_env(self, JEVLOOP_PY=""))
             self.assertEqual(r.returncode, 0)

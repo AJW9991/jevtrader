@@ -17,6 +17,7 @@ class ReadersDiff(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.mkdtemp()
+        cls.addClassCleanup(shutil.rmtree, cls.tmp, ignore_errors=True)
         rows = [_row(m) for m in range(40)]
         dry_first = dict(rows[7]); dry_first["mode"], dry_first["ts_rx"] = "dry", "2026-09-23T10:07:00.050Z"
         dry_first.update(bid=100.49, ask=100.51, mid=100.5)  # a different mid, so which row speaks changes the return

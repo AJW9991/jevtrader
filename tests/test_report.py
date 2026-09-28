@@ -20,7 +20,7 @@ horizon, and this fixture used to pin that); m 7..9 flat; m 10..19 down; m 22..2
 gap (past the log). Blocks (no --t0) are anchored at 10:00: k0 = m 0..14, k1 = m 15..29,
 k2 = m 30..41.
 """
-import contextlib, datetime, io, json, math, os, tempfile, unittest
+import contextlib, datetime, io, json, math, os, shutil, tempfile, unittest
 from unittest import mock
 
 from fixture_prereg import pin_prereg
@@ -164,7 +164,7 @@ class Synthetic(unittest.TestCase):
         self.assertTrue(self.text.startswith("jev-paper-loop report: coinbase SOL-USD, cadence 60 s, horizon 900 s, log "))
 
     def test_health(self):
-        halt = os.path.join(tempfile.mkdtemp(), "HALT")                 # never the repo's data/HALT: a live HALT on the
+        halt = os.path.join(self.enterContext(tempfile.TemporaryDirectory()), "HALT")   # never the repo's data/HALT: a live HALT on the
         with mock.patch.object(config, "HALT", halt):                   # Mac must not turn the commit gate red
             h = report.health(self.rows, self.outs, self.bad)
         self.assertEqual((h["rows"], h["ticks"], h["live"], h["dry"], h["skipped"]), (40, 40, 34, 5, 1))
@@ -849,6 +849,7 @@ class Withheld(unittest.TestCase):
     def setUpClass(cls):
         pin_prereg(cls)                                                 # prereg-v1's §11 line: T0 2026-09-25T21:40Z
         cls.tmp = tempfile.mkdtemp()
+        cls.addClassCleanup(shutil.rmtree, cls.tmp, ignore_errors=True)
         no_live_halt(cls, cls.tmp)                                      # two runs are compared
         rows = []
         for m in MINUTES:                                               # the synthetic log moved into day 2 of the sample
@@ -1070,7 +1071,7 @@ class PerDay(unittest.TestCase):
         text = report.render(cut, [], t0=t0, outs=outs, health_only=True, last=last)
         self.assertIn("  d28 ", text)
         self.assertIn("BAD days 1: d28", text)
-        log = os.path.join(tempfile.mkdtemp(), "past-end.jsonl")
+        log = os.path.join(self.enterContext(tempfile.TemporaryDirectory()), "past-end.jsonl")
         _write(log, rows, garbage=False)
         code, out = _main(["--log", log, "--health", "--t0", "20260925T214000Z"])
         self.assertEqual(code, 0)
