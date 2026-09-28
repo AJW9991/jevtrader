@@ -180,7 +180,8 @@ def spend_today(now, path=None):
     try:
         buf, cut = _tail(path, TAIL_BYTES)
         rows = _rows(buf)
-        if cut and rows and str(rows[0].get("tick_id", ""))[:8] == day:
+        if cut and rows and str(rows[0].get("tick_id", ""))[:8] >= day:   # today's first rows may lie before the tail,
+                                                                            # behind rows stamped later (a clock stepped back)
             rows = _rows(_tail(path, 0)[0])
     except FileNotFoundError:
         return 0.0                  # no log yet: nothing spent

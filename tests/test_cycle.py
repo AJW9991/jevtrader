@@ -299,6 +299,19 @@ class CycleTest(unittest.TestCase):
         self.assertEqual(self.rows()[-1]["absence"], "halt")
         self.assert_nothing_sent()
 
+    def test_spend_widens_when_the_tail_starts_after_today(self):
+        # rows stamped later than today (a clock that ran ahead, then stepped back) fill the tail, so
+        # its first row is not today's: the read used to stop there and miss today's earlier rows
+        os.makedirs(self.data)
+        with open(config.DECISIONS, "w", encoding="utf-8") as fh:
+            for m in range(3):
+                fh.write(json.dumps(_row(DAY + f"T00{m:02d}00Z", 2_000_000)) + "\n")       # today, early: $0.252
+            for m in range(40):
+                fh.write(json.dumps(_row("20260925T01" + f"{m:02d}00Z", 1)) + "\n")         # tomorrow, from a clock ahead
+            fh.write(json.dumps(_row(DAY + "T020000Z", 1000)) + "\n")                        # today again
+        with mock.patch.object(cycle, "TAIL_BYTES", 2000):
+            self.assertAlmostEqual(cycle.spend_today(NOW), (3 * 2_000_000 + 1000) * config.USD_PER_MTOK / 1e6)
+
     def test_spend_just_under_limit_proceeds(self):
         os.makedirs(self.data)
         with open(config.DECISIONS, "w", encoding="utf-8") as fh:
