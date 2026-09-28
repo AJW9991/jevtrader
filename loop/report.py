@@ -152,8 +152,12 @@ def health(rows, outs, bad=(), t0=None, last=None, now=None, since=None):
     attempted = [r for r in rows if r.get("mode") == "live" and r.get("absence") in (None, "jev")]
     errors = collections.Counter((_jev(r, "error") or "?") for r in attempted if r.get("absence") == "jev")
     lat = [_jev(r, "latency_ms") for r in rows if _num(_jev(r, "latency_ms"))]
-    uncounted = sum(1 for r in rows if type(_jev(r, "input_tokens")) is int and not _num(_jev(r, "input_tokens")))   # not a
-                                                                    # bool: an int subclass that _num refuses, and cycle.billed_tokens skips
+    past = [t for t in (_jev(r, "input_tokens") for r in rows)
+            if isinstance(t, (int, float)) and not isinstance(t, bool) and t == t and not _num(t)]   # past a float's range:
+                                                    # not a bool (an int subclass _num refuses), not NaN (no count, no range)
+    uncounted = sum(1 for t in past if t > 0)       # cycle.billed_tokens' own test (a number, not a bool, > 0): it charges
+                                                    # these as logged, so the spend guard trips on one
+    negative = len(past) - uncounted                # billed_tokens charges a count <= 0 as no count at all: no trip
     try:
         tokens = sum(_jev(r, "input_tokens") for r in rows if _num(_jev(r, "input_tokens")))   # in the try: two int counts of 1e308
                                             # sum to an int past a float's range, and a float count after them raises here
@@ -180,7 +184,9 @@ def health(rows, outs, bad=(), t0=None, last=None, now=None, since=None):
         + (": " + ", ".join(f"{k} {v}" for k, v in sorted(errors.items())) if errors else ""),
         f"  latency ms: mean {_f(_mean(lat), 1)}, p95 {_f(_p95(lat), 0)} (n {len(lat)})",
         spent
-        + (f"; {uncounted} row(s) report a count past a float's range, left out (the spend guard trips on one)" if uncounted else ""),
+        + (f"; {uncounted} row(s) report a count past a float's range, left out (the spend guard trips on one)" if uncounted else "")
+        + (f"; {negative} row(s) report a negative count past a float's range, left out (the spend guard charges such a row"
+           " as one with no count)" if negative else ""),
         f"  model_answered: " + (", ".join(f"{k} {v}" for k, v in sorted(models.items())) or "none")
         + f" ({len(models)} distinct); drift {drift}",
         f"  prompt_b versions: " + ", ".join(f"{k} {v}" for k, v in sorted(versions.items())),

@@ -1206,6 +1206,32 @@ class PerDay(unittest.TestCase):
         self.assertEqual(line, [f"  input tokens 9000 = ${9000 * config.USD_PER_MTOK / 1e6:.6f} to date at ${config.USD_PER_MTOK}/Mtok"])
         self.assertNotIn("float's range", "\n".join(h["lines"]))
 
+    def test_the_spend_guard_claim_is_made_only_for_a_count_the_guard_trips_on(self):
+        # ccbc27e's `type(t) is int` still named a NEGATIVE count past a float's range (jev._parse keeps a 401-digit
+        # negative literal as an int) with "(the spend guard trips on one)", while cycle.billed_tokens charges a
+        # logged count only when it is > 0 and gave that row JEV_TOKENS_IF_UNKNOWN: the guard never tripped. The
+        # claim now follows billed_tokens' own test, so it also covers a +Infinity count (a foreign row), which the
+        # guard does trip on and the line left out unnamed. The guard's own verdict on each log is held beside it.
+        from loop import cycle
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        self.enterContext(mock.patch.object(config, "HALT", os.path.join(tmp, "no-HALT")))
+        now = report.tick_epoch("20260923T120000Z")                                  # the rows' own UTC day
+        base = f"  input tokens 9000 = ${9000 * config.USD_PER_MTOK / 1e6:.6f} to date at ${config.USD_PER_MTOK}/Mtok"
+        trips = "; 1 row(s) report a count past a float's range, left out (the spend guard trips on one)"
+        neg = "; 1 row(s) report a negative count past a float's range, left out (the spend guard charges such a row as one with no count)"
+        for name, big, note, tripped in (("int 1e400", 10 ** 400, trips, True), ("+inf", math.inf, trips, True),
+                                         ("int -1e400", -10 ** 400, neg, False), ("-inf", -math.inf, neg, False),
+                                         ("nan", math.nan, "", False)):
+            with self.subTest(count=name):
+                rows = [dict(_row(m)) for m in range(20, 30)]                        # ten answered live rows, 1000 tokens each
+                rows[3] = dict(rows[3], jev=dict(rows[3]["jev"], input_tokens=big))
+                h = report.health(rows, outcomes.join(rows))
+                self.assertEqual([l for l in h["lines"] if l.startswith("  input tokens")], [base + note])
+                self.assertEqual(cycle.billed_tokens(rows[3]) is big, tripped)      # charged as logged, or as no count
+                log = os.path.join(tmp, f"spend-{name}.jsonl")
+                _write(log, rows, garbage=False)
+                self.assertEqual(cycle.spend_today(now, log) >= config.DAILY_SPEND_HALT_USD, tripped)   # the guard's verdict
+
     def test_counts_that_fit_a_float_but_sum_past_one_are_named_not_a_crash(self):
         # jev._parse int()s a server reply of 1e308, which fits a float, so _num lets two such counts into
         # the sum; their int sum does not fit one, and `tokens * USD_PER_MTOK` raised OverflowError: the
