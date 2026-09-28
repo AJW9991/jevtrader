@@ -71,13 +71,24 @@ def _write_log(path, rows):
             fh.write(json.dumps(r) + "\n")
 
 
-def _sh_env(tmp=None, **extra):
-    """propose.sh's environment for a test. JEVLOOP_PY is the interpreter running the suite
-    (under `make test` on the Mac that is /opt/homebrew/bin/python3, the script's default); on a
-    host with no /usr/bin/caffeinate (a Linux checkout, CI) JEVLOOP_CAFFEINATE is a stub in `tmp`
-    that drops `-i` and runs the command, so the live branch can be driven there too. Both keys
-    are blank so nothing here could ever find one."""
-    env = {**os.environ, "TYPESAFE_API_KEY_LOOP": "", "TYPESAFE_API_KEY": "", "JEVLOOP_PY": sys.executable, **extra}
+def _sh_env(tc, tmp=None, **extra):
+    """propose.sh's (or a nightly script's) environment for the test `tc`. JEVLOOP_PY is the
+    interpreter running the suite (under `make test` on the Mac that is /opt/homebrew/bin/python3,
+    the script's default); on a host with no /usr/bin/caffeinate (a Linux checkout, CI)
+    JEVLOOP_CAFFEINATE is a stub in `tmp` that drops `-i` and runs the command, so the live branch
+    can be driven there too.
+    Nothing started with it can reach a real key or the live prompts/. HOME is an empty temp dir:
+    blank TYPESAFE_API_KEY* variables alone do not stop jev.py finding a key FILE (config.KEY_PATHS
+    looks under ~/.secondbrain-secrets), and propose.sh's default token path is under HOME too.
+    TYPESAFE_BASE_URL is a closed local port, so a send that got that far still could not leave the
+    machine. JEVLOOP_PROMPTS is a pinned v1 root (fixture_prompts.pin_v1), so the digest and the
+    table never quote the live CURRENT. `extra` overrides any of it."""
+    env = {**os.environ, "TYPESAFE_API_KEY_LOOP": "", "TYPESAFE_API_KEY": "",
+           "HOME": tc.enterContext(tempfile.TemporaryDirectory()), "TYPESAFE_BASE_URL": "http://127.0.0.1:9",
+           "JEVLOOP_PY": sys.executable}
+    if "JEVLOOP_PROMPTS" not in extra:
+        env["JEVLOOP_PROMPTS"] = pin_v1(tc)
+    env.update(extra)
     if tmp is not None and not os.access("/usr/bin/caffeinate", os.X_OK):
         stub = os.path.join(tmp, "caffeinate")
         with open(stub, "w") as fh:
@@ -274,11 +285,14 @@ class PolicyTableTest(unittest.TestCase):
     def test_runs_by_path_as_the_contract_names_it(self):
         # CONTRACT §5 says `policy_table.py proposals/<date>.json` and `nightly/digest.py`:
         # run by path, sys.path[0] is nightly/ and `from loop import` must still resolve.
-        env = {**os.environ, "TYPESAFE_API_KEY_LOOP": "", "TYPESAFE_API_KEY": ""}
-        r = subprocess.run([sys.executable, os.path.join(REPO, "nightly", "policy_table.py"), "--dry", self.prop],
+        env = _sh_env(self)                                                 # no key reachable, CURRENT pinned to v1
+        r = subprocess.run([sys.executable, os.path.join(REPO, "nightly", "policy_table.py"), "--dry",
+                            "--prompts", env["JEVLOOP_PROMPTS"], self.prop],
                            cwd=self.tmp, capture_output=True, text=True, timeout=60, env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(r.stdout.split("\n", 1)[0], "dry: 81 payloads, 0 sent")
+        first, body = r.stdout.split("\n", 1)
+        self.assertEqual(first, "dry: 81 payloads, 0 sent")
+        self.assertEqual(json.loads(body)["questions"]["current"]["instructions"], prompts.load("v1")["action"]["instructions"])
         r = subprocess.run([sys.executable, os.path.join(REPO, "nightly", "digest.py"), "--help"],
                            cwd=self.tmp, capture_output=True, text=True, timeout=60, env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -735,7 +749,7 @@ class ProposeDryTest(unittest.TestCase):
         sends_before = os.path.getsize(config.SENDS) if os.path.exists(config.SENDS) else None
         r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry",
                             "--date", "2026-09-22", "--root", tmp],
-                           cwd=tmp, capture_output=True, text=True, timeout=120, env=_sh_env())
+                           cwd=tmp, capture_output=True, text=True, timeout=120, env=_sh_env(self))
         self.assertEqual(r.returncode, 0, r.stderr)
         with open(os.path.join(tmp, "proposals", "2026-09-22.json")) as fh:
             doc = json.load(fh)
@@ -752,6 +766,11 @@ class ProposeDryTest(unittest.TestCase):
         self.assertIn("OK proposals/2026-09-22.json", log)
         self.assertIn("dry: 81 payloads, 0 sent", log)
         self.assertTrue(os.path.exists(os.path.join(tmp, "data", "digest-2026-09-22.md")))
+        # the digest (and the table) read the pinned v1 root, never the live CURRENT (v2 since 2026-09-26)
+        with open(os.path.join(tmp, "data", "digest-2026-09-22.md"), encoding="utf-8") as fh:
+            dig = fh.read()
+        self.assertIn(f"prompt_b v1 {prompts.sha('v1')}", dig)
+        self.assertIn(prompts.load("v1")["action"]["instructions"], dig)
         self.assertFalse(os.path.exists(os.path.join(tmp, "proposals", "2026-09-22.md")))   # dry writes no table
         self.assertFalse(os.path.exists(os.path.join(tmp, "data", "sends.tsv")))
         sends_after = os.path.getsize(config.SENDS) if os.path.exists(config.SENDS) else None
@@ -765,7 +784,7 @@ class ProposeDryTest(unittest.TestCase):
             fh.write("by hand\n")
         r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry",
                             "--date", "2026-09-22", "--root", tmp],
-                           cwd=tmp, capture_output=True, text=True, timeout=120, env=_sh_env())
+                           cwd=tmp, capture_output=True, text=True, timeout=120, env=_sh_env(self))
         self.assertEqual(r.returncode, 0, r.stderr)
         with open(os.path.join(tmp, "logs", "propose.log")) as fh:
             log = fh.read()
@@ -783,7 +802,7 @@ class ProposeDryTest(unittest.TestCase):
         os.makedirs(os.path.join(tmp, "data", "dash.html"))                 # the page cannot be written
         r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry",
                             "--date", "2026-09-22", "--root", tmp],
-                           cwd=tmp, capture_output=True, text=True, timeout=120, env=_sh_env())
+                           cwd=tmp, capture_output=True, text=True, timeout=120, env=_sh_env(self))
         self.assertEqual(r.returncode, 0, r.stderr)
         with open(os.path.join(tmp, "logs", "propose.log")) as fh:
             log = fh.read()
@@ -807,18 +826,31 @@ class ProposeDryTest(unittest.TestCase):
         code = [l for l in src.splitlines() if not l.lstrip().startswith("#")]
         self.assertEqual([l for l in code if "prompts/" in l or "/prompts" in l], [])
 
+    def test_the_scripts_environment_reaches_no_key_and_no_live_prompts(self):
+        # blank key variables alone left jev.key() free to find a key FILE under the real HOME
+        env = _sh_env(self)
+        self.assertNotEqual(env["HOME"], os.path.expanduser("~"))
+        self.assertEqual(os.listdir(env["HOME"]), [])
+        code = ("from loop import config, jev, prompts\n"
+                "try:\n    jev.key(); print('KEY FOUND')\nexcept jev.JevError as e:\n    print(e.kind)\n"
+                "print(config.JEV_URL)\nimport sys\nprint(prompts.current(sys.argv[1]))\n")
+        r = subprocess.run([sys.executable, "-c", code, env["JEVLOOP_PROMPTS"]], cwd=REPO, env=env,
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.splitlines(), ["no-key", "http://127.0.0.1:9/v1/systemone", "v1"])
+
     def test_a_trailing_date_or_root_is_a_usage_error_not_a_hang(self):
         # `shift 2` with one argument left fails and the loop never advanced: this used to spin
         for args in (["--date"], ["--root"], ["--dry", "--date"], ["--date", "2026-09-22", "--root"]):
             r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), *args],
-                               capture_output=True, text=True, timeout=10, env=_sh_env())
+                               capture_output=True, text=True, timeout=10, env=_sh_env(self))
             self.assertEqual(r.returncode, 2, args)
             self.assertIn("usage:", r.stderr, args)
 
     def _dry(self, tmp):
         return subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry",
                                "--date", "2026-09-22", "--root", tmp],
-                              cwd=tmp, capture_output=True, text=True, timeout=120, env=_sh_env())
+                              cwd=tmp, capture_output=True, text=True, timeout=120, env=_sh_env(self))
 
     def test_a_second_run_for_the_same_date_is_refused(self):
         # a missed slot that fires after 00:00Z and the regular slot digest the same day: the second
@@ -870,7 +902,7 @@ class LiveBranch(unittest.TestCase):
             fh.write(self.TOKEN + "\n")
         self.saw = os.path.join(self.tmp, "saw")                         # what the stub saw: argv, cwd, token
         os.makedirs(self.saw)
-        pin_v1(self)
+        self.prompts = pin_v1(self)                                      # the digest in the prompt quotes v1
 
     def _stub(self, body):
         p = os.path.join(self.tmp, "claude")
@@ -880,7 +912,8 @@ class LiveBranch(unittest.TestCase):
         return p
 
     def _run(self, stub, cap="2700", **extra):
-        env = _sh_env(self.tmp, JEVLOOP_CLAUDE=stub, JEVLOOP_TOKEN_FILE=self.token, JEVLOOP_CLAUDE_CAP_S=cap, **extra)
+        env = _sh_env(self, self.tmp, JEVLOOP_CLAUDE=stub, JEVLOOP_TOKEN_FILE=self.token, JEVLOOP_CLAUDE_CAP_S=cap,
+                      JEVLOOP_PROMPTS=self.prompts, **extra)
         return subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--date", DAY.isoformat(), "--root", self.tmp],
                               capture_output=True, text=True, timeout=120, env=env, cwd=REPO)
 
@@ -1072,7 +1105,7 @@ class Capped(unittest.TestCase):
         with open(os.path.join(tmp, "decisions.jsonl"), "w") as fh:
             pass
         r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry", "--date", "2026-09-22", "--root", tmp],
-                           capture_output=True, text=True, timeout=120, env=_sh_env())
+                           capture_output=True, text=True, timeout=120, env=_sh_env(self))
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(os.path.exists(os.path.join(tmp, "data", "dash.html")))
         with open(os.path.join(tmp, "logs", "propose.log")) as fh:
@@ -1108,7 +1141,7 @@ class Capped(unittest.TestCase):
         if not os.path.exists("/opt/homebrew/bin/python3"):
             tmp = tempfile.mkdtemp()
             r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry", "--date", "2026-09-22", "--root", tmp],
-                               capture_output=True, text=True, timeout=30, env={**os.environ, "JEVLOOP_PY": ""})
+                               capture_output=True, text=True, timeout=30, env=_sh_env(self, JEVLOOP_PY=""))
             self.assertEqual(r.returncode, 0)
             self.assertIn("FAIL no python at /opt/homebrew/bin/python3", r.stderr)
 

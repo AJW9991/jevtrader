@@ -35,6 +35,10 @@ CLAUDE="${JEVLOOP_CLAUDE:-/opt/homebrew/bin/claude}"
 CAFFEINATE="${JEVLOOP_CAFFEINATE:-/usr/bin/caffeinate}"
 TOKEN_FILE="${JEVLOOP_TOKEN_FILE:-$HOME/.secondbrain-secrets/oauth_token}"
 CLAUDE_CAP_S="${JEVLOOP_CLAUDE_CAP_S:-2700}"   # 45 min awake: the first two nights took 52 s and 51 s
+# JEVLOOP_PROMPTS (2026-09-28): a prompts root for the digest and the table, so the suite runs them
+# on a pinned v1 (tests/fixture_prompts.pin_v1) and never quotes the live CURRENT. Empty (always,
+# under launchd): neither gets --prompts and both read the repo's own, as before.
+PROMPTS_ROOT="${JEVLOOP_PROMPTS:-}"
 ROOT="$REPO"; DATE=""; DRY=0
 
 usage() { echo "usage: $0 [--date YYYY-MM-DD] [--dry] [--root DIR]" >&2; exit 2; }
@@ -107,7 +111,8 @@ PREV="$("$PY" -c 'import datetime as d, sys; print((d.date.fromisoformat(sys.arg
 
 # 1. digest: exit 4 = the day has no rows, so there is nothing for the model to read.
 DIGEST="$ROOT/data/digest-$DATE.md"
-"$PY" -m nightly.digest --date "$DATE" --log "$ROOT/data/decisions.jsonl" --out "$DIGEST" >>"$LOG" 2>&1
+"$PY" -m nightly.digest --date "$DATE" ${PROMPTS_ROOT:+--prompts "$PROMPTS_ROOT"} \
+  --log "$ROOT/data/decisions.jsonl" --out "$DIGEST" >>"$LOG" 2>&1
 rc=$?
 if [ $rc -eq 4 ]; then
   [ $DRY -eq 1 ] || { log "no ticks on $DATE; nothing to propose"; exit 0; }
@@ -219,7 +224,8 @@ if [ -e "$ROOT/data/HALT" ]; then
   exit 0
 fi
 if [ $DRY -eq 1 ]; then DRYFLAG="--dry"; else DRYFLAG=""; fi
-"$PY" -m nightly.policy_table $DRYFLAG --out "$ROOT/proposals/$DATE.md" "$ROOT/proposals/$DATE.json" >>"$LOG" 2>&1
+"$PY" -m nightly.policy_table $DRYFLAG ${PROMPTS_ROOT:+--prompts "$PROMPTS_ROOT"} \
+  --out "$ROOT/proposals/$DATE.md" "$ROOT/proposals/$DATE.json" >>"$LOG" 2>&1
 rc=$?
 [ $rc -eq 0 ] || fail "policy_table exit $rc"
 log "OK proposals/$DATE.json"
