@@ -818,6 +818,100 @@ class Degenerate(unittest.TestCase):
 
 
 
+class Withheld(unittest.TestCase):
+    """CLAUDE.md: nobody reads report §4-§7 before day 28; the day-14 look is --health. `make report`
+    on rows of the sealed sample therefore prints sections 1-3 and says the rest is withheld until
+    the sample ends; --unblind prints them and says so on stderr; shakedown rows before T0, or any
+    log after the sample has ended, print in full. --sample reads T0 from PREREG.md §11."""
+    T0 = report.tick_epoch("20260925T214000Z")                       # the sealed T0 (PREREG §11)
+    END = T0 + report.SAMPLE_DAYS * 86400
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp()
+        rows = []
+        for m in MINUTES:                                               # the synthetic log moved into day 2 of the sample
+            r = dict(_row(m))
+            e = cls.T0 + 86400 + 60 * m
+            r["tick_id"], r["ts_rx"] = report._tick_of(e), datetime.datetime.fromtimestamp(e, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.100Z")
+            rows.append(r)
+        cls.log = os.path.join(cls.tmp, "sample.jsonl")
+        _write(cls.log, rows, garbage=False)
+        cls.pre = os.path.join(cls.tmp, "pre.jsonl")                    # the same rows before T0: shakedown
+        _write(cls.pre, [_row(m) for m in MINUTES], garbage=False)
+        cls.rows = outcomes.load(cls.log, [])
+        cls.unsealed = os.path.join(cls.tmp, "PREREG-unsealed.md")
+        with open(cls.unsealed, "w") as fh:
+            fh.write("# PREREG\n\nT0 (first tick_id of day 1): `________`\n")
+
+    def _run(self, argv, now):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = report.main(argv, now=now)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_withheld_until(self):
+        day10 = self.T0 + 10 * 86400
+        self.assertEqual(report.withheld_until(self.rows, self.T0, day10), self.END)
+        self.assertIsNone(report.withheld_until(self.rows, self.T0, self.END))                  # the sample has ended
+        self.assertIsNone(report.withheld_until(self.rows, None, day10))                         # unsealed
+        self.assertIsNone(report.withheld_until(outcomes.load(self.pre, []), self.T0, day10))    # shakedown rows only
+        self.assertIsNone(report.withheld_until([], self.T0, day10))
+
+    def test_full_report_on_sample_rows_is_health_only_until_day_28(self):
+        day10 = self.T0 + 10 * 86400
+        code, out, err = self._run(["--log", self.log], day10)
+        self.assertEqual(code, 0)
+        self.assertIn("sections 4-7 WITHHELD until 2026-10-23T21:40Z", out)
+        for t in report.TITLES[:3]:
+            self.assertIn(t, out)
+        for t in report.TITLES[3:]:
+            self.assertNotIn(t, out)
+        for word in ("H1 cell", "H2 statistic", "Pearson", "Brier", "pair B-C", "P(correct)"):
+            self.assertNotIn(word, out)
+        self.assertEqual(err, "")
+        # --t0 and --since do not lift it; --health is the look and needs no notice
+        self.assertIn("WITHHELD", self._run(["--log", self.log, "--t0", "20260925T214000Z"], day10)[1])
+        self.assertIn("WITHHELD", self._run(["--log", self.log, "--since", "2026-09-26"], day10)[1])
+        code, out, err = self._run(["--log", self.log, "--health"], day10)
+        self.assertNotIn("WITHHELD", out)
+        self.assertIn("health only (--health", out)
+
+    def test_unblind_prints_them_and_says_so(self):
+        day10 = self.T0 + 10 * 86400
+        code, out, err = self._run(["--log", self.log, "--unblind"], day10)
+        self.assertEqual(code, 0)
+        self.assertNotIn("WITHHELD", out)
+        for t in report.TITLES:
+            self.assertIn(t, out)
+        self.assertIn("report: --unblind: sections 4-7 printed on sample rows before 2026-10-23T21:40Z; this is a look (PREREG §8.4)", err)
+
+    def test_after_the_sample_and_before_t0_print_in_full(self):
+        code, out, err = self._run(["--log", self.log], self.END)
+        self.assertNotIn("WITHHELD", out)
+        self.assertIn("pair B-C", out)
+        code, out, err = self._run(["--log", self.pre], self.T0 + 10 * 86400)
+        self.assertNotIn("WITHHELD", out)
+        self.assertIn("pair B-C", out)
+        self.assertEqual(err, "")
+
+    def test_sample_flag_reads_the_sealed_t0(self):
+        code, out, err = self._run(["--log", self.log, "--health", "--sample"], self.T0 + 10 * 86400)
+        self.assertEqual(code, 0)
+        self.assertIn("T0 2026-09-25T21:40Z (sample [T0, T0 + 28 d), replayed from flat at T0)", out.splitlines()[0])
+        self.assertEqual(out, self._run(["--log", self.log, "--health", "--t0", "20260925T214000Z"], self.T0 + 10 * 86400)[1])
+        with self.assertRaises(SystemExit) as cm:
+            self._run(["--log", self.log, "--health", "--sample", "--t0", "20260925T214000Z"], None)
+        self.assertEqual(cm.exception.code, 2)
+        with self.assertRaises(SystemExit) as cm:
+            self._run(["--log", self.log, "--health", "--sample", "--prereg", self.unsealed], None)
+        self.assertEqual(cm.exception.code, 2)
+        # unsealed PREREG: nothing is withheld (there is no sample yet)
+        code, out, err = self._run(["--log", self.log, "--prereg", self.unsealed], self.T0 + 10 * 86400)
+        self.assertNotIn("WITHHELD", out)
+        self.assertIn("pair B-C", out)
+
+
 class PerDay(unittest.TestCase):
     """§1's per-day table: PREREG §8 stop rule 3, per UTC day, on the join over the whole log."""
 

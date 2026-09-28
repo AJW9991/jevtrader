@@ -809,7 +809,22 @@ TITLES = ("1. health", "2. adjective occupancy", "3. test-retest (a_action vs b_
 HEALTH_N = 3                                        # --health: sections 1-3, PREREG §8.4's day-14 look
 
 
-def render(rows, bad=(), log=None, since=None, missing=False, t0=None, outs=None, health_only=False, last=None):
+def withheld_until(rows, t0, now=None):
+    """The end of the sealed sample (epoch) when sections 4-7 must not be printed for `rows`:
+    `t0` is PREREG §11's sealed T0 (dash.read_t0; None before sealing), the sample has not ended,
+    and a row of the sample is among them (CLAUDE.md: nobody reads §4-§7 before day 28; the
+    day-14 look is --health). None otherwise: a log of shakedown rows before T0, or after the
+    sample, prints in full."""
+    if t0 is None:
+        return None
+    end = t0 + SAMPLE_DAYS * 86400
+    now = datetime.datetime.now(datetime.timezone.utc).timestamp() if now is None else now
+    if now >= end:
+        return None
+    return end if any(t0 <= tick_epoch(r["tick_id"]) < end for r in rows) else None
+
+
+def render(rows, bad=(), log=None, since=None, missing=False, t0=None, outs=None, health_only=False, last=None, withheld=None):
     """t0: T0 in epoch seconds when the rows were cut to the sample; outs: the join over the
     WHOLE log (a sample row's t+h may sit after the sample), else the join over `rows`; last:
     the whole log's last tick (epoch) for the same reason, so the sample's last day can close.
@@ -825,6 +840,9 @@ def render(rows, bad=(), log=None, since=None, missing=False, t0=None, outs=None
     if health_only:
         lines.append(f"health only (--health, PREREG §8.4's day-14 look): sections 1-{HEALTH_N};"
                      f" sections {HEALTH_N + 1}-{len(TITLES)} are neither computed nor printed")
+    if withheld is not None:
+        lines.append(f"sections {HEALTH_N + 1}-{len(TITLES)} WITHHELD until {_iso_minute(withheld)}: these rows are in the sealed sample and nobody"
+                     " reads H1, H2, the pairs or the calibration before day 28 (CLAUDE.md, PREREG §8.4); --unblind prints them, and says so")
     if missing:
         lines.append(f"no log at {log}: nothing has run yet (health and occupancy print anyway)")
     elif not rows:
@@ -868,7 +886,8 @@ def in_sample(rows, t0):
     return [r for r in rows if t0 <= tick_epoch(r["tick_id"]) < end]
 
 
-def main(argv=None):
+def main(argv=None, now=None):
+    """`now` (epoch) pins the clock for tests of the withholding; the live run uses the clock."""
     ap = argparse.ArgumentParser(prog="python3 -m loop.report", description="CONTRACT §4 report, plain text, no p-values.")
     ap.add_argument("--since", metavar="YYYY-MM-DD", help="rows whose tick_id date is on or after this day")
     ap.add_argument("--t0", metavar="YYYY-MM-DDTHH:MM",
@@ -876,6 +895,10 @@ def main(argv=None):
     ap.add_argument("--log", default=config.DECISIONS, help=f"decision log (default {config.DECISIONS})")
     ap.add_argument("--health", action="store_true",
                     help=f"sections 1-{HEALTH_N} only (PREREG §8.4's day-14 look): no H1, H2 or confidence number")
+    ap.add_argument("--sample", action="store_true", help="--t0 read from PREREG.md §11 (the sealed T0)")
+    ap.add_argument("--prereg", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--unblind", action="store_true",
+                    help=f"print sections {HEALTH_N + 1}-{len(TITLES)} on sample rows before the sample has ended (a look; it is printed as one)")
     args = ap.parse_args(argv)
     try:
         since = _since(args.since)
@@ -885,6 +908,14 @@ def main(argv=None):
         t0 = _t0(args.t0)
     except ValueError:
         ap.error(f"--t0 wants YYYY-MM-DDTHH:MM (UTC) or a tick_id, got {args.t0!r}")
+    from . import dash                                               # here, not at the top: dash imports report
+    sealed = dash.read_t0(args.prereg)                               # PREREG §11's T0, None before sealing
+    if args.sample:
+        if args.t0:
+            ap.error("--sample reads T0 from PREREG.md; do not pass --t0 with it")
+        if sealed is None:
+            ap.error("--sample: PREREG.md §11 is not sealed (no T0 line)")
+        t0 = sealed
     rows, bad = [], []
     missing = not os.path.exists(args.log)                           # load() raises on a missing file: day zero is not an error
     if not missing:
@@ -895,7 +926,16 @@ def main(argv=None):
         rows = [r for r in rows if r["tick_id"][:8] >= since]         # tick_id is YYYYMMDDTHHMM00Z; the first 8 chars are the day
     if t0 is not None:
         rows = in_sample(rows, t0)                                   # cut BEFORE any replay: every arm starts flat at T0
-    sys.stdout.write(render(rows, bad, args.log, args.since, missing, t0, outs, args.health, last))
+    withheld, health_only = None, args.health
+    if not health_only:
+        withheld = withheld_until(rows, sealed, now)
+        if withheld is not None and args.unblind:
+            sys.stderr.write(f"report: --unblind: sections {HEALTH_N + 1}-{len(TITLES)} printed on sample rows before"
+                             f" {_iso_minute(withheld)}; this is a look (PREREG §8.4)\n")
+            withheld = None
+        elif withheld is not None:
+            health_only = True
+    sys.stdout.write(render(rows, bad, args.log, args.since, missing, t0, outs, health_only, last, withheld))
     return 0
 
 

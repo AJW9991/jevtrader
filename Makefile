@@ -6,7 +6,7 @@
 # CI) uses the python3 on PATH. `make PY=... test` overrides either.
 PY ?= $(shell test -x /opt/homebrew/bin/python3 && echo /opt/homebrew/bin/python3 || command -v python3)
 
-.PHONY: test dry run report dash status inference-smoke results
+.PHONY: test dry run report health dash status inference-smoke results
 
 test:
 	$(PY) -m unittest discover -s tests
@@ -17,8 +17,16 @@ dry:
 run:
 	$(PY) -m loop.cycle --forever
 
+# `make report` on rows of the sealed sample prints sections 1-3 only until 2026-10-23 21:40Z:
+# nobody reads §4-§7 before day 28 (CLAUDE.md); `python3 -m loop.report --unblind` is a look.
 report:
 	$(PY) -m loop.report
+
+# PREREG §8.4's health look, T0 from PREREG.md §11: `python3 -m loop.report --health --sample`
+# (the same as `--health --t0 20260925T214000Z`; `make report --health` never worked: make
+# takes the flag as its own).
+health:
+	$(PY) -m loop.report --health --sample
 
 # health only (report §1-§3 + the nightly's synthetic tables) as one HTML file, data/dash.html
 dash:

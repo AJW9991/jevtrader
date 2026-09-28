@@ -15,7 +15,7 @@ import argparse, collections, datetime, glob, html, os, re, sys
 
 from . import config, outcomes, report, state
 
-T0_RE = re.compile(r"T0 \(first tick_id of day 1\): `(\d{8}T\d{6}Z)`")
+T0_RE = re.compile(r"T0 \(first tick_id of day 1\): `(\d{8}T\d{6}Z)`")   # PREREG §11's sealed line
 PROPOSAL_HEAD = re.compile(r"requests: (\d+), answered: (\d+), errors: (\d+)")
 PROPOSAL_CAND = re.compile(r"^(cand_\d+)\n\nrationale: ([^\n]*)\n\ndiffers from CURRENT on (\d+) of (\d+) answered states; from rule_c on (\d+) of \d+")
 CURRENT_CAND = re.compile(r"^## current \((v\d+)\)\n\ndiffers from rule_c on (\d+) of (\d+)", re.M)
@@ -43,10 +43,11 @@ def _bin(n, top):
     return min(4, int(5 * n / top - 1e-9))
 
 
-def read_t0(prereg=os.path.join(config.REPO, "PREREG.md")):
-    """PREREG §11's T0 line, or None before sealing."""
+def read_t0(prereg=None):
+    """PREREG §11's T0 line as epoch seconds, or None before sealing. report.main, status and
+    inference read it here (report.py itself opens no file, by test)."""
     try:
-        with open(prereg, encoding="utf-8") as fh:
+        with open(prereg or os.path.join(config.REPO, "PREREG.md"), encoding="utf-8") as fh:
             m = T0_RE.search(fh.read())
     except OSError:
         return None
