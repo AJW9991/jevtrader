@@ -172,7 +172,7 @@ class DaysAndExclusions(unittest.TestCase):
         for first in ("day06\t80.0\t0.0\tno header, a typo", "day 16  80.0  0.0  no header"):   # not the header: refused
             with open(p, "w", encoding="utf-8") as fh:
                 fh.write(first + "\n")
-            with self.assertRaisesRegex(ValueError, rf"^{re.escape(p)}:1: day "):
+            with self.assertRaisesRegex(ValueError, rf"^{re.escape(p)}:1: line 1 is neither the header "):
                 exclusions.read_exclusions(p)
         with open(p, "w", encoding="utf-8") as fh:
             fh.write("DAY  Fill%  jev-err%  reason\nd02  90  0  ok\n")                  # the header in PREREG's form is skipped
@@ -181,6 +181,40 @@ class DaysAndExclusions(unittest.TestCase):
             fh.write(b"day\tfill%\tjev-err%\treason\nd03\t90\t0\t\xff\n")
         self.assertTrue(exclusions.status_line(p).startswith(f"exclusions: REFUSED, fix before day 28: {p}: not UTF-8"))
         self.assertTrue(exclusions.status_line(os.path.join(tmp, "none.tsv")).startswith("exclusions: none ("))
+
+    def test_a_header_typed_with_single_spaces_or_reworded_is_still_the_header(self):
+        # 52fe1a6 skipped only the exact tab or two-space header, so a header typed with single spaces (as a
+        # rendered PREREG §8.3 shows it) or with its columns reworded, accepted before, was refused as a bad
+        # day on line 1 and stopped the day-28 run (2026-09-28, round-4 verifier). Line 1 is the header when
+        # its first word is 'day' and it holds no digit: a day line always has a digit in its day
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        p = os.path.join(tmp, "exclusions.tsv")
+        for header in ("day fill% jev-err% reason", "day\tfill\tjev-err\treason", "Day   Fill %   Jev-err %   Reason",
+                       "day\tfill%\tjev-err%\treason\t", "day"):
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write(header + "\nd06\t91.0\t0.1\tasleep\n")
+            self.assertEqual(exclusions.read_exclusions(p), ({6}, ["d06\t91.0\t0.1\tasleep"]), header)
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write(header + "\n")
+            self.assertEqual(exclusions.status_line(p), f"exclusions: none ({p} has no day line)", header)
+        # a first line with a digit is a data line whatever its first word, and one that is not a day says so
+        for first, bad in (("day 16  80.0  0.0  no header", "'day 16'"), ("day06\t80.0\t0.0\ttypo", "'day06'"),
+                           ("day fill% jev-err% reason 2", "'day fill% jev-err% reason 2'"),
+                           ("day\tfill%\tjev-err%\treason (PREREG \u00a78.3)", "'day'"),
+                           ("d29\t90.0\t0.0\tout of range", "'d29'"), ("day ٣\t80.0\t0.0\tx", "'day ٣'")):
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write(first + "\nd06\t91.0\t0.1\tasleep\n")
+            with self.assertRaises(ValueError, msg=first) as cm:
+                exclusions.read_exclusions(p)
+            self.assertEqual(str(cm.exception), f"{p}:1: line 1 is neither the header (day<TAB>fill%<TAB>jev-err%<TAB>reason) "
+                                                f"nor a day line: day {bad} is not d01..d28 (the line: {first!r})")
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write("d06\t91.0\t0.1\tno header at all\n")                    # a day line on line 1 is read as one
+        self.assertEqual(exclusions.read_exclusions(p)[0], {6})
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write("day fill% jev-err% reason\nday fill% jev-err% reason\n")    # only line 1 can be the header
+        with self.assertRaisesRegex(ValueError, rf"^{re.escape(p)}:2: day "):
+            exclusions.read_exclusions(p)
 
 
 class Guard(unittest.TestCase):
