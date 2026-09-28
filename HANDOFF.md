@@ -115,6 +115,7 @@ and says so) · `make dash` · `make inference-smoke` · `make results` (day 28;
   columns stage is now jev/watchdog) are SPEC §2/§3/§9/§12 errata for after the sample.
 
 ## Not changed on purpose (prereg-v2 notes)
+Every disagreement between the sealed documents and the code, in one table per document: ERRATA.md.
 - The digest's summary line on a promotion day replays arm B over every row of the day, v1 and
   v2 alike, while saying B is read from the v2 rows only; the digest's content is the treatment.
   Avoid promoting between 00:00Z and ~08:30Z.
