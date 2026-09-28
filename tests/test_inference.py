@@ -610,6 +610,26 @@ class LiveClock(unittest.TestCase):
         self.assertNotIn("--accept-pending", out)
         self.assertIn("  n units 2 (blocks with a live row 2; dropped none)", out)
 
+    @staticmethod
+    def _rule3(out):
+        """The stop-rule-3 cross-check's lines in a run's output."""
+        return out.split("\nstop rule 3 cross-check", 1)[1].split("\n\n", 1)[0]
+
+    def test_a_row_stamped_after_the_clock_closes_no_day_in_the_stop_rule_3_lines(self):
+        # 80f0c4c's cap on the cross-check had no test (taking it out left the suite green), and min(last tick,
+        # clock) made the clock the log's last tick there too: at 21:57, on a log that stopped at 21:49, the
+        # stray row closed d28, its rows whose t + h the log had not reached turned into gaps, and d28 read BAD
+        for rows, at in ((self._rows(-30, 1), 60), (self._rows(-30, 10), 17 * 60)):   # to 21:40, run 21:41; to 21:49, run 21:57
+            with self.subTest(last=rows[-1]["tick_id"]):
+                code, plain, err = self._run(rows, at)
+                self.assertEqual(code, 0, err)
+                code, out, err = self._run(rows + [self._stray(rows[-1])], at)
+                self.assertEqual(code, 0, err)
+                lines = self._rule3(out)
+                self.assertIn("  BAD by the rule, recomputed from the log: none (0; the rule pauses the run at 3)\n", lines)
+                self.assertIn("  open, not yet judged (a day's last t + h is not in the log): d28\n", lines)
+                self.assertEqual(lines, self._rule3(plain))                      # the stray row changes none of the lines
+
 
 class SealUnread(unittest.TestCase):
     """tests/fixture_prereg.py: no test may depend on what the repository's PREREG.md §11 says (its T0 line
