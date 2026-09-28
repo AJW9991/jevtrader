@@ -155,7 +155,7 @@ def load(path, bad=None):
                 continue
             try:
                 r = json.loads(line)
-            except ValueError as e:
+            except (ValueError, RecursionError) as e:          # a line nested past the parser's depth is garbage too
                 # A torn line (a crash or a full disk mid-write) with the next whole row appended onto
                 # it: the tail from the last row start parses on its own, and that row was written in
                 # full, so it is kept and only the torn head is the skip; when the head parses too the
@@ -163,7 +163,7 @@ def load(path, bad=None):
                 # cycle.write_row now also starts a fresh line after a torn one, so this recovers the
                 # older cases). One skip entry per line, saying what was kept and what was not a row.
                 found = _glued(line)
-                kept = [x for x in found if _not_row(x) is None]
+                kept = [x for x, rescued in found if _not_row(x) is None and (not rescued or _writer_row(x))]
                 if bad is not None:
                     extra = len(found) - len(kept)
                     bad.append((n, f"json: {e}" + _glued_note(len(kept))
@@ -199,23 +199,47 @@ def _glued_note(k):
     return f"; {k} whole rows on one line (lost newlines), all kept"
 
 
+_DECODER = json.JSONDecoder()
+WRITER_KEYS = ("venue", "product", "cadence_s", "horizon_s")   # in every row cycle.new_row writes; in no Jev answer
+
+
+def _writer_row(r):
+    """A rescued piece must carry the writer's own keys: a row start can sit inside a row (an answer
+    kept verbatim may hold an object whose first key is "v"), and such a nested object is never a row."""
+    return isinstance(r, dict) and all(k in r for k in WRITER_KEYS)
+
+
 def _glued(line):
-    """The JSON values on a line that is not one, in order: split at row starts from the right,
-    each piece from a row start to the next parsed piece, stopping at the first that does not parse
-    (the torn row, or a row start inside a nested object); the head before the leftmost piece is
-    taken too when it parses whole (a row that lost only its newline). Iterative, so a line of any
-    number of glued rows costs no recursion. A piece is a row only if _not_row says so."""
-    out, end = [], len(line)
+    """[(value, rescued)] for a line that is not one JSON value. First forward from its start: whole
+    values one after another (rows that lost only their newlines), each found where the previous one
+    ended, so nothing nested inside a row can surface here. Where a value does not parse (a torn
+    row), the whole rows after it are rescued from the right: each from a row start whose value ends
+    exactly where the next rescued piece (or the line) begins, and each must carry the writer's keys
+    (_writer_row), so an object nested in the torn row is never taken for a row. raw_decode reads
+    each piece once, and a depth past the parser's limit is a failed piece, not an exception. Each
+    value is then read as a row only if _not_row says so."""
+    out, pos, end = [], 0, len(line.rstrip())
     while True:
-        i = line.rfind(ROW_START, 0, end)
-        if i <= 0:
-            return out
+        while pos < end and line[pos].isspace():
+            pos += 1
+        if pos >= end:
+            return [(v, False) for v in out]
         try:
-            out.insert(0, json.loads(line[i:end]))
-        except ValueError:
-            return out
-        end = i
+            v, pos = _DECODER.raw_decode(line, pos)
+        except (ValueError, RecursionError):
+            break
+        out.append(v)
+    rescued, right, hi = [], end, end
+    while True:
+        i = line.rfind(ROW_START, pos + 1, hi)
+        if i <= pos:
+            break
+        hi = i + len(ROW_START) - 1                             # the next candidate starts left of this one
         try:
-            return [json.loads(line[:end])] + out
-        except ValueError:
-            pass
+            v, stop = _DECODER.raw_decode(line, i)
+        except (ValueError, RecursionError):
+            continue
+        if line[stop:right].strip() == "" and _writer_row(v):
+            rescued.insert(0, v)
+            right = i
+    return [(v, False) for v in out] + [(v, True) for v in rescued]

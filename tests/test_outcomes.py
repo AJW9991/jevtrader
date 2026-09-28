@@ -26,6 +26,7 @@ def _row(s, mid, absence=None):
     """Row at T0+s seconds; mid None = failed before the feed."""
     d = T0 + datetime.timedelta(seconds=s)
     return {"v": 1, "tick_id": d.strftime("%Y%m%dT%H%M00Z"), "ts_rx": _iso(s), "mode": "live",
+            "venue": "coinbase", "product": "SOL-USD", "cadence_s": 60, "horizon_s": 900,   # the writer's keys (outcomes.WRITER_KEYS)
             "bid": None if mid is None else mid - 0.01, "ask": None if mid is None else mid + 0.01,
             "mid": mid, "rule_c": None if mid is None else "hold",
             "columns": {"a": None, "b": None}, "absence": absence}
@@ -214,8 +215,8 @@ class Load(unittest.TestCase):
         bad = []
         rows = outcomes.load(p, bad)
         self.assertEqual([r["tick_id"] for r in rows], [a["tick_id"]])
-        self.assertEqual([n for n, _ in bad], [2, 3])                 # one entry a line: line 3's names both rescued objects not rows
-        self.assertIn("2 parsed object(s) on it not a row", bad[1][1])
+        self.assertEqual([n for n, _ in bad], [2, 3])                 # one entry a line; line 3 holds no row with the writer's keys
+        self.assertNotIn("kept", bad[1][1])
 
     def test_two_whole_rows_that_lost_their_newline_are_both_kept(self):
         # the older writer could lose exactly the newline between two whole rows (a crash after the
@@ -262,19 +263,58 @@ class Load(unittest.TestCase):
 
     def test_a_row_start_inside_a_row_never_yields_a_wrong_row(self):
         # a nested object whose first key is "v" (answers are stored verbatim) puts a row start inside
-        # a row; glued after a torn line the split lands inside it, the piece does not parse, and the
-        # row is lost -- never read as some other row
+        # a row; glued after a torn line the rescue tries that start first, the piece does not end the
+        # line, and the search goes on left to the row's own start: the whole row is read, never the
+        # nested object and never some other row
         p = os.path.join(_tmpdir(self), "d.jsonl")
         a, b = _row(0, 100.0), dict(_row(60, 101.0), answers={"x": {"v": 1}})
         with open(p, "w", encoding="utf-8") as fh:
             fh.write(json.dumps(a, separators=(",", ":"))[:30] + json.dumps(b, separators=(",", ":")) + "\n")
         bad = []
         rows = outcomes.load(p, bad)
-        self.assertEqual(rows, [])
+        self.assertEqual(rows, [b])
         self.assertEqual(len(bad), 1)
         with open(p, "w", encoding="utf-8") as fh:                                           # on a line of its own it is read
             fh.write(json.dumps(b, separators=(",", ":")) + "\n")
         self.assertEqual(outcomes.load(p), [b])
+
+    def test_an_object_nested_in_a_torn_row_is_never_read_as_a_row(self):
+        # 2026-09-28 (pre-merge verifier): a torn row whose kept answer holds an object shaped like a row
+        # ("v" first, a tick_id, a mid), torn right after it, with a whole row glued on: the right-to-left
+        # split took the nested object for a row and its made-up mid scored a real decision. The forward
+        # pass never sees inside a row, and a rescued piece must carry the writer's keys.
+        p = os.path.join(_tmpdir(self), "d.jsonl")
+        fake = {"v": 1, "tick_id": "20261001T000000Z", "ts_rx": "2026-10-01T00:00:00.000Z", "mode": "live", "mid": 150.0}
+        a = dict(_row(0, 100.0), answers={"a_action": {"choice": fake}})
+        b = _row(60, 101.0)
+        head = json.dumps(a, separators=(",", ":"))
+        cut = head.index(json.dumps(fake, separators=(",", ":"))) + len(json.dumps(fake, separators=(",", ":")))
+        for tail in (json.dumps(b, separators=(",", ":")), ""):              # a whole row glued on; the torn line alone
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write(head[:cut] + tail + "\n")
+            bad = []
+            rows = outcomes.load(p, bad)
+            self.assertEqual([r["tick_id"] for r in rows], [b["tick_id"]] if tail else [], tail[:20])
+            self.assertEqual(len(bad), 1)
+
+    def test_whole_rows_before_and_after_a_torn_one_are_all_read(self):
+        p = os.path.join(_tmpdir(self), "d.jsonl")
+        a, b, c = (json.dumps(_row(60 * k, 100.0 + k), separators=(",", ":")) for k in range(3))
+        for line, want in ((a + b[:40] + c, [0, 2]), (a + b + c[:40], [0, 1]), (a[:40] + b + c, [1, 2])):
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+            self.assertEqual([r["mid"] for r in outcomes.load(p)], [100.0 + k for k in want], want)
+
+    def test_a_glued_piece_nested_past_the_parsers_depth_costs_the_line_not_the_reader(self):
+        p = os.path.join(_tmpdir(self), "d.jsonl")
+        whole = json.dumps(_row(60, 101.0), separators=(",", ":"))
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write("x" + '{"v":' + "[" * 200000 + "]" * 200000 + "}" + whole + "\n")
+            fh.write("[" * 200000 + "]" * 200000 + "\n")
+        bad = []
+        rows = outcomes.load(p, bad)
+        self.assertEqual([r["mid"] for r in rows], [101.0])
+        self.assertEqual([n for n, _ in bad], [1, 2])
 
     def test_a_long_line_of_glued_rows_costs_no_recursion(self):
         p = os.path.join(_tmpdir(self), "d.jsonl")

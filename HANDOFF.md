@@ -109,8 +109,9 @@ and says so) · `make dash` · `make inference-smoke` · `make results` (day 28;
 - rules/cycle: a bool, NaN or wrong-typed answer field is `jev`/`parse` (the answer kept, no
   column), never a column; feed: a candle that is not finite and positive refuses the set.
 - outcomes: the live decision speaks for its tick when two rows share it; ties in whole ms; a
-  whole row glued onto a torn line is kept, and so is every whole row on a line that lost its
-  newlines (one skip entry per such line). book: null columns hold C too (SPEC §10; latent).
+  whole row glued onto a torn line is kept, and so are whole rows that lost their newlines (read
+  forward from the line's start; after a torn row only pieces with the writer's keys, so an object
+  nested in a row is never a row; one skip entry per line; linear in the line). book: null columns hold C too (SPEC §10; latent).
 - **The outcomes and book changes are READERS** (an auditor of the whole diff, 2026-09-28): every
   report, digest and inference run re-reads the whole log with them. On a tick with two or more
   rows, on a torn line with a whole row glued to it, or on an exact-millisecond tie, `join`/`load`
