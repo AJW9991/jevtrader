@@ -499,6 +499,24 @@ class CycleTest(unittest.TestCase):
         self.assertGreaterEqual(clock[0], 1020.0)
         self.assertEqual(int(clock[0]) // config.CADENCE_S, 17)
 
+    def test_once_fired_a_hair_before_the_minute_waits_for_it(self):
+        # Production runs --once from launchd's StartCalendarInterval; a fire at :59.x would
+        # take the minute just done (a duplicate) and leave the next one unrecorded. More than
+        # CADENCE_S - 2 s into a minute, --once first sleeps to the boundary.
+        base = NOW - 49                                        # 02:28:00
+        for at, sleeps, tick in ((59.5, [0.5], "20260924T022900Z"), (57.5, [], "20260924T022800Z")):
+            with self.subTest(at=at):
+                clock, self.sleeps[:] = [base + at], []
+                def sleep(s):
+                    self.sleeps.append(s)
+                    clock[0] += s
+                self.snapshot.side_effect = lambda: dict(SNAP, ts_rx=cycle.iso_ms(clock[0]))   # feed's own clock
+                with mock.patch("time.time", side_effect=lambda: clock[0]), \
+                        mock.patch("time.sleep", side_effect=sleep):
+                    self.assertEqual(cycle.main(["--dry", "--once"]), 0)
+                self.assertEqual(self.sleeps, sleeps)
+                self.assertEqual(self.rows()[-1]["tick_id"], tick)
+
     def test_unsigned_protocol_observes_but_never_sends_or_bills(self):
         # The repo as committed: PROTOCOL.md unsigned. A live tick still records the feed,
         # the state and arm C -- observation is free and outlives sending -- but jev.ask

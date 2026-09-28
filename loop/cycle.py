@@ -38,9 +38,11 @@ released and the exit is 0.
 
 Timing: --forever sleeps to the next multiple of CADENCE_S computed from
 time.time() each round, so a slow tick shortens the next wait instead of
-shifting every later tick. A 50 s SIGALRM watchdog wraps each tick (macOS has
-no `timeout`): feed is 3 x 10 s and jev is 20 + 5 + 20 s, 75 s worst case, so
-the alarm CAN land inside the send, and the row then says so. Past the lock the
+shifting every later tick. --once (launchd's calendar minute) sleeps to the
+boundary first only when it starts in a minute's last 2 s. A 50 s SIGALRM
+watchdog wraps each tick (macOS has no `timeout`): feed is 3 x 10 s and jev is
+20 + 5 + 20 s, 75 s worst case, so the alarm CAN land inside the send, and the
+row then says so. Past the lock the
 row is written wherever the alarm lands (inside _run's handlers too); the write
 disarms it. In the guards before the lock it costs the row, never the exit code.
 """
@@ -491,7 +493,9 @@ def main(argv=None):
     _SIG["term"] = _SIG["critical"] = False
     old = signal.signal(signal.SIGTERM, _on_term), signal.signal(signal.SIGALRM, _on_alarm)
     try:
-        if a.once:
+        if a.once:                           # launchd's StartCalendarInterval can fire a hair before
+            if time.time() % config.CADENCE_S > config.CADENCE_S - 2:   # :00; started there, the tick
+                _sleep_to_boundary()         # would floor to the minute just done (see below)
             return _guarded_tick(a.dry)
         while True:                          # aligned first: a tick at :37 would be one odd row
             _sleep_to_boundary()
