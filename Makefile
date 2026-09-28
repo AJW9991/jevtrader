@@ -1,7 +1,10 @@
-# The four commands STEPS.md names. Standard library only; nothing here installs anything.
+# The commands STEPS.md and HANDOFF.md name. Standard library only; nothing here installs anything.
 # `dry` is free (three public Coinbase GETs, no key, no ledger row, no send). `run` SENDS
-# to Jev once a minute: only after STEPS.md steps 0 (PROTOCOL signed) and 1 (loop key).
-PY := /opt/homebrew/bin/python3
+# to Jev once a minute: only after STEPS.md steps 0 (PROTOCOL signed) and 1 (loop key), and
+# only on the Mac (CLAUDE.md). `test` is the whole gate anywhere else.
+# PY is the Mac's Homebrew python (3.14) when it exists; a checkout without it (a cloud session,
+# CI) uses the python3 on PATH. `make PY=... test` overrides either.
+PY ?= $(shell test -x /opt/homebrew/bin/python3 && echo /opt/homebrew/bin/python3 || command -v python3)
 
 .PHONY: test dry run report dash inference-smoke
 

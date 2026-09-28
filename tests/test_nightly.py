@@ -71,6 +71,22 @@ def _write_log(path, rows):
             fh.write(json.dumps(r) + "\n")
 
 
+def _sh_env(tmp=None, **extra):
+    """propose.sh's environment for a test. JEVLOOP_PY is the interpreter running the suite
+    (under `make test` on the Mac that is /opt/homebrew/bin/python3, the script's default); on a
+    host with no /usr/bin/caffeinate (a Linux checkout, CI) JEVLOOP_CAFFEINATE is a stub in `tmp`
+    that drops `-i` and runs the command, so the live branch can be driven there too. Both keys
+    are blank so nothing here could ever find one."""
+    env = {**os.environ, "TYPESAFE_API_KEY_LOOP": "", "TYPESAFE_API_KEY": "", "JEVLOOP_PY": sys.executable, **extra}
+    if tmp is not None and not os.access("/usr/bin/caffeinate", os.X_OK):
+        stub = os.path.join(tmp, "caffeinate")
+        with open(stub, "w") as fh:
+            fh.write('#!/bin/bash\n[ "$1" = "-i" ] && shift\nexec "$@"\n')
+        os.chmod(stub, 0o755)
+        env["JEVLOOP_CAFFEINATE"] = stub
+    return env
+
+
 def _table_rows(text):
     """[(choice, confidence, label)] of the disagreement table, file order."""
     out = []
@@ -586,8 +602,7 @@ class ProposeDryTest(unittest.TestCase):
         sends_before = os.path.getsize(config.SENDS) if os.path.exists(config.SENDS) else None
         r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry",
                             "--date", "2026-09-22", "--root", tmp],
-                           cwd=tmp, capture_output=True, text=True, timeout=120,
-                           env={**os.environ, "TYPESAFE_API_KEY_LOOP": "", "TYPESAFE_API_KEY": ""})
+                           cwd=tmp, capture_output=True, text=True, timeout=120, env=_sh_env())
         self.assertEqual(r.returncode, 0, r.stderr)
         with open(os.path.join(tmp, "proposals", "2026-09-22.json")) as fh:
             doc = json.load(fh)
@@ -617,8 +632,7 @@ class ProposeDryTest(unittest.TestCase):
             fh.write("by hand\n")
         r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry",
                             "--date", "2026-09-22", "--root", tmp],
-                           cwd=tmp, capture_output=True, text=True, timeout=120,
-                           env={**os.environ, "TYPESAFE_API_KEY_LOOP": "", "TYPESAFE_API_KEY": ""})
+                           cwd=tmp, capture_output=True, text=True, timeout=120, env=_sh_env())
         self.assertEqual(r.returncode, 0, r.stderr)
         with open(os.path.join(tmp, "logs", "propose.log")) as fh:
             log = fh.read()
@@ -669,7 +683,7 @@ class LiveBranch(unittest.TestCase):
         return p
 
     def _run(self, stub, cap="2700"):
-        env = dict(os.environ, JEVLOOP_CLAUDE=stub, JEVLOOP_TOKEN_FILE=self.token, JEVLOOP_CLAUDE_CAP_S=cap)
+        env = _sh_env(self.tmp, JEVLOOP_CLAUDE=stub, JEVLOOP_TOKEN_FILE=self.token, JEVLOOP_CLAUDE_CAP_S=cap)
         return subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--date", DAY.isoformat(), "--root", self.tmp],
                               capture_output=True, text=True, timeout=120, env=env, cwd=REPO)
 
@@ -731,7 +745,7 @@ class LiveBranch(unittest.TestCase):
 
 class Capped(unittest.TestCase):
     """nightly/capped.py: the claude call's cap on awake seconds (propose.sh wires it in)."""
-    PY = "/opt/homebrew/bin/python3"
+    PY = sys.executable                       # /opt/homebrew/bin/python3 under `make test` on the Mac; whatever runs the suite elsewhere
 
     def _run(self, *args):
         return subprocess.run([self.PY, "-m", "nightly.capped", *args], cwd=REPO, capture_output=True, text=True, timeout=30)
@@ -768,8 +782,8 @@ class Capped(unittest.TestCase):
         with open(os.path.join(tmp, "decisions.jsonl"), "w") as fh:
             pass
         r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry", "--date", "2026-09-22", "--root", tmp],
-                           capture_output=True, text=True, timeout=120)
-        self.assertEqual(r.returncode, 0)
+                           capture_output=True, text=True, timeout=120, env=_sh_env())
+        self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(os.path.exists(os.path.join(tmp, "data", "dash.html")))
         with open(os.path.join(tmp, "logs", "propose.log")) as fh:
             self.assertIn("note: no proposal exists for 2026-09-21 (a missed slot?); this run is for 2026-09-22 only", fh.read())
@@ -784,6 +798,29 @@ class Capped(unittest.TestCase):
                            capture_output=True, text=True, timeout=30)
         self.assertEqual(r.returncode, 3)
         self.assertIn("forbidden prefix (root)", r.stderr)
+
+    def test_propose_sh_defaults_are_the_mac_paths_and_launchd_sets_no_knob(self):
+        # The JEVLOOP_* variables are for the suite (here, and on a host without Homebrew or
+        # caffeinate). Under launchd the plist sets only PATH, so every one of them is its default,
+        # and the defaults must stay the paths STEPS.md installs against.
+        with open(os.path.join(REPO, "nightly", "propose.sh")) as fh:
+            src = fh.read()
+        for line in ('PY="${JEVLOOP_PY:-/opt/homebrew/bin/python3}"',
+                     'CLAUDE="${JEVLOOP_CLAUDE:-/opt/homebrew/bin/claude}"',
+                     'CAFFEINATE="${JEVLOOP_CAFFEINATE:-/usr/bin/caffeinate}"',
+                     'TOKEN_FILE="${JEVLOOP_TOKEN_FILE:-$HOME/.secondbrain-secrets/oauth_token}"'):
+            self.assertIn(line, src)
+        for plist in ("com.alexward.jevloop.loop.plist", "com.alexward.jevloop.nightly.plist"):
+            with open(os.path.join(REPO, "launchd", plist)) as fh:
+                self.assertNotIn("JEVLOOP", fh.read(), plist)
+        # and a --dry run with no knob at all still refuses, in one FAIL line, when the Mac's
+        # python is absent, rather than falling back to whatever python3 is on PATH
+        if not os.path.exists("/opt/homebrew/bin/python3"):
+            tmp = tempfile.mkdtemp()
+            r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry", "--date", "2026-09-22", "--root", tmp],
+                               capture_output=True, text=True, timeout=30, env={**os.environ, "JEVLOOP_PY": ""})
+            self.assertEqual(r.returncode, 0)
+            self.assertIn("FAIL no python at /opt/homebrew/bin/python3", r.stderr)
 
     def test_propose_sh_wires_the_cap_around_claude_under_caffeinate(self):
         with open(os.path.join(REPO, "nightly", "propose.sh")) as fh:

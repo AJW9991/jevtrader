@@ -24,12 +24,14 @@
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd -P)"
-PY=/opt/homebrew/bin/python3
-# The three JEVLOOP_* variables exist so tests/test_nightly.py can drive the LIVE branch with a
-# stub claude, a temp token file and a short cap (decided by Alex 2026-09-26). launchd sets only
-# PATH (the plist), so under launchd they are always the defaults.
+# The JEVLOOP_* variables exist so tests/test_nightly.py can drive this script off the Mac and drive
+# the LIVE branch with a stub claude, a temp token file and a short cap (decided by Alex 2026-09-26).
+# JEVLOOP_PY and JEVLOOP_CAFFEINATE (2026-09-28) let a Linux checkout or CI run the suite: there is no
+# /opt/homebrew/bin/python3 and no caffeinate there. launchd sets only PATH (the plist), so under
+# launchd every one of them is its default, and the defaults are the Mac paths STEPS.md names.
+PY="${JEVLOOP_PY:-/opt/homebrew/bin/python3}"
 CLAUDE="${JEVLOOP_CLAUDE:-/opt/homebrew/bin/claude}"
-CAFFEINATE=/usr/bin/caffeinate
+CAFFEINATE="${JEVLOOP_CAFFEINATE:-/usr/bin/caffeinate}"
 TOKEN_FILE="${JEVLOOP_TOKEN_FILE:-$HOME/.secondbrain-secrets/oauth_token}"
 CLAUDE_CAP_S="${JEVLOOP_CLAUDE_CAP_S:-2700}"   # 45 min awake: the first two nights took 52 s and 51 s
 ROOT="$REPO"; DATE=""; DRY=0
