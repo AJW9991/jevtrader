@@ -184,6 +184,32 @@ class Load(unittest.TestCase):
         self.assertTrue(bad[0][1].startswith("json"))
         self.assertEqual(outcomes.load(p), rows)                              # count is optional
 
+    def test_a_whole_row_glued_onto_a_torn_line_is_kept(self):
+        # a crash mid-write leaves half a row without a newline; the next tick's whole row lands on the
+        # same line. The torn head is the skip; the whole row is a row (it was written in full)
+        p = os.path.join(tempfile.mkdtemp(), "d.jsonl")
+        a, b, c = _row(0, 100.0), _row(60, 101.0), _row(120, 102.0)
+        with open(p, "w") as fh:
+            fh.write(json.dumps(a, separators=(",", ":")) + "\n")
+            fh.write(json.dumps(b, separators=(",", ":"))[:40])          # torn: no newline
+            fh.write(json.dumps(c, separators=(",", ":")) + "\n")
+        bad = []
+        rows = outcomes.load(p, bad)
+        self.assertEqual([r["tick_id"] for r in rows], [a["tick_id"], c["tick_id"]])
+        self.assertEqual(len(bad), 1)
+        self.assertEqual(bad[0][0], 2)
+        self.assertIn("the whole row appended onto the torn line is kept", bad[0][1])
+        # a torn line with nothing whole after it is still one skipped line, and a line that is
+        # not a row at all is not rescued from the middle of some other text
+        with open(p, "w") as fh:
+            fh.write(json.dumps(a, separators=(",", ":")) + "\n" + json.dumps(b, separators=(",", ":"))[:40] + "\n")
+            fh.write('x {"v": 1} {"v":1,"tick_id":"nope"}\n')
+        bad = []
+        rows = outcomes.load(p, bad)
+        self.assertEqual([r["tick_id"] for r in rows], [a["tick_id"]])
+        self.assertEqual([n for n, _ in bad], [2, 3, 3])              # line 3: the json fault, then the rescued tail is not a row
+        self.assertIn("not a row", bad[2][1])
+
     def test_missing_file_raises(self):
         with self.assertRaises(OSError):
             outcomes.load(os.path.join(tempfile.mkdtemp(), "nope.jsonl"))

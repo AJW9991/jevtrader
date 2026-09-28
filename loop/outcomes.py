@@ -27,6 +27,7 @@ JOIN_TOL_S = config.CADENCE_S / 2   # 30.0: half a cadence either side of t+h (d
 DEAD_BAND_BPS = config.DEAD_BAND_BPS   # |ret| below this is "flat"; at the band it is a move
 GAP = {"mid_h": None, "ret_h_bps": None, "label": None, "absence": "gap"}
 _TICK = re.compile(r"^\d{8}T\d{6}Z$")     # parseable by every reader's clock; SPEC §2 floors it, a reader does not police that
+ROW_START = '{"v":'                        # every row cycle.write_row appends begins so (compact JSON, "v" first)
 
 
 def _tick_ok(t):
@@ -155,9 +156,21 @@ def load(path, bad=None):
             try:
                 r = json.loads(line)
             except ValueError as e:
+                # A torn line (a crash or a full disk mid-write) with the next whole row appended onto
+                # it: the tail from the last row start parses on its own, and that row was written in
+                # full, so it is kept and only the torn head is the skip (2026-09-28; cycle.write_row
+                # now also starts a fresh line after a torn one, so this recovers the older cases).
+                i = line.rfind(ROW_START)
+                r = None
+                if i > 0:
+                    try:
+                        r = json.loads(line[i:])
+                    except ValueError:
+                        r = None
                 if bad is not None:
-                    bad.append((n, f"json: {e}"))
-                continue
+                    bad.append((n, f"json: {e}" + ("; the whole row appended onto the torn line is kept" if r is not None else "")))
+                if r is None:
+                    continue
             if not (isinstance(r, dict) and isinstance(r.get("tick_id"), str)
                     and isinstance(r.get("ts_rx"), str)):
                 if bad is not None:
