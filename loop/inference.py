@@ -47,7 +47,7 @@ are of the bytes the rows were parsed from, so a later copy of the growing log i
 Standard library only. The output is meant to be committed beside PREREG.md (§10)."""
 import argparse, datetime, hashlib, math, os, random, sys, tempfile
 
-from . import book, config, outcomes, report
+from . import book, config, exclusions, outcomes, report
 
 SEED = 20260923
 RESAMPLES = 10000
@@ -118,25 +118,7 @@ def day_of_block(k):
     return k // BLOCKS_PER_DAY + 1
 
 
-def read_exclusions(path):
-    """data/exclusions.tsv: header 'day\\tfill%\\tjev-err%\\treason', one line per excluded day, the day
-    as dNN or NN (T0-anchored, PREREG §2 as read 2026-09-26). Returns (set of N, the lines verbatim).
-    A day outside 1..28 or an unparseable day is an error: the file is reproduced in the write-up."""
-    days, lines = set(), []
-    if not path or not os.path.exists(path):
-        return days, lines
-    with open(path, encoding="utf-8") as fh:
-        for i, raw in enumerate(fh):
-            line = raw.rstrip("\n")
-            if not line.strip() or (i == 0 and line.lower().startswith("day")):
-                continue
-            tok = line.split("\t")[0].strip()
-            num = tok[1:] if tok[:1] in "dD" else tok
-            if not num.isdigit() or not 1 <= int(num) <= N_DAYS:
-                raise ValueError(f"{path}:{i + 1}: day {tok!r} is not d01..d{N_DAYS:02d}")
-            days.add(int(num))
-            lines.append(line)
-    return days, lines
+read_exclusions = exclusions.read_exclusions      # loop/exclusions.py; kept here for the callers that name it
 
 
 def kept_tick(tick_id, anchor, excluded=(), n_blocks=BLOCKS_PER_DAY * N_DAYS):

@@ -4,7 +4,7 @@ import contextlib, datetime, hashlib, io, json, math, os, random, shutil, sys, t
 from unittest import mock
 
 from fixture_prereg import pin_prereg
-from loop import book, inference, outcomes, report, rules
+from loop import book, exclusions, inference, outcomes, report, rules
 from test_report import _row, _write
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -144,6 +144,23 @@ class DaysAndExclusions(unittest.TestCase):
             fh.write("d29\t90.0%\t0.0%\tout of range\n")
         with self.assertRaises(ValueError):
             inference.read_exclusions(p)
+
+    def test_exclusions_take_the_space_separated_line_prereg_prints(self):
+        # PREREG §8.3 prints the line as `day  fill%  jev-err%  reason`; the parser split on tabs only,
+        # so a line written as printed failed `make results` on day 28, and nothing read it before
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        p = os.path.join(tmp, "exclusions.tsv")
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write("day  fill%  jev-err%  reason\nd06  91.0  0.1  Mac asleep\n12 80.0 0.0 one space\n")
+        days, lines = inference.read_exclusions(p)
+        self.assertEqual(days, {6, 12})
+        self.assertEqual(lines, ["d06  91.0  0.1  Mac asleep", "12 80.0 0.0 one space"])       # verbatim
+        self.assertEqual(exclusions.status_line(p), f"exclusions: 2 day(s) excluded: d06 d12 ({p})")
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write("day  fill%  jev-err%  reason\nd6x  91.0  0.1  typo\n")
+        self.assertTrue(exclusions.status_line(p).startswith("exclusions: REFUSED, fix before day 28: "))
+        self.assertTrue(exclusions.status_line(os.path.join(tmp, "none.tsv")).startswith("exclusions: none ("))
 
 
 class Guard(unittest.TestCase):

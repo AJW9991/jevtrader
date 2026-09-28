@@ -14,7 +14,7 @@ a HALT is in the first lines under the title.
 """
 import argparse, collections, datetime, glob, os, sys
 
-from . import config, cycle, dash, outcomes, report
+from . import config, cycle, dash, exclusions, outcomes, report
 
 STALE_S = 3 * config.CADENCE_S      # a heartbeat older than three ticks is a stopped loop, not a slow one
 LOG_TAIL = 3                        # lines of logs/propose.log shown
@@ -134,11 +134,13 @@ def _short(path):
     return path if rel.startswith("..") else rel
 
 
-def render(rows, outs, t0, now, hb, halt_path, log, proposals_root, propose_log, current):
+def render(rows, outs, t0, now, hb, halt_path, log, proposals_root, propose_log, current, excl_path=None):
     lines = [f"jev-paper-loop status at {now.strftime('%Y-%m-%dT%H:%MZ')} (health only, PREREG §8.4; nothing here is H1 or H2)",
              _age_line(hb, now), _halt_line(halt_path), _last_row_line(rows), _today_line(rows, now, log), _sample_line(t0, now)]
     lines.append(f"prompt_b CURRENT: {current or '?'}; rows {len(rows)} in the log")
     lines.extend(_days_lines(rows, outs, t0, now))
+    if excl_path:
+        lines.append(exclusions.status_line(excl_path))
     lines.extend(_nightly_lines(proposals_root, propose_log, now))
     return "\n".join(lines) + "\n"
 
@@ -167,7 +169,8 @@ def main(argv=None, now=None):
         rows, unreadable = [], f"LOG UNREADABLE: {args.log}: {e.strerror or e}; the spend guard trips (HALT) until it can be read\n"
     outs = outcomes.join(rows)
     text = (unreadable or "") + render(rows, outs, t0, now, dash.heartbeat(), config.HALT, args.log, config.PROPOSALS,
-                  os.path.join(config.REPO, "logs", "propose.log"), dash.current_version())
+                  os.path.join(config.REPO, "logs", "propose.log"), dash.current_version(),
+                                         os.path.join(config.DATA, "exclusions.tsv"))
     sys.stdout.write(text)
     return 0
 

@@ -528,7 +528,7 @@ class Readers(unittest.TestCase):
                     with contextlib.redirect_stdout(io.StringIO()):
                         self.assertEqual(dash.main(["--log", path, "--out", out, "--t0", T0S, "--data", data, "--proposals", self.props]), 0)
                     with contextlib.redirect_stdout(io.StringIO()), mock.patch.object(config, "HALT", self.halt), \
-                            mock.patch.object(dash, "heartbeat", return_value=None):
+                            mock.patch.object(config, "DATA", data), mock.patch.object(dash, "heartbeat", return_value=None):
                         self.assertEqual(status.main(["--log", path, "--t0", T0S, "--now", "2026-09-27T12:00"]), 0)
 
 

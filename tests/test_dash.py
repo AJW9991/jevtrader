@@ -359,7 +359,7 @@ class PinnedPrereg(unittest.TestCase):
         ex = os.path.join(tmp, "exclusions.tsv")
         with open(ex, "w", encoding="utf-8") as fh:
             fh.write("day\tfill%\tjev-err%\treason\n")
-        for k, v in (("HALT", "HALT"), ("HEARTBEAT", "heartbeat"), ("PROPOSALS", "proposals")):
+        for k, v in (("HALT", "HALT"), ("HEARTBEAT", "heartbeat"), ("PROPOSALS", "proposals"), ("DATA", "data")):
             self.enterContext(mock.patch.object(config, k, os.path.join(tmp, v)))
         self.enterContext(mock.patch("builtins.open", guarded))
         run = _capture                                                  # (main, argv) -> (exit code, stdout)

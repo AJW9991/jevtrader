@@ -132,7 +132,7 @@ class Status(unittest.TestCase):
                        "nightly: 0 tables, 0 proposal files in proposals/; latest none -- MISSING", f"no {self.tmp}/no.log yet"):
             self.assertIn(needle, text)
         buf = io.StringIO()
-        with contextlib.redirect_stdout(buf), mock.patch.object(config, "HALT", self.halt), \
+        with contextlib.redirect_stdout(buf), mock.patch.object(config, "HALT", self.halt), mock.patch.object(config, "DATA", self.tmp), \
                 mock.patch.object(dash, "heartbeat", return_value="2026-09-23T10:41:00.100Z"), \
                 mock.patch.object(dash, "current_version", return_value="v9"):
             code = status.main(["--log", self.log, "--t0", "2026-09-23T10:00", "--now", "2026-09-23T10:42"])
@@ -158,7 +158,7 @@ class Status(unittest.TestCase):
         # a 0200 log (write_row still appends to it) or a directory: the spend guard trips on it, and
         # the morning screen says why instead of dying in outcomes.load
         buf = io.StringIO()
-        with contextlib.redirect_stdout(buf), mock.patch.object(config, "HALT", self.halt), \
+        with contextlib.redirect_stdout(buf), mock.patch.object(config, "HALT", self.halt), mock.patch.object(config, "DATA", self.tmp), \
                 mock.patch.object(dash, "heartbeat", return_value=None), mock.patch.object(dash, "current_version", return_value="v9"):
             code = status.main(["--log", self.tmp, "--t0", "2026-09-23T10:00", "--now", "2026-09-23T10:42"])   # a directory
         self.assertEqual(code, 0)
@@ -173,7 +173,7 @@ class Status(unittest.TestCase):
         # the same static guard as the dash (plus cycle for the spend guard and dash for its readers),
         # and the screen renders on an answered log with every measurement function tripwired
         assert_health_only(self, os.path.join(REPO, "loop", "status.py"), ALLOWED_REPORT | {"days_table", "_pc", "SAMPLE_DAYS"},
-                           ALLOWED_IMPORTS | {"cycle", "dash"})
+                           ALLOWED_IMPORTS | {"cycle", "dash", "exclusions"})
         text2 = runtime_health_only(self, lambda: self._render("2026-09-23T10:42"))
         self.assertEqual(text2, text)
 

@@ -68,6 +68,7 @@ jev-paper-loop/
   loop/report.py         make report (sections 4-7 withheld on sample rows until day 28; --health, --sample, --unblind)
   loop/dash.py           make dash: the health page, report §1-§3 only, data/dash.html
   loop/status.py         make status: the morning check in one screen, report §1 only
+  loop/exclusions.py     data/exclusions.tsv read (stop rule 3's list; inference applies it, status shows it)
   loop/inference.py      PREREG §4-§5 once, at day 28 (make results); refuses the sample before then
   nightly/digest.py      what the slow model may read
   nightly/policy_table.py  81 synthetic states per candidate
