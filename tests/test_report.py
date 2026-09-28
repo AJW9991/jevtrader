@@ -102,6 +102,15 @@ def _write(path, rows, garbage=True):
             fh.write('{"v": 1, "tick_id": "20260923T104200Z", "ts_rx": "2026-09-23T10:4')   # a crash mid-write
 
 
+def no_live_halt(cls, tmp):
+    """config.HALT -> a path under `tmp` that never exists, for the class `cls` (from setUpClass).
+    report.health reads HALT and its mtime, and on the Mac the live loop writes, touches or clears
+    data/HALT at any minute: two renders compared by a test must not straddle that."""
+    path = os.path.join(tmp, "no-HALT")
+    cls.enterClassContext(mock.patch.object(config, "HALT", path))
+    return path
+
+
 def _main(argv):
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -113,6 +122,7 @@ class Synthetic(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
+        no_live_halt(cls, cls.tmp.name)                                 # cls.text and each _main compared to it read no live HALT
         cls.log = os.path.join(cls.tmp.name, "decisions.jsonl")
         _write(cls.log, [_row(m) for m in MINUTES])
         cls.bad = []
@@ -195,6 +205,12 @@ class Synthetic(unittest.TestCase):
         self.assertTrue(h["halt"])
         self.assertIn("HALT: PRESENT since 20", "\n".join(h["lines"]))
         self.assertIn("clearing it is a person's act", "\n".join(h["lines"]))
+
+    def test_renders_compared_here_never_read_the_live_halt(self):
+        self.assertEqual(config.HALT, os.path.join(self.tmp.name, "no-HALT"))
+        self.assertNotEqual(os.path.realpath(config.HALT), os.path.realpath(os.path.join(config.REPO, "data", "HALT")))
+        self.assertFalse(os.path.exists(config.HALT))
+        self.assertIn("  HALT: absent", self.text.splitlines())
 
     def test_shared_key_skipped_minutes_and_the_receive_time_horizon_are_named(self):
         rows = [dict(_row(m)) for m in range(5, 40) if m != 20]                # minute 20 has no row: one isolated skip
@@ -435,6 +451,7 @@ class SampleAndSides(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
+        no_live_halt(cls, cls.tmp.name)                                 # two _main runs are compared
         cls.log = os.path.join(cls.tmp.name, "decisions.jsonl")
         cls.rows = [_row(m) for m in MINUTES]
         _write(cls.log, cls.rows, garbage=False)
@@ -832,6 +849,7 @@ class Withheld(unittest.TestCase):
     def setUpClass(cls):
         pin_prereg(cls)                                                 # prereg-v1's §11 line: T0 2026-09-25T21:40Z
         cls.tmp = tempfile.mkdtemp()
+        no_live_halt(cls, cls.tmp)                                      # two runs are compared
         rows = []
         for m in MINUTES:                                               # the synthetic log moved into day 2 of the sample
             r = dict(_row(m))

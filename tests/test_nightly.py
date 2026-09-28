@@ -92,10 +92,14 @@ def _sh_env(tc, tmp=None, **extra):
     proxy off the machine either (none of these scripts needs the network). CLAUDE_CODE_OAUTH_TOKEN
     is blank: the only token a stub claude can see is the one propose.sh read from its token file,
     whatever the runner exports. JEVLOOP_PROMPTS is a pinned v1 root (fixture_prompts.pin_v1), so the
-    digest and the table never quote the live CURRENT. `extra` overrides any of it."""
+    digest and the table never quote the live CURRENT. TMPDIR is a fresh directory under /tmp, removed
+    after the test: propose.sh fails a live night whose temp cwd has a CLAUDE.md, CLAUDE.local.md or
+    .claude in any ancestor, and the runner's own TMPDIR may sit under ~ (beside ~/.claude) or inside
+    a checkout. `extra` overrides any of it."""
     env = {**os.environ, "TYPESAFE_API_KEY_LOOP": "", "TYPESAFE_API_KEY": "", "CLAUDE_CODE_OAUTH_TOKEN": "",
            "HOME": tc.enterContext(tempfile.TemporaryDirectory()), "TYPESAFE_BASE_URL": "http://127.0.0.1:9",
-           "JEVLOOP_PY": sys.executable, **{v: "" for v in PROXY_VARS}, "NO_PROXY": "*", "no_proxy": "*"}
+           "JEVLOOP_PY": sys.executable, **{v: "" for v in PROXY_VARS}, "NO_PROXY": "*", "no_proxy": "*",
+           "TMPDIR": tc.enterContext(tempfile.TemporaryDirectory(dir="/tmp"))}
     if "JEVLOOP_PROMPTS" not in extra:
         env["JEVLOOP_PROMPTS"] = pin_v1(tc)
     env.update(extra)
@@ -963,6 +967,13 @@ class ShEnv(unittest.TestCase):
         self.assertEqual(env["TYPESAFE_BASE_URL"], "http://127.0.0.1:9")
         self.assertNotIn("runner-", "".join(env.values()))
 
+    def test_tmpdir_is_a_fresh_dir_under_tmp_whatever_the_runners_is(self):
+        with mock.patch.dict(os.environ, TMPDIR=REPO):                     # a runner TMPDIR inside the checkout
+            env = _sh_env(self)
+        self.assertEqual(os.path.dirname(env["TMPDIR"]), "/tmp")
+        self.assertEqual(os.listdir(env["TMPDIR"]), [])
+        self.assertNotEqual(env["TMPDIR"], _sh_env(self)["TMPDIR"])
+
     def test_every_script_this_module_starts_gets_it(self):
         # a subprocess.run without env= inherits the runner's proxies, token and HOME
         with open(__file__, encoding="utf-8") as fh:
@@ -1093,6 +1104,36 @@ class LiveBranch(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.saw, "argv")))          # the stub never ran
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "proposals", f"{DAY.isoformat()}.json")))
         self.assertEqual([d for d in os.listdir(tmpdir) if d.startswith("jevloop-claude.")], [])   # the temp cwd is gone
+
+    def test_a_claude_file_in_any_ancestor_of_tmpdir_fails_the_night_and_the_suites_tmpdir_passes(self):
+        # the ancestor walk goes all the way up, and knows all three names; the suite's own TMPDIR
+        # (_sh_env: a fresh dir under /tmp) has none of them above it, so the night runs there
+        stub = self._stub('[ "$1" = --version ] && { echo "9.9.9 (stub claude)"; exit 0; }\n'
+                          'pwd -P >"' + self.saw + '/cwd"\n'
+                          'cat <<"EOF"\n```json\n{"candidates": [{"rationale": "t", "instructions": "Decide.",'
+                          ' "criteria": {"buy": "pumping", "sell": "dumping", "hold": "else"}}]}\n```\nEOF\n')
+        for name, make in (("CLAUDE.md", "file"), (".claude", "dir")):
+            base = os.path.join(self.tmp, "anc-" + name.strip("."))
+            tmpdir = os.path.join(base, "deeper", "tmp")                   # the file two levels above TMPDIR
+            os.makedirs(tmpdir)
+            if make == "dir":
+                os.makedirs(os.path.join(base, name))
+            else:
+                with open(os.path.join(base, name), "w", encoding="utf-8") as fh:
+                    fh.write("# planted\n")
+            r = self._run(stub, TMPDIR=tmpdir)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn(f"FAIL {os.path.realpath(base)}/{name} exists above claude's cwd", r.stderr)
+            self.assertIn("nothing sent", r.stderr)
+            self.assertFalse(os.path.exists(os.path.join(self.saw, "cwd")), name)             # the stub never ran
+            self.assertEqual(os.listdir(tmpdir), [], name)                                     # the temp cwd is gone
+        r = self._run(stub)                                                                     # _sh_env's own TMPDIR
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("FAIL", r.stderr)
+        self.assertIn("claude exit 0 after", r.stderr)
+        with open(os.path.join(self.saw, "cwd"), encoding="utf-8") as fh:
+            self.assertTrue(fh.read().startswith(os.path.realpath("/tmp") + os.sep))
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, "proposals", f"{DAY.isoformat()}.json")))
 
     def test_a_hung_claude_is_one_fail_line_and_the_night_ends_clean(self):
         stub = self._stub('[ "$1" = --version ] && { echo "9.9.9 (stub claude)"; exit 0; }\nsleep 30\n')

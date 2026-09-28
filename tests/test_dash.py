@@ -6,7 +6,7 @@ from unittest import mock
 from fixture_prereg import pin_prereg, text as prereg_text
 from fixture_prompts import pin_v1
 from loop import config, dash, inference, outcomes, report, status
-from test_report import _row, _write
+from test_report import _row, _write, no_live_halt
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # what a health page may call on report: section 1-3 functions and their constants, nothing that
@@ -73,6 +73,7 @@ class Dash(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.mkdtemp()
+        no_live_halt(cls, cls.tmp)                                       # a page is compared with a page
         cls.log = os.path.join(cls.tmp, "decisions.jsonl")
         _write(cls.log, [_row(m) for m in range(42)])
         cls.rows = outcomes.load(cls.log, [])
