@@ -1003,6 +1003,9 @@ class ByVersion(unittest.TestCase):
         self.assertTrue(lines[4].startswith("    v1       2026-09-26T00:00Z 2026-09-26T00:01Z       2      1    2.000"), lines[4])
         self.assertTrue(lines[5].startswith("    v2       2026-09-26T00:02Z 2026-09-26T00:03Z       2      1   10.000"), lines[5])
         self.assertTrue(lines[6].startswith("    v1 #2    2026-09-26T00:04Z 2026-09-26T00:05Z       2      1    6.000"), lines[6])
+        head = " ".join(" ".join(lines[:3]).split())                     # the header says what a row and '#2' are
+        self.assertIn("one row per stretch of a version (one that returns after another, a rollback, is '<version> #2')", head)
+        self.assertIn("its blocks from its first tick's to its last tick's", head)
 
     def test_no_answered_live_row_says_so(self):
         got, lines = report.by_version(self._rows([(0, None, 100)]), [("20260926T000000Z", 0.0)], set(), {"20260926T000000Z": 0})

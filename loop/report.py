@@ -579,9 +579,9 @@ def by_version(rows, d, dis, kof):
             prev = cur
         stretches[-1][2].append((t, v))
     out, lines = [], [
-        "  H1 cell by arm B's prompt version (the rewrite's iterations), descriptive and NOT in PREREG: a version's",
-        "  blocks run from its first tick's to its last tick's (the block a promotion splits counts under both, each",
-        "  with its own ticks), excluded days are not removed, and the replay runs straight through a promotion",
+        "  H1 cell by arm B's prompt version (the rewrite's iterations), descriptive and NOT in PREREG: one row per stretch",
+        "  of a version (one that returns after another, a rollback, is '<version> #2'), its blocks from its first tick's",
+        "  to its last tick's (a promotion's split block counts under both); excluded days stay in; one replay throughout",
         f"    {'version':<9}{'first tick':<18}{'last tick':<18}{'ticks':>7}{'blocks':>7}{'mean_S':>9}{'dis':>6}{'dis%':>7}{'mean_S|dis':>12}"]
     for _, v, dv in stretches:                                         # in order of first tick
         S, hot = collections.defaultdict(float), set()
