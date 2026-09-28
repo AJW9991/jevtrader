@@ -309,8 +309,10 @@ fdesetup status && pmset -g | grep -E '^\s*(sleep|displaysleep)' && defaults rea
 Want `FileVault is On.`, and the last line to say the key does not exist.
 The habit: plugged in; lid open (clamshell without an external display
 sleeps); **on battery the profile is `sleep 1` and `powernap 1`, so an unplugged Mac sleeps
-within a minute of idling and wakes only for seconds at a time — 2026-09-26 lost 840 minutes
-that way, 0.2 points from a BAD day**; after ANY reboot, log in — both agents load at login, the loop's
+within a minute of idling and wakes only for seconds at a time — 2026-09-26 lost 840-935 minutes
+that way; the 09-25 review measured that UTC day's fill at 90.2 %, under stop rule 3's 95 %, so the
+T0-anchored day it falls in is likely BAD (report §1's stop-rule-3 table says which; the exclusions line
+is Alex's)**; after ANY reboot, log in — both agents load at login, the loop's
 first tick is immediate, and `cat data/heartbeat` tells you it did. Do not
 turn on auto-login to fix a gap; FileVault forbids it anyway, and the
 missing minutes are the honest record.
