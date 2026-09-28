@@ -146,24 +146,26 @@ class ReadersDiff(unittest.TestCase):
         self.assertTrue(seen[0][1])
         self.assertEqual(os.listdir(tmpdir), [])                          # and it is gone afterwards
 
-    def test_a_sigterm_mid_probe_still_removes_the_copy(self):
-        mod = self._module()
-        tmpdir = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, tmpdir, ignore_errors=True)
+    def test_a_sigterm_or_sighup_mid_probe_still_removes_the_copy(self):
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            with self.subTest(signal=sig.name):
+                mod = self._module()
+                tmpdir = tempfile.mkdtemp()
+                self.addCleanup(shutil.rmtree, tmpdir, ignore_errors=True)
 
-        def unguarded(signum, frame):                                     # in place of the default action, which would end
-            raise AssertionError("readers-diff installed no SIGTERM handler")   # the whole test run, not fail this test
-        self.addCleanup(signal.signal, signal.SIGTERM, signal.signal(signal.SIGTERM, unguarded))
+                def unguarded(signum, frame, name=sig.name):              # in place of the default action, which would end
+                    raise AssertionError(f"readers-diff installed no {name} handler")   # the whole test run, not fail this test
+                self.addCleanup(signal.signal, sig, signal.signal(sig, unguarded))
 
-        def killed(tree, log):
-            os.kill(os.getpid(), signal.SIGTERM)                          # delivered at once to this process
-            return {}, None
-        with mock.patch.object(mod, "read_with", killed), mock.patch.object(mod.tempfile, "tempdir", tmpdir):
-            with self.assertRaises(SystemExit) as cm:
-                mod.main([REPO, REPO, "--log", self.log])
-        self.assertEqual(cm.exception.code, 128 + signal.SIGTERM)
-        self.assertEqual(os.listdir(tmpdir), [])
-        self.assertIs(signal.getsignal(signal.SIGTERM), unguarded)       # the handler is put back, whatever it was
+                def killed(tree, log, sig=sig):
+                    os.kill(os.getpid(), sig)                             # delivered at once to this process
+                    return {}, None
+                with mock.patch.object(mod, "read_with", killed), mock.patch.object(mod.tempfile, "tempdir", tmpdir):
+                    with self.assertRaises(SystemExit) as cm:
+                        mod.main([REPO, REPO, "--log", self.log])
+                self.assertEqual(cm.exception.code, 128 + sig)
+                self.assertEqual(os.listdir(tmpdir), [])
+                self.assertIs(signal.getsignal(sig), unguarded)          # the handler is put back, whatever it was
 
     def test_a_copy_that_cannot_be_written_is_a_message(self):
         mod = self._module()
