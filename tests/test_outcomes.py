@@ -2,9 +2,16 @@
 gap, a jittered t+15 row is never swapped for t+16), the window's edges, the
 dead band, and a log reader that survives one truncated line. Offline; temp
 files only."""
-import datetime, json, math, os, tempfile, unittest
+import datetime, json, math, os, shutil, tempfile, unittest
 
 from loop import config, outcomes
+
+
+def _tmpdir(tc):
+    """A temporary directory removed when the test `tc` ends."""
+    d = tempfile.mkdtemp()
+    tc.addCleanup(shutil.rmtree, d, ignore_errors=True)
+    return d
 
 T0 = datetime.datetime(2026, 9, 23, 10, 0, 0, tzinfo=datetime.timezone.utc)
 H = config.HORIZON_S
@@ -167,9 +174,9 @@ class DeadBand(unittest.TestCase):
 
 class Load(unittest.TestCase):
     def _write(self, lines):
-        d = tempfile.mkdtemp()
+        d = _tmpdir(self)
         p = os.path.join(d, "decisions.jsonl")
-        with open(p, "w") as fh:
+        with open(p, "w", encoding="utf-8") as fh:
             fh.write("\n".join(lines) + "\n")
         self.addCleanup(lambda: (os.remove(p), os.rmdir(d)))
         return p
@@ -187,9 +194,9 @@ class Load(unittest.TestCase):
     def test_a_whole_row_glued_onto_a_torn_line_is_kept(self):
         # a crash mid-write leaves half a row without a newline; the next tick's whole row lands on the
         # same line. The torn head is the skip; the whole row is a row (it was written in full)
-        p = os.path.join(tempfile.mkdtemp(), "d.jsonl")
+        p = os.path.join(_tmpdir(self), "d.jsonl")
         a, b, c = _row(0, 100.0), _row(60, 101.0), _row(120, 102.0)
-        with open(p, "w") as fh:
+        with open(p, "w", encoding="utf-8") as fh:
             fh.write(json.dumps(a, separators=(",", ":")) + "\n")
             fh.write(json.dumps(b, separators=(",", ":"))[:40])          # torn: no newline
             fh.write(json.dumps(c, separators=(",", ":")) + "\n")
@@ -201,7 +208,7 @@ class Load(unittest.TestCase):
         self.assertIn("the whole row appended onto the torn line is kept", bad[0][1])
         # a torn line with nothing whole after it is still one skipped line, and a line that is
         # not a row at all is not rescued from the middle of some other text
-        with open(p, "w") as fh:
+        with open(p, "w", encoding="utf-8") as fh:
             fh.write(json.dumps(a, separators=(",", ":")) + "\n" + json.dumps(b, separators=(",", ":"))[:40] + "\n")
             fh.write('x {"v": 1} {"v":1,"tick_id":"nope"}\n')
         bad = []
@@ -214,9 +221,9 @@ class Load(unittest.TestCase):
         # the older writer could lose exactly the newline between two whole rows (a crash after the
         # row's bytes, before its newline): neither row is torn, so both are read, in order, and the
         # line is one skipped line whose reason says so (make health's count; bin/readers-diff's "kept")
-        p = os.path.join(tempfile.mkdtemp(), "d.jsonl")
+        p = os.path.join(_tmpdir(self), "d.jsonl")
         a, b, c = _row(0, 100.0), _row(60, 101.0), _row(120, 102.0)
-        with open(p, "w") as fh:
+        with open(p, "w", encoding="utf-8") as fh:
             fh.write(json.dumps(a, separators=(",", ":")))                  # whole, no newline
             fh.write(json.dumps(b, separators=(",", ":")) + "\n")            # glued onto it
             fh.write(json.dumps(c, separators=(",", ":")) + "\n")
@@ -226,7 +233,7 @@ class Load(unittest.TestCase):
         self.assertEqual(rows[0], a)
         self.assertEqual([(n, "two whole rows on one line (a lost newline), both kept" in why) for n, why in bad], [(1, True)])
         # a head that parses but is not a row is not a row: the tail alone is kept, and the head is named
-        with open(p, "w") as fh:
+        with open(p, "w", encoding="utf-8") as fh:
             fh.write('{"v":1}' + json.dumps(b, separators=(",", ":")) + "\n")
         bad = []
         rows = outcomes.load(p, bad)
@@ -237,10 +244,10 @@ class Load(unittest.TestCase):
     def test_any_number_of_whole_rows_on_one_line_are_all_read_in_order(self):
         # three whole rows that lost two newlines; a torn head before two whole rows; objects that parse
         # but are not rows: every whole row is read once, in order, and each line is ONE skip entry
-        p = os.path.join(tempfile.mkdtemp(), "d.jsonl")
+        p = os.path.join(_tmpdir(self), "d.jsonl")
         rs = [_row(60 * k, 100.0 + k) for k in range(6)]
         j = lambda r: json.dumps(r, separators=(",", ":"))
-        with open(p, "w") as fh:
+        with open(p, "w", encoding="utf-8") as fh:
             fh.write(j(rs[0]) + j(rs[1]) + j(rs[2]) + "\n")                # 3 whole rows, no newlines between
             fh.write(j(rs[3])[:50] + j(rs[4]) + j(rs[5]) + "\n")           # torn, then 2 whole rows
             fh.write('{"v":1}{"v":1}\n')                                    # two objects, neither a row
@@ -257,28 +264,28 @@ class Load(unittest.TestCase):
         # a nested object whose first key is "v" (answers are stored verbatim) puts a row start inside
         # a row; glued after a torn line the split lands inside it, the piece does not parse, and the
         # row is lost -- never read as some other row
-        p = os.path.join(tempfile.mkdtemp(), "d.jsonl")
+        p = os.path.join(_tmpdir(self), "d.jsonl")
         a, b = _row(0, 100.0), dict(_row(60, 101.0), answers={"x": {"v": 1}})
-        with open(p, "w") as fh:
+        with open(p, "w", encoding="utf-8") as fh:
             fh.write(json.dumps(a, separators=(",", ":"))[:30] + json.dumps(b, separators=(",", ":")) + "\n")
         bad = []
         rows = outcomes.load(p, bad)
         self.assertEqual(rows, [])
         self.assertEqual(len(bad), 1)
-        with open(p, "w") as fh:                                           # on a line of its own it is read
+        with open(p, "w", encoding="utf-8") as fh:                                           # on a line of its own it is read
             fh.write(json.dumps(b, separators=(",", ":")) + "\n")
         self.assertEqual(outcomes.load(p), [b])
 
     def test_a_long_line_of_glued_rows_costs_no_recursion(self):
-        p = os.path.join(tempfile.mkdtemp(), "d.jsonl")
+        p = os.path.join(_tmpdir(self), "d.jsonl")
         rs = [_row(60 * k, 100.0) for k in range(1500)]
-        with open(p, "w") as fh:
+        with open(p, "w", encoding="utf-8") as fh:
             fh.write("".join(json.dumps(r, separators=(",", ":")) for r in rs) + "\n")
         self.assertEqual(len(outcomes.load(p)), 1500)
 
     def test_missing_file_raises(self):
         with self.assertRaises(OSError):
-            outcomes.load(os.path.join(tempfile.mkdtemp(), "nope.jsonl"))
+            outcomes.load(os.path.join(_tmpdir(self), "nope.jsonl"))
 
     def test_load_then_join(self):
         p = self._write([json.dumps(_row(60 * i, 100.0 + i)) for i in range(16)])
@@ -299,8 +306,8 @@ class Clock(unittest.TestCase):
 class LoadGuards(unittest.TestCase):
     def test_a_tick_id_that_is_not_a_minute_is_skipped_not_crashed(self):
         import tempfile
-        p = os.path.join(tempfile.mkdtemp(), "d.jsonl")
-        with open(p, "w") as fh:
+        p = os.path.join(_tmpdir(self), "d.jsonl")
+        with open(p, "w", encoding="utf-8") as fh:
             fh.write('{"tick_id": "20260923T100000Z", "ts_rx": "2026-09-23T10:00:00.100Z", "mid": 1.0}\n')
             fh.write('{"tick_id": "nonsense", "ts_rx": "2026-09-23T10:01:00.100Z", "mid": 1.0}\n')
             fh.write('{"tick_id": "20260923T100230Z", "ts_rx": "2026-09-23T10:02:30.100Z", "mid": 1.0}\n')   # not floored: parseable, kept

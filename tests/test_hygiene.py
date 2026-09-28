@@ -22,9 +22,7 @@ class TempDirs(unittest.TestCase):
 
 
 class Encodings(unittest.TestCase):
-    # test_outcomes.py is being edited in another session (2026-09-28): its four text opens write
-    # ASCII JSON. Drop it from here once that work has landed and they name their encoding too.
-    ELSEWHERE = {"test_outcomes.py"}
+    ELSEWHERE = set()
 
     def test_every_text_open_on_the_test_side_names_its_encoding(self):
         # under LC_ALL=C with PYTHONUTF8=0 an open() without one reads and writes ASCII, and 14 tests
