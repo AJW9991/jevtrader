@@ -263,19 +263,33 @@ def side_lines(h):
             f"  descriptive: the trend word (no model): units {word(su)}; every kept live row {word(se)}"]
 
 
+def reached(rows, now=None):
+    """How far the log has got on the clock `now` (epoch; the live log's real clock, None for any other
+    log): (its rows stamped at or before `now`, its rows stamped after it), each in file order. A row
+    stamped after the clock (a clock that stepped forward) has not happened, so the log's last row is
+    the last one stamped at or before the clock; never the clock itself, since a row stamped before
+    it can still be on its way (a tick writes its row after the ask, up to cycle.WATCHDOG_S later).
+    `rows` are outcomes.load's, whose ts_rx always parses."""
+    if now is None:
+        return list(rows), []
+    before, after = [], []
+    for r in rows:
+        (after if outcomes.ts_epoch(r["ts_rx"]) > now else before).append(r)
+    return before, after
+
+
 def pending_units(rows, scope, outs, anchor, excluded=(), n_blocks=BLOCKS_PER_DAY * N_DAYS, now=None):
     """The H2 units whose t + h the log has not reached yet: a kept block's first live row with
     both nouls (report._h2_pair says "gap", not "noul") whose ts_rx + HORIZON_S + JOIN_TOL_S is
     later than the last ts_rx of the whole log (`rows`), so a row inside its join window can still
     be written. Counting such a unit as a gap would drop it for good (PREREG §5: the join is over
-    the whole log, the block is never refilled). `now` (epoch, the live log's real clock) caps the
-    log's last ts_rx: a row stamped after the clock (a forward step) must not read as the t + h the
-    unit waits for. Returns [(tick_id, the ts_rx epoch it waits for)]."""
-    last = max((outcomes.ts_epoch(r["ts_rx"]) for r in rows), default=None)
-    if last is None:
-        return []
-    if now is not None:
-        last = min(last, now)
+    the whole log, the block is never refilled). `now` (epoch, the live log's real clock): the log's
+    last ts_rx is its last one stamped at or before the clock (reached), so neither a row stamped
+    after the clock (a forward step) nor the clock itself reads as the t + h a unit waits for; a log
+    with no row at or before the clock has reached nothing. Returns [(tick_id, the ts_rx epoch it
+    waits for)]."""
+    seen, _ = reached(rows, now)
+    last = max((outcomes.ts_epoch(r["ts_rx"]) for r in seen), default=-math.inf)
     live = sorted((r for r in scope if report._live(r)), key=lambda r: r["tick_id"])
     _, _, firsts = report.h2_units(live, outs, anchor)
     out = []
@@ -583,7 +597,7 @@ def main(argv=None, now=None):
             return EXIT_NOT_YET
     outs = outcomes.join(rows)
     cut = None
-    cap = now.timestamp() if live_log else None           # the live log's real clock: no row can lie after it
+    cap = now.timestamp() if live_log else None           # the live log's real clock: a row stamped after it is not reached
     if args.sample:
         mode, anchor = "sample", t0
         scope = report.in_sample(rows, t0)

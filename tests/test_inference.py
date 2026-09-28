@@ -559,29 +559,56 @@ class EveryRow(unittest.TestCase):
 
 
 class LiveClock(unittest.TestCase):
-    """On the live log the real clock caps 'the log's last row': a row stamped after it (a clock that
-    stepped forward) must not satisfy the pending refusal, nor close d28 in the stop-rule-3 lines."""
+    """On the live log the real clock bounds 'the log's last row': it is the last row stamped at or before
+    the clock, never the clock itself (a row stamped before it can still be on its way), and a row stamped
+    after it (a clock that stepped forward) must not satisfy the pending refusal, nor close d28 in the
+    stop-rule-3 lines."""
+    END = report._t0("2026-09-25T21:40") + 28 * 86400                   # the fixture's T0 + 28 d: 2026-10-23T21:40Z
 
     @classmethod
     def setUpClass(cls):
         pin_prereg(cls)                                               # T0 2026-09-25T21:40Z, whatever the repository's §11 says
+        cls.tmp = tempfile.mkdtemp()
+        cls.addClassCleanup(shutil.rmtree, cls.tmp, ignore_errors=True)
+        cls.ex = _exclusions(os.path.join(cls.tmp, "none.tsv"))
+
+    def _rows(self, a, b):
+        """Live rows every minute from END + a minutes to END + b minutes (b excluded), ts_rx at :00.1."""
+        return _minutes(self.END + 60 * a, self.END + 60 * b, up=0.6, down=0.4)
+
+    @staticmethod
+    def _stray(row, tick="20261101T000000Z"):
+        """`row` stamped at `tick`: written by a clock that had stepped forward."""
+        return dict(row, tick_id=tick, ts_rx=f"{tick[:4]}-{tick[4:6]}-{tick[6:8]}T{tick[9:11]}:{tick[11:13]}:00.100Z")
+
+    def _run(self, rows, at, *extra):
+        """--sample on `rows` as the live log (config.DECISIONS) at END + `at` seconds on the real clock."""
+        log = os.path.join(self.tmp, f"{len(os.listdir(self.tmp))}.jsonl")
+        _write(log, rows, garbage=False)
+        run_at = datetime.datetime.fromtimestamp(self.END + at, datetime.timezone.utc)
+        with mock.patch.object(inference.config, "DECISIONS", log), mock.patch.object(inference, "bootstrap", _fake_bootstrap):
+            return _main(["--sample", "--exclusions", self.ex, *extra], now=run_at)
 
     def test_a_row_stamped_after_the_clock_does_not_lift_the_pending_refusal(self):
-        tmp = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
-        sealed = report._t0("2026-09-25T21:40")
-        end = sealed + 28 * 86400
-        rows = _minutes(end - 30 * 60, end, up=0.6, down=0.4)          # the last two blocks; the log stops at 21:39
-        stray = dict(rows[-1], tick_id="20261101T000000Z", ts_rx="2026-11-01T00:00:00.100Z")   # a clock stepped forward
-        log = os.path.join(tmp, "decisions.jsonl")
-        _write(log, rows + [stray], garbage=False)
-        ex = _exclusions(os.path.join(tmp, "none.tsv"))
-        run_at = datetime.datetime.fromtimestamp(end + 10, datetime.timezone.utc)   # 21:40:10, the 21:40 row not yet written
-        with mock.patch.object(inference.config, "DECISIONS", log), \
-                mock.patch.object(inference, "bootstrap", side_effect=AssertionError("the draw ran")):
-            code, out, err = _main(["--sample", "--exclusions", ex], now=run_at)
-        self.assertEqual((code, out), (3, ""), err)
-        self.assertIn("refusing to run: 1 H2 unit(s) wait for a t + h the log has not reached", err)
+        # the log stops at 21:39: the 21:25 block's unit waits for the 21:40 row, t + h within its window up to
+        # 21:40:30.1. min(last row, clock) made the clock the log's last row (2026-09-28 review): with the stray
+        # row, a run 5 s past the window, the 21:40 row still on its way, dropped the unit as a gap, and so did
+        # a run at 21:56 on a loop that had stopped, without the person's --accept-pending
+        rows = self._rows(-30, 0)
+        rows.append(self._stray(rows[-1]))
+        for at in (10, 35, 16 * 60):                                      # 21:40:10, 21:40:35, 21:56:00
+            code, out, err = self._run(rows, at)
+            self.assertEqual((code, out), (3, ""), (at, err))
+            self.assertIn("refusing to run: 1 H2 unit(s) wait for a t + h the log has not reached (first live row 20261023T212500Z;", err)
+        code, out, err = self._run(rows, 16 * 60, "--accept-pending")    # the log really stopped: the person's act, said
+        self.assertEqual(code, 0, err)
+        self.assertIn("--accept-pending given: 1 H2 unit(s) whose t + h the log has not reached are counted as gaps"
+                      " (for a log that really stopped; without the flag the run is refused): 20261023T212500Z\n", out)
+        self.assertIn("  n units 1 (blocks with a live row 2; dropped {'gap': 1})", out)
+        code, out, err = self._run(rows + self._rows(0, 1), 45)            # the 21:40 row written: both units, none dropped
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("--accept-pending", out)
+        self.assertIn("  n units 2 (blocks with a live row 2; dropped none)", out)
 
 
 class SealUnread(unittest.TestCase):
