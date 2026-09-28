@@ -127,6 +127,17 @@ and says so) · `make dash` · `make inference-smoke` · `make results` (day 28;
   whose SIGTERM went unanswered for launchd's 20 s), the call would outlive it, where launchd's
   group kill used to take both. Exit codes are unchanged.
 
+- Found by a six-lens bug hunt (66 agents, each finding refuted or confirmed by three skeptics),
+  2026-09-28, each fixed with a test: the spend guard trips (HALT) on a log that exists but cannot
+  be read, where it counted $0 and sent (a 0200 log keeps taking rows); venue garbage nested past
+  the parser's depth or past a float's range is a `feed` absence, not `guard`; the digest skips a
+  jev/parse row whose choice is a list or dict instead of losing the night (every digest that
+  rendered before is byte-identical); a row stamped after the clock closes no day of the stop-rule
+  table; the dash shows the skipped-lines count and draws a day without rows as empty cells;
+  propose.sh's path guard sees the forbidden tree through a symlinked HOME; the exclusions parser
+  takes PREREG's space-separated line and `make status` prints the parsed exclusions (or REFUSED)
+  every morning. A NaN confidence in the digest's filter is an ERRATA entry (the treatment).
+
 ## Not changed on purpose (prereg-v2 notes)
 Every disagreement between the sealed documents and the code, in one table per document: ERRATA.md.
 - The digest's summary line on a promotion day replays arm B over every row of the day, v1 and
