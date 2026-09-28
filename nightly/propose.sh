@@ -108,6 +108,28 @@ else
   [ -x "$CLAUDE" ] || fail "no claude at $CLAUDE"
   [ -x "$CAFFEINATE" ] || fail "no caffeinate at $CAFFEINATE"
   [ -s "$TOKEN_FILE" ] || fail "no token file at $TOKEN_FILE"
+  # The call runs in a fresh EMPTY directory, not the repo. The treatment is PROMPT.md and the
+  # digest and nothing else (PROMPT.md: "everything you may know is the digest"), but claude
+  # auto-loads CLAUDE.md from its working directory and every ancestor, and --restricted only
+  # ignores settings files, not CLAUDE.md (only --bare or --safe-mode would, and --bare disables
+  # the OAuth login). The repo gained a CLAUDE.md on 2026-09-27; nights 1-3 ran before it
+  # existed, so this keeps every later night seeing what they saw. The CLI still loads the
+  # user's own memory, ~/.claude/CLAUDE.md, so its sha256 is logged each night, beside the CLI
+  # version, so which input and which CLI wrote each night is on record. capped.py is run by
+  # path: `-m nightly.capped` resolves against the cwd, and it imports only the standard library.
+  TMPBASE="${TMPDIR:-/tmp}"
+  WORK="$(mktemp -d "${TMPBASE%/}/jevloop-claude.XXXXXX")" || fail "cannot make an empty cwd for claude"
+  trap 'rm -rf "$WORK"' EXIT                       # removed however the night ends
+  MEM="$HOME/.claude/CLAUDE.md"
+  if [ -f "$MEM" ]; then
+    MEMSHA="$("$PY" -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest()[:12])' "$MEM" 2>/dev/null)"
+    MEMSHA="sha256 ${MEMSHA:-unreadable}"
+  else
+    MEMSHA="absent"
+  fi
+  # capped too: a --version that hung would hold the night, and launchd every night after it
+  CLI="$(cd "$WORK" && "$PY" "$REPO/nightly/capped.py" 10 -- "$CLAUDE" --version 2>/dev/null | head -1)"
+  log "claude cwd $WORK (empty); user memory $MEM $MEMSHA; cli ${CLI:-unknown}"
   CLAUDE_CODE_OAUTH_TOKEN="$(tr -d '\r\n' <"$TOKEN_FILE")"; export CLAUDE_CODE_OAUTH_TOKEN
   PROMPT="$(cat "$REPO/nightly/PROMPT.md")
 
@@ -116,11 +138,12 @@ $(cat "$DIGEST")"
   # sleeps through still finishes); a hang while awake exits 124 instead of blocking every later
   # night, since launchd never starts a second instance while one runs. caffeinate stays outermost.
   T_START=$(date +%s)
-  "$CAFFEINATE" -i "$PY" -m nightly.capped "$CLAUDE_CAP_S" -- \
+  ( cd "$WORK" || exit 125; exec "$CAFFEINATE" -i "$PY" "$REPO/nightly/capped.py" "$CLAUDE_CAP_S" -- \
     "$CLAUDE" -p "$PROMPT" --tools "" --restricted --strict-mcp-config \
-    --settings "$REPO/nightly/settings.json" --output-format text >"$RAW" 2>"$LOGS/claude-$DATE.err"
+    --settings "$REPO/nightly/settings.json" --output-format text ) >"$RAW" 2>"$LOGS/claude-$DATE.err"
   rc=$?
   unset CLAUDE_CODE_OAUTH_TOKEN
+  rm -rf "$WORK"
   log "claude exit $rc after $(( $(date +%s) - T_START )) s wall clock (cap $CLAUDE_CAP_S s awake)"
   [ $rc -eq 124 ] && fail "claude capped at $CLAUDE_CAP_S s awake (see $LOGS/claude-$DATE.err)"
   [ $rc -eq 0 ] || fail "claude exit $rc (see $LOGS/claude-$DATE.err)"

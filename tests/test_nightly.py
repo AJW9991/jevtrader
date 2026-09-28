@@ -805,7 +805,8 @@ class LiveBranch(unittest.TestCase):
         self.token = os.path.join(self.tmp, "token")
         with open(self.token, "w") as fh:
             fh.write(self.TOKEN + "\n")
-        self.saw = os.path.join(self.tmp, "saw")
+        self.saw = os.path.join(self.tmp, "saw")                         # what the stub saw: argv, cwd, token
+        os.makedirs(self.saw)
         pin_v1(self)
 
     def _stub(self, body):
@@ -815,10 +816,19 @@ class LiveBranch(unittest.TestCase):
         os.chmod(p, 0o755)
         return p
 
-    def _run(self, stub, cap="2700"):
-        env = _sh_env(self.tmp, JEVLOOP_CLAUDE=stub, JEVLOOP_TOKEN_FILE=self.token, JEVLOOP_CLAUDE_CAP_S=cap)
+    def _run(self, stub, cap="2700", **extra):
+        env = _sh_env(self.tmp, JEVLOOP_CLAUDE=stub, JEVLOOP_TOKEN_FILE=self.token, JEVLOOP_CLAUDE_CAP_S=cap, **extra)
         return subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--date", DAY.isoformat(), "--root", self.tmp],
                               capture_output=True, text=True, timeout=120, env=env, cwd=REPO)
+
+    def _home(self, memory=None):
+        """A HOME for the run: empty, or with ~/.claude/CLAUDE.md holding `memory`."""
+        home = os.path.join(self.tmp, "home")
+        os.makedirs(os.path.join(home, ".claude"), exist_ok=True)
+        if memory is not None:
+            with open(os.path.join(home, ".claude", "CLAUDE.md"), "w") as fh:
+                fh.write(memory)
+        return home
 
     def _everything_written(self):
         out = []
@@ -829,14 +839,20 @@ class LiveBranch(unittest.TestCase):
         return "\n".join(out)
 
     def test_live_branch_end_to_end_token_set_never_printed(self):
-        stub = self._stub('[ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] && echo TOKEN_SET >"%s"\n'
-                          'case " $* " in *" --tools  "*|*"--tools \"\""*) : ;; esac\n'
-                          'printf "%%s\\n" "$@" | grep -q -- "--output-format" || exit 9\n'
-                          'cat <<"EOF"\nreply\n\n```json\n{"candidates": [{"rationale": "t", "instructions": "Decide.",'
-                          ' "criteria": {"buy": "pumping", "sell": "dumping", "hold": "else"}}]}\n```\nEOF\n' % self.saw)
-        r = self._run(stub)
+        # the stub answers --version (propose.sh logs it), then records what the real call gets:
+        # its argv NUL-separated (the prompt spans lines, and --tools takes an EMPTY argument), its
+        # working directory and that directory's listing, and whether the token reached it
+        stub = self._stub('[ "$1" = --version ] && {{ echo "9.9.9 (stub claude)"; exit 0; }}\n'
+                          '[ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] && echo TOKEN_SET >"{saw}/token"\n'
+                          'printf "%s\\0" "$@" >"{saw}/argv"\n'
+                          'pwd -P >"{saw}/cwd"\n'
+                          'ls -A >"{saw}/ls"\n'
+                          'cat <<"EOF"\nreply\n\n```json\n{{"candidates": [{{"rationale": "t", "instructions": "Decide.",'
+                          ' "criteria": {{"buy": "pumping", "sell": "dumping", "hold": "else"}}}}]}}\n```\nEOF\n'.format(saw=self.saw))
+        memory = "user memory the CLI loads\n"
+        r = self._run(stub, HOME=self._home(memory))
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertTrue(os.path.exists(self.saw), "the stub never saw the token in its environment")
+        self.assertTrue(os.path.exists(os.path.join(self.saw, "token")), "the stub never saw the token in its environment")
         self.assertTrue(os.path.exists(os.path.join(self.tmp, "proposals", f"{DAY.isoformat()}.json")))
         with open(os.path.join(self.tmp, "logs", "propose.log")) as fh:
             log = fh.read()
@@ -846,9 +862,38 @@ class LiveBranch(unittest.TestCase):
         self.assertNotIn("OK proposals/", log)
         for blob in (r.stdout, r.stderr, self._everything_written()):
             self.assertNotIn(self.TOKEN, blob)
+        # the flags, exactly: no tool, no MCP, no settings file but ours, text out
+        with open(os.path.join(self.saw, "argv"), "rb") as fh:
+            argv = fh.read().decode("utf-8").split("\0")[:-1]
+        repo = os.path.realpath(REPO)
+        self.assertEqual(argv[0], "-p")
+        with open(os.path.join(REPO, "nightly", "PROMPT.md"), encoding="utf-8") as fh:
+            self.assertTrue(argv[1].startswith(fh.read().rstrip("\n") + "\n\n"))   # PROMPT.md, then the digest
+        self.assertIn("B disagreements", argv[1])
+        self.assertEqual(argv[2:], ["--tools", "", "--restricted", "--strict-mcp-config",
+                                    "--settings", os.path.join(repo, "nightly", "settings.json"), "--output-format", "text"])
+        for a in argv:
+            self.assertNotIn(self.TOKEN, a)
+        # the working directory: not the repo, not under it, empty, no CLAUDE.md above it, gone after
+        with open(os.path.join(self.saw, "cwd")) as fh:
+            cwd = fh.read().strip()
+        self.assertNotEqual(cwd, repo)
+        self.assertFalse(cwd.startswith(repo + os.sep), cwd)
+        with open(os.path.join(self.saw, "ls")) as fh:
+            self.assertEqual(fh.read(), "")
+        d = os.path.dirname(cwd)
+        while True:
+            self.assertFalse(os.path.exists(os.path.join(d, "CLAUDE.md")), d)
+            if d == os.path.dirname(d):
+                break
+            d = os.path.dirname(d)
+        self.assertFalse(os.path.exists(cwd), "the empty cwd was not removed")
+        # and the night's record: that cwd, the user memory's sha, the CLI's version
+        self.assertIn("(empty); user memory ", log)
+        self.assertIn("CLAUDE.md sha256 " + hashlib.sha256(memory.encode()).hexdigest()[:12] + "; cli 9.9.9 (stub claude)", log)
 
     def test_a_hung_claude_is_one_fail_line_and_the_night_ends_clean(self):
-        stub = self._stub("sleep 30\n")
+        stub = self._stub('[ "$1" = --version ] && { echo "9.9.9 (stub claude)"; exit 0; }\nsleep 30\n')
         t = time.monotonic()
         r = self._run(stub, cap="1")
         self.assertEqual(r.returncode, 0)
@@ -860,11 +905,15 @@ class LiveBranch(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "proposals", f"{DAY.isoformat()}.json")))
 
     def test_a_failing_claude_is_one_fail_line(self):
-        stub = self._stub("echo boom >&2; exit 7\n")
-        r = self._run(stub)
+        stub = self._stub('pwd -P >"%s/cwd"; echo boom >&2; exit 7\n' % self.saw)
+        r = self._run(stub, HOME=self._home())
         self.assertEqual(r.returncode, 0)
         with open(os.path.join(self.tmp, "logs", "propose.log")) as fh:
-            self.assertIn("FAIL claude exit 7", fh.read())
+            log = fh.read()
+        self.assertIn("FAIL claude exit 7", log)
+        self.assertIn("CLAUDE.md absent; cli unknown", log)                  # no user memory; --version failed too
+        with open(os.path.join(self.saw, "cwd")) as fh:
+            self.assertFalse(os.path.exists(fh.read().strip()), "a failed night left its empty cwd behind")
         with open(os.path.join(self.tmp, "logs", f"claude-{DAY.isoformat()}.err")) as fh:
             self.assertIn("boom", fh.read())
 
@@ -968,7 +1017,11 @@ class Capped(unittest.TestCase):
         code = [l for l in src.splitlines() if not l.lstrip().startswith("#")]
         call = [l for l in code if '"$CAFFEINATE" -i' in l]
         self.assertEqual(len(call), 1)
-        self.assertIn('"$PY" -m nightly.capped "$CLAUDE_CAP_S" --', call[0])
+        # caffeinate outermost, then capped BY PATH: the call runs in an empty temp dir, where
+        # `-m nightly.capped` would not resolve
+        self.assertIn('cd "$WORK"', call[0])
+        self.assertIn('"$CAFFEINATE" -i "$PY" "$REPO/nightly/capped.py" "$CLAUDE_CAP_S" --', call[0])
+        self.assertEqual([l for l in code if "-m nightly.capped" in l], [])
         self.assertIn('CLAUDE_CAP_S="${JEVLOOP_CLAUDE_CAP_S:-2700}"', src)
         self.assertIn('[ $rc -eq 124 ] && fail "claude capped', src)
 
