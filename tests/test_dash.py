@@ -1,6 +1,6 @@
 """loop/dash.py: the health page renders from a log, and can carry no H1/H2/pair/confidence number
 because every report.<name> it uses is on an allowlist of section 1-3 functions (PREREG §8.4)."""
-import ast, contextlib, datetime, io, os, re, shutil, tempfile, unittest
+import ast, contextlib, datetime, io, math, os, re, shutil, tempfile, unittest
 from unittest import mock
 
 from fixture_prereg import pin_prereg, text as prereg_text
@@ -228,20 +228,19 @@ class Dash(unittest.TestCase):
         over = []
         self.assertEqual(dash.spend_by_day(rows + [nxt], None, over), {"20260924": 1000 * config.USD_PER_MTOK / 1e6})
         self.assertEqual(over, ["20260923"])
-        # the page. report.health's own whole-log sum is report's to guard; here a stand-in leaves the two
-        # counts out of it and answers usd None, so what is tested is the dash's own spend sections
-        real = report.health
-
-        def health(rs, *a, **k):
-            rs = [dict(r, jev=dict(r["jev"], input_tokens=None)) if r["jev"]["input_tokens"] == int(1e308) else r for r in rs]
-            return dict(real(rs, *a, **k), usd=None)
-        with mock.patch.object(report, "health", health):
-            page = dash.render(rows + [nxt], outcomes.join(rows + [nxt]), now=datetime.datetime(2026, 9, 24, 12, 0, tzinfo=datetime.timezone.utc))
+        # the page, through the real report.health: its whole-log sum is past a float's range as well, and it
+        # answers usd inf, which the whole-log tile names instead of printing "$inf" (until the evening of
+        # 2026-09-28 this test stood a stand-in answering usd None in for report.health, and a tile that
+        # tested `is not None` passed it)
+        rows += [nxt]
+        self.assertEqual(report.health(rows, outcomes.join(rows))["usd"], math.inf)
+        page = dash.render(rows, outcomes.join(rows), now=datetime.datetime(2026, 9, 24, 12, 0, tzinfo=datetime.timezone.utc))
         self.assertIn("<span class='badge crit'>1 day(s) not charted</span> 20260923: the input tokens logged that day sum past a float's range.", page)
         self.assertIn("title='20260923: input tokens summed past a float&#x27;s range, not charted'><div class='vbar' style='height:0%'>", page)
         self.assertIn("title='20260924: $0.0000 of the $0.25 tripwire'", page)                # the other day keeps its bar
         self.assertIn("<td>past range</td>", page)                                            # the per-day table
         self.assertIn('<div class="tile crit"><div class="k">spend, whole log</div><div class="v">past range</div>', page)
+        self.assertNotIn("$inf", page)                                                       # no dollar figure anywhere reads inf
 
     def test_skipped_log_lines_show_on_the_page_as_in_report_health(self):
         # the dash never passed the log's skipped lines to report.health, so its "skipped log lines"
