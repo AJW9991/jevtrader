@@ -16,12 +16,12 @@ for the loop exists yet.
 
 **Why.** `~/Projects/JEV/PROTOCOL.md` §5 forbids exactly what this repo does
 (an always-on hook that makes a model call; `jev ask` as a decision
-instrument). `PROTOCOL.md` here is the carve-out with its ten conditions. It
+instrument). `PROTOCOL.md` here is the carve-out with its eleven conditions. It
 is drafted, not in force: until the signature commit exists and the JEV
 protocol carries the one-line pointer, nothing in this repo may send and
 nothing may be loaded into launchd. `--dry` runs (step 4) are allowed now.
 
-Read the ten conditions, then fill the two fields in §5 (`In force from:` and
+Read the eleven conditions, then fill the two fields in §5 (`In force from:` and
 `Signed:`) in your editor and commit under their own message:
 
 ```bash
@@ -89,7 +89,7 @@ has a payment method and a billing line at all (JEV PROTOCOL §7 item 8 has
 wanted one for two days), and (b) the input rate is what the spend guard
 assumes: `config.USD_PER_MTOK = 0.042` per million input tokens, output free
 (docs, 2026-09-23). The loop is ~1,440 × ~600 tokens ≈ $0.04/day, ~$1.10 per
-28-day block; `DAILY_SPEND_HALT_USD = 0.25` writes `data/HALT` at ~6× that.
+28-day block; `DAILY_SPEND_HALT_USD = 0.25` writes `data/HALT` at ~5× that.
 If the rate on the page differs, say so before step 5 — the guard's constant
 is in `loop/config.py` and a change there is a `SPEC.md` change.
 
@@ -106,7 +106,7 @@ first proposal file would be a day late. One word now proves the token, the
 binary path and `--tools ""` together:
 
 ```bash
-cd ~/Projects/jev-paper-loop && CLAUDE_CODE_OAUTH_TOKEN="$(cat ~/.secondbrain-secrets/oauth_token)" caffeinate -i /opt/homebrew/bin/claude -p 'Reply with the single word OK and nothing else.' --tools "" --output-format text
+cd "$(mktemp -d)" && CLAUDE_CODE_OAUTH_TOKEN="$(cat ~/.secondbrain-secrets/oauth_token)" caffeinate -i /opt/homebrew/bin/claude -p 'Reply with the single word OK and nothing else.' --tools "" --restricted --strict-mcp-config --settings ~/Projects/jev-paper-loop/nightly/settings.json --output-format text
 ```
 
 Want `OK`. An authentication error means the token has expired: mint a
@@ -128,7 +128,7 @@ writes no ledger row. The tests mock `urllib.request.urlopen`; nothing under
 cd ~/Projects/jev-paper-loop && make test
 ```
 
-The same thing by hand (191 tests at integration, 2026-09-24):
+The same thing by hand (191 tests at integration, 2026-09-24; 320-odd by 2026-09-28, also run by CI on every push):
 
 ```bash
 cd ~/Projects/jev-paper-loop && /opt/homebrew/bin/python3 -m unittest discover -s tests -v 2>&1 | tail -3
@@ -156,8 +156,9 @@ Read it against SPEC §2: `mode` is `dry`; `absence` is `null`; `answers`
 `null`; `columns` is `{"a": null, "b": null}` (each arm `null` itself, CONTRACT
 §3 step 5);
 `state` is `SOL: liquidity …, flow …, trend …, vol …` with no digit; `rule_c`
-is one of the three; `prompt_a_sha == prompt_b_sha` and both start
-`7a85308fd126`; `spec_sha` equals `shasum -a 256 SPEC.md | cut -c1-64`;
+is one of the three; `prompt_a_sha` starts `7a85308fd126` (v1) and `prompt_b_sha` is
+CURRENT's (`b3291ca4a550` for v2, promoted 2026-09-26; they were equal while CURRENT was
+v1); `spec_sha` equals `shasum -a 256 SPEC.md | cut -c1-64`;
 `feed_age_s` is under 60; `jev.*` all `null`. Then:
 
 ```bash
@@ -240,7 +241,8 @@ second 28-day block (PREREG §8.5).
 
 **Why.** PROTOCOL.md §3.10: hand-installed, never by a script, same as the
 canary. The loop plist runs `python3 -m loop.cycle --once` every calendar
-minute at :00 (`StartCalendarInterval`, since 2026-09-26; it was
+minute at :00 (`StartCalendarInterval`, installed 2026-09-27 05:18Z on a decision of
+2026-09-26; it was
 `StartInterval 60`, a ~61 s grid that skipped ~28 minutes a day) with
 `RunAtLoad`, so the first tick — a live send — fires the moment it is
 bootstrapped; the nightly runs `nightly/propose.sh` at 03:30 local. Stop the
@@ -289,8 +291,10 @@ fourteen plists in that folder do.
 **Why.** These are `gui/` agents: they run only while you are logged in, and
 with FileVault on nothing runs between a reboot and the login screen. The
 loop tolerates gaps (an absent minute is a `gap` outcome, never a wrong row),
-but PREREG stop rule 3 excludes any day with outcome fill under 95 % — 72
-missing minutes — and three such days pause the block. Checked today:
+but PREREG stop rule 3 excludes any day with outcome fill under 95 % of its live
+rows (about 70 unfilled rows in a full day: an isolated missed minute costs 1, a hole of
+any length costs the ~15 rows before it, a sleep broken by brief wakes about one per
+wake) — and three such days pause the block. Checked today:
 FileVault is on; `pmset -g` shows `sleep 1` (held off only while something
 asserts), `displaysleep 0`; no auto-login user is set. Keep it so:
 

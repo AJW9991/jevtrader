@@ -21,7 +21,7 @@ person installs), and `HANDOFF.md` (where the last session left off).
 - The loop and the nightly run on Alex's Mac under launchd (`launchd/*.plist`, hand-installed).
   `data/` (the decision log, ledger, heartbeat, dash) and `logs/` live only there and are
   gitignored; a cloud or other checkout has code, docs, fixtures and tests, not data.
-- In a checkout without `data/`: `make test` (287 tests, offline, ~8 s) is the whole gate;
+- In a checkout without `data/`: `make test` (offline, ~9 s; CI runs it on every push) is the whole gate;
   `make dry` needs the network (three public GETs); `make report`/`make dash` need the log.
 - Nothing here sends to api.typesafe.ai except `loop/jev.py::ask`; the ledger row comes first;
   `data/HALT` stops sends; a 401/403 writes it. Never run `make run` outside the Mac.

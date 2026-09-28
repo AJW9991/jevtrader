@@ -96,5 +96,7 @@ row 531:        {"trade_id": "354979947", "product_id": "SOL-USD", "price": "114
 Only if the venue changes shape, or what `feed.py` requests changes (as the book did on
 2026-09-24). Run the commands above (all three with a fresh `T0` for a whole new set), then
 update `meta.json` (`ts_rx_epoch`, the three URLs, every `expect` value) and re-run
-`python3 -m unittest tests.test_feed tests.test_state tests.test_cycle -v`. Commit the
+`python3 -m unittest discover -s tests -p 'test_feed.py' -v` (likewise `test_state.py`, `test_cycle.py`;
+the tests import `fixture_prompts` from their own directory, so they are run by discovery, not by
+dotted name). Commit the
 changed files together.
