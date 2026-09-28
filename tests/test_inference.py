@@ -630,6 +630,21 @@ class LiveClock(unittest.TestCase):
                 self.assertIn("  open, not yet judged (a day's last t + h is not in the log): d28\n", lines)
                 self.assertEqual(lines, self._rule3(plain))                      # the stray row changes none of the lines
 
+    def test_the_refusal_names_the_last_row_it_counted_and_the_rows_stamped_after_the_clock(self):
+        # the refusal named the stray row as the log's last row, a row that already met the wait it asked for, so
+        # waiting looked done and --accept-pending, which drops the unit, looked like the way on (2026-09-28 review)
+        wait = (" counted now they would be dropped as gaps. Run again once the log has a row with ts_rx at or after"
+                " 2026-10-23T21:40:31Z, or pass --accept-pending if the log really stopped")
+        rows = self._rows(-30, 0)
+        code, out, err = self._run(rows, 10)
+        self.assertEqual((code, out), (3, ""))
+        self.assertIn("(first live row 20261023T212500Z; the log's last row is 20261023T213900Z);" + wait, err)
+        code, out, err = self._run(rows + [self._stray(rows[-1], "20261102T000000Z"), self._stray(rows[-1])], 10)
+        self.assertEqual((code, out), (3, ""))
+        self.assertIn("(first live row 20261023T212500Z; the log's last row stamped at or before the clock is 20261023T213900Z;"
+                      " 2 row(s) stamped after the clock (2026-10-23T21:40:10Z), first 20261101T000000Z, are not counted as"
+                      " reached);" + wait, err)                                  # first by its stamp, not by its place in the file
+
 
 class SealUnread(unittest.TestCase):
     """tests/fixture_prereg.py: no test may depend on what the repository's PREREG.md §11 says (its T0 line

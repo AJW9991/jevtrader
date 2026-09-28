@@ -616,8 +616,18 @@ def main(argv=None, now=None):
     if mode == "sample":                                    # before any number: a pending unit would be dropped as a gap
         pend = pending_units(rows, scope, outs, anchor, excluded, n_blocks, cap)
         if pend and not args.accept_pending:
+            seen, after = reached(rows, cap)
+            stamp = lambda r: outcomes.ts_epoch(r["ts_rx"])
+            top = max(seen, key=stamp, default=None)        # the row pending_units took as the log's last
+            if not after:                                   # every row is in `seen`, the unit's own among them
+                got = f"the log's last row is {top['tick_id']}"
+            else:                                           # the live log only: the rows its real clock left out, named
+                got = ((f"the log's last row stamped at or before the clock is {top['tick_id']}" if top
+                        else "the log has no row stamped at or before the clock")
+                       + f"; {len(after)} row(s) stamped after the clock ({now:%Y-%m-%dT%H:%M:%SZ}), first"
+                         f" {min(after, key=stamp)['tick_id']}, are not counted as reached")
             sys.stderr.write(f"inference: refusing to run: {len(pend)} H2 unit(s) wait for a t + h the log has not reached"
-                             f" (first live row {pend[0][0]}; the log's last row is {rows[-1]['tick_id']}); counted now they would"
+                             f" (first live row {pend[0][0]}; {got}); counted now they would"
                              f" be dropped as gaps. Run again once the log has a row with ts_rx at or after {_iso_second(max(u for _, u in pend))},"
                              " or pass --accept-pending if the log really stopped (PREREG §5: the join is over the whole log)\n")
             return EXIT_NOT_YET
