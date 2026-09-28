@@ -102,7 +102,7 @@ class EmptyAndOneBlockSeries(unittest.TestCase):
 class Exclusions(unittest.TestCase):
     def _read(self, day):
         p = _path(f"ex-{day}.tsv")
-        with open(p, "w") as fh:
+        with open(p, "w", encoding="utf-8") as fh:
             fh.write(f"day\tfill%\tjev-err%\treason\n{day}\t50.0%\t0.0%\tx\n")
         return inference.read_exclusions(p)
 
@@ -331,7 +331,7 @@ class EmptyLog(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.log = _path("empty.jsonl")
-        open(cls.log, "w").close()
+        open(cls.log, "w", encoding="utf-8").close()
         cls.none = _exclusions(_path("none-empty.tsv"))
 
     def _run(self):
@@ -375,7 +375,7 @@ class MainGuards(unittest.TestCase):
     # main: with PREREG §11 unsealed and no --t0 there is no T0, and that is an argument error, not a traceback
     def test_an_unsealed_prereg_and_no_t0_is_an_argument_error(self):
         unsealed = _path("PREREG-unsealed.md")
-        with open(unsealed, "w") as fh:
+        with open(unsealed, "w", encoding="utf-8") as fh:
             fh.write("# a PREREG with no T0 line\n")
         code, out, err = _run(["--pre-t0", "--log", self.small, "--prereg", unsealed, "--resamples", "20", "--exclusions", self.none])
         self.assertEqual((code, out), (2, ""))
@@ -421,7 +421,7 @@ class MainGuards(unittest.TestCase):
         code, out, err = _run(["--pre-t0", "--log", log, "--t0", T0S, "--resamples", "20", "--exclusions", self.none])
         self.assertEqual(code, 0, err)
         self.assertIn("rows in scope 50\n", out)
-        self.assertIn(" over 50 ticks (dropped: gap 0, missing noul 0)", out)
+        self.assertIn(" over 50 rows (dropped: gap 0, missing noul 0)", out)
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@ FIX = os.path.join(config.REPO, "fixtures")
 
 
 def _load(n):
-    with open(os.path.join(FIX, n)) as fh:
+    with open(os.path.join(FIX, n), encoding="utf-8") as fh:
         return json.load(fh)
 
 
@@ -77,7 +77,7 @@ class CycleMutantsTest(unittest.TestCase):
         self.enterContext(mock.patch.object(config, "JEV_URL", URL))
         self.enterContext(mock.patch.dict(os.environ, {"TYPESAFE_API_KEY_LOOP": KEY}))
         protocol = os.path.join(self.tmp, "PROTOCOL.md")
-        with open(protocol, "w") as fh:
+        with open(protocol, "w", encoding="utf-8") as fh:
             fh.write("In force from: `2026-09-24`  Signed: `test`\n")
         self.enterContext(mock.patch.object(config, "PROTOCOL", protocol))
         self.prompts_root = pin_v1(self)                      # never the live prompts/
@@ -112,7 +112,7 @@ class CycleMutantsTest(unittest.TestCase):
 
     def write_log(self, rows):
         os.makedirs(self.data, exist_ok=True)
-        with open(config.DECISIONS, "w") as fh:
+        with open(config.DECISIONS, "w", encoding="utf-8") as fh:
             fh.writelines(json.dumps(r) + "\n" for r in rows)
 
     def forever(self, argv, on_sleep=None, stop_at=2):
@@ -135,7 +135,7 @@ class CycleMutantsTest(unittest.TestCase):
         """--dry --once started `second` s into 02:28 with data/heartbeat = `heartbeat`;
         returns (sleeps, the row's tick_id)."""
         os.makedirs(self.data, exist_ok=True)
-        with open(config.HEARTBEAT, "w") as fh:
+        with open(config.HEARTBEAT, "w", encoding="utf-8") as fh:
             fh.write(heartbeat + "\n")
         clock = [NOW - 49 + second]
 
@@ -175,7 +175,7 @@ class CycleMutantsTest(unittest.TestCase):
                 armed = []
                 with mock.patch.object(config, "DATA", self.data if data is None else os.path.join(self.tmp, "a-file")):
                     if data:
-                        open(config.DATA, "w").close()        # a FILE where data/ goes: makedirs raises
+                        open(config.DATA, "w", encoding="utf-8").close()        # a FILE where data/ goes: makedirs raises
                     code = self.forever(["--dry", "--forever"], on_sleep=lambda: armed.append(signal.alarm(0)))
                 self.assertEqual(code, 0)
                 self.assertEqual(armed, [0, 0])                # the wait before the tick, and the one after it
@@ -205,7 +205,7 @@ class CycleMutantsTest(unittest.TestCase):
         first = json.dumps(_row(DAY + "T000000Z", 1000)) + "\n"
         last = json.dumps(_row(DAY + "T000100Z", 1000)) + "\n"
         os.makedirs(self.data)
-        with open(config.DECISIONS, "w") as fh:
+        with open(config.DECISIONS, "w", encoding="utf-8") as fh:
             fh.write(yesterday + first + last)
         with mock.patch.object(cycle, "TAIL_BYTES", len(last) + 10):   # the cut lands inside today's first row
             self.assertEqual(cycle._tail(config.DECISIONS, cycle.TAIL_BYTES), (last.encode(), True))
@@ -341,7 +341,7 @@ class CycleMutantsTest(unittest.TestCase):
 
     # SPEC §13.6: exit 0 but 3 and 2 -- dry or live; module docstring: no row is owed before data/ exists.
     def test_an_uncreatable_data_dir_exits_0_and_reports_only_that(self):
-        open(self.data, "w").close()                           # a FILE where data/ goes
+        open(self.data, "w", encoding="utf-8").close()                           # a FILE where data/ goes
         for argv in (["--dry", "--once"], ["--once"]):
             with self.subTest(argv=argv):
                 self.assertEqual(cycle.main(argv), 0)
@@ -426,7 +426,7 @@ class CycleMutantsTest(unittest.TestCase):
         with mock.patch("os.fsync", side_effect=fsync), self.assertRaises(cycle._Stop):
             cycle.write_row(cycle.new_row(TS_RX, "dry"))
         self.assertEqual(self.only_row()["tick_id"], TICK)
-        with open(config.HEARTBEAT) as fh:
+        with open(config.HEARTBEAT, encoding="utf-8") as fh:
             self.assertEqual(fh.read().strip(), TS_RX)
 
     # CONTRACT §3: --forever runs until SIGTERM -- one landing inside a write that then fails ends it too.

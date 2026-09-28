@@ -52,7 +52,7 @@ class PolicyTableHeld(unittest.TestCase):
 
     def _proposal(self, name, cands):
         p = os.path.join(self.indir, name)
-        with open(p, "w") as fh:
+        with open(p, "w", encoding="utf-8") as fh:
             json.dump({"candidates": cands}, fh)
         return p
 
@@ -124,7 +124,7 @@ class PolicyTableHeld(unittest.TestCase):
         results = policy_table.run(self.qs)
         self.assertEqual(self.ask.call_count, 1)
         self.assertEqual({r["error"] for r in results}, {"http-4xx"})
-        with open(self.halt) as fh:
+        with open(self.halt, encoding="utf-8") as fh:
             reason = fh.read()
         self.assertIn("key rejected", reason)
         self.assertIn("403", reason)
@@ -145,7 +145,7 @@ class PolicyTableHeld(unittest.TestCase):
                                  {"candidates": [None]}, {"candidates": [5]}, [CAND])):
             with self.subTest(doc=doc):
                 p = os.path.join(self.indir, f"bad{i}.json")
-                with open(p, "w") as fh:
+                with open(p, "w", encoding="utf-8") as fh:
                     json.dump(doc, fh)
                 rc, _, err = self._main(p)
                 self.assertEqual(rc, 1)
@@ -214,7 +214,7 @@ class PolicyTableHeld(unittest.TestCase):
         rc, out, _ = self._main(self.prop)
         self.assertEqual(rc, 0)
         md = os.path.join(self.proposals, "2026-09-22.md")
-        with open(md) as fh:
+        with open(md, encoding="utf-8") as fh:
             self.assertEqual(fh.readline(), "# policy table 2026-09-22\n")
         self.assertEqual(os.listdir(self.indir), ["2026-09-22.json"])
         self.assertTrue(out.startswith(md + "\t81/81 answered"), out)
@@ -237,7 +237,7 @@ class PolicyTableHeld(unittest.TestCase):
         rc, stdout, _ = self._main(self.prop, "--out", out)
         self.assertEqual(rc, 4)
         self.assertEqual(stdout, f"{out}\t80/81 answered INCOMPLETE\n")
-        with open(out) as fh:
+        with open(out, encoding="utf-8") as fh:
             self.assertIn("requests: 81, answered: 80, errors: 1 -- INCOMPLETE", fh.read())
 
 
@@ -265,7 +265,7 @@ class CappedHeld(unittest.TestCase):
         # module docstring: 127 when the command cannot be started
         tmp = self.enterContext(tempfile.TemporaryDirectory())
         path = os.path.join(tmp, "not-executable")
-        with open(path, "w") as fh:
+        with open(path, "w", encoding="utf-8") as fh:
             fh.write("#!/bin/sh\nexit 0\n")
         os.chmod(path, 0o644)
         rc, err = self._main("5", "--", path)
@@ -279,7 +279,7 @@ class CappedHeld(unittest.TestCase):
         script = "trap 'sleep 0.1; echo terminated > \"$0\"; exit 0' TERM; while :; do sleep 0.05; done"
         rc, err = self._main("0.4", "--", "sh", "-c", script, flag)
         self.assertEqual(rc, capped.EXIT_CAPPED)
-        with open(flag) as fh:                                               # its SIGTERM cleanup ran to the end
+        with open(flag, encoding="utf-8") as fh:                                               # its SIGTERM cleanup ran to the end
             self.assertEqual(fh.read(), "terminated\n")
 
     def test_a_child_that_ignores_sigterm_is_killed_after_the_grace(self):
@@ -291,7 +291,7 @@ class CappedHeld(unittest.TestCase):
 
         def reap():
             try:
-                with open(pidfile) as fh:
+                with open(pidfile, encoding="utf-8") as fh:
                     os.kill(int(fh.read()), signal.SIGKILL)
             except (OSError, ValueError):
                 pass
@@ -299,7 +299,7 @@ class CappedHeld(unittest.TestCase):
         r = subprocess.run([sys.executable, "-c", code, "0.4", "--", "sh", "-c", script, pidfile],
                            cwd=REPO, capture_output=True, text=True, timeout=10)
         self.assertEqual(r.returncode, capped.EXIT_CAPPED, r.stderr)
-        with open(pidfile) as fh:                                            # the child was up, ignoring TERM, when the cap fired
+        with open(pidfile, encoding="utf-8") as fh:                                            # the child was up, ignoring TERM, when the cap fired
             pid = int(fh.read())
         with self.assertRaises(ProcessLookupError):
             os.kill(pid, 0)
@@ -319,7 +319,7 @@ class PromoteHeld(unittest.TestCase):
         self.root = os.path.join(self.tmp, "prompts")
         os.makedirs(self.root)
         shutil.copy(os.path.join(REPO, "prompts", "v1.json"), self.root)     # the frozen v1, never the live CURRENT
-        with open(os.path.join(self.root, "CURRENT"), "w") as fh:
+        with open(os.path.join(self.root, "CURRENT"), "w", encoding="utf-8") as fh:
             fh.write("v1\n")
         self.v1 = prompts.load("v1", self.root)
         self.prop = os.path.join(self.tmp, "2026-09-22.json")
@@ -338,11 +338,11 @@ class PromoteHeld(unittest.TestCase):
         self.enterContext(mock.patch.object(self.promote, "_attended", return_value=True))
 
     def _write_prop(self, cands):
-        with open(self.prop, "w") as fh:
+        with open(self.prop, "w", encoding="utf-8") as fh:
             json.dump({"candidates": cands}, fh)
 
     def _table(self, body):
-        with open(self.prop[:-5] + ".md", "w") as fh:
+        with open(self.prop[:-5] + ".md", "w", encoding="utf-8") as fh:
             fh.write(body)
 
     def _sha_line(self):
@@ -453,7 +453,7 @@ class PromoteHeld(unittest.TestCase):
         # CONTRACT §5: promote copies candidate k; a proposal with no list has none, and nothing is written
         for doc in ({}, {"candidates": None}, {"candidates": {"0": CAND}}, {"candidates": "abc"}, {"candidates": 5}):
             with self.subTest(doc=doc):
-                with open(self.prop, "w") as fh:
+                with open(self.prop, "w", encoding="utf-8") as fh:
                     json.dump(doc, fh)
                 rc, _, err = self._run(self.prop, "0", "--prompts", self.root)
                 self.assertEqual(rc, 1)
@@ -466,14 +466,14 @@ class PromoteHeld(unittest.TestCase):
 
         def racing(root):
             v = real(root)
-            with open(os.path.join(root, v + ".json"), "w") as fh:
+            with open(os.path.join(root, v + ".json"), "w", encoding="utf-8") as fh:
                 fh.write("written by another promote\n")
             return v
         with mock.patch.object(self.promote, "next_version", side_effect=racing):
             rc, _, err = self._run(self.prop, "0", "--prompts", self.root)
         self.assertEqual(rc, 1)
         self.assertIn("exists", err)
-        with open(os.path.join(self.root, "v2.json")) as fh:
+        with open(os.path.join(self.root, "v2.json"), encoding="utf-8") as fh:
             self.assertEqual(fh.read(), "written by another promote\n")
         self.assertEqual(prompts.current(self.root), "v1")
 
@@ -488,10 +488,10 @@ class PromoteUnfaked(unittest.TestCase):
         self.root = os.path.join(self.tmp, "prompts")
         os.makedirs(self.root)
         shutil.copy(os.path.join(REPO, "prompts", "v1.json"), self.root)     # the frozen v1, never the live CURRENT
-        with open(os.path.join(self.root, "CURRENT"), "w") as fh:
+        with open(os.path.join(self.root, "CURRENT"), "w", encoding="utf-8") as fh:
             fh.write("v1\n")
         self.prop = os.path.join(self.tmp, "2026-09-22.json")
-        with open(self.prop, "w") as fh:
+        with open(self.prop, "w", encoding="utf-8") as fh:
             json.dump({"candidates": [CAND]}, fh)
         self.promote = _load_promote()
 
@@ -508,9 +508,9 @@ class PromoteUnfaked(unittest.TestCase):
         # docstring: a person runs this at a terminal; it refuses without a tty
         master, slave = os.openpty()
         self.addCleanup(os.close, master)
-        with open(slave, closefd=True) as tty, mock.patch.object(self.promote.sys, "stdin", tty):
+        with open(slave, closefd=True, encoding="utf-8") as tty, mock.patch.object(self.promote.sys, "stdin", tty):
             self.assertIs(self.promote._attended(), True)
-        with open(os.devnull) as fh, mock.patch.object(self.promote.sys, "stdin", fh):
+        with open(os.devnull, encoding="utf-8") as fh, mock.patch.object(self.promote.sys, "stdin", fh):
             self.assertIs(self.promote._attended(), False)
 
     def test_clean_tree_and_sealed_read_a_real_repository(self):
@@ -533,7 +533,7 @@ class PromoteUnfaked(unittest.TestCase):
         self.assertIs(self.promote.sealed(repo), False)
         git("tag", "prereg-v1")
         self.assertIs(self.promote.sealed(repo), True)
-        with open(os.path.join(repo, "stray"), "w") as fh:
+        with open(os.path.join(repo, "stray"), "w", encoding="utf-8") as fh:
             fh.write("x\n")
         self.assertIs(self.promote.clean_tree(repo), False)
 

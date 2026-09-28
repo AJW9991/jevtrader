@@ -57,7 +57,7 @@ class _Isolated(unittest.TestCase):
         root = os.path.join(self.tmp, name)
         os.makedirs(root)
         for f, text in files.items():
-            with open(os.path.join(root, f), "w") as fh:
+            with open(os.path.join(root, f), "w", encoding="utf-8") as fh:
                 fh.write(text)
         return root
 
@@ -71,12 +71,13 @@ class StatusClocks(_Isolated):
                          f"STOPPED? last tick 3 min ago ({hb}); a healthy loop is under 180 s")
         self.assertIn("STOPPED? last tick 31 min ago", status._age_line(hb, _dt("2026-09-23T11:12")))
 
-    def test_the_nightly_slot_turns_at_10z(self):
-        # status.py NIGHTLY_DONE_UTC_H: the nightly runs 08:30Z or 09:30Z; by 10Z yesterday's proposal exists, before that the day before's
+    def test_the_nightly_slot_turns_at_11z(self):
+        # status.py NIGHTLY_DONE_UTC_H: the nightly starts 08:30Z (CDT) or 09:30Z (CST) and its call may run 45 min,
+        # so by 11Z yesterday's proposal exists; before that the day before's is the latest one expected
         props = self._props("p", {"2026-09-22.md": "x\n"})
         no_log = os.path.join(self.tmp, "no.log")
-        self.assertNotIn("MISSING", status._nightly_lines(props, no_log, _dt("2026-09-24T09:59"))[0])
-        self.assertIn("MISSING: no proposal for 2026-09-23 yet", status._nightly_lines(props, no_log, _dt("2026-09-24T10:00"))[0])
+        self.assertNotIn("MISSING", status._nightly_lines(props, no_log, _dt("2026-09-24T10:59"))[0])
+        self.assertIn("MISSING: no proposal for 2026-09-23 yet", status._nightly_lines(props, no_log, _dt("2026-09-24T11:00"))[0])
 
     def test_the_latest_proposal_is_a_bare_date_from_tables_or_json_alone(self):
         # HANDOFF "Tooling": make status names the newest proposal; *.json is gitignored, so tables alone (or a json alone) count
@@ -91,7 +92,7 @@ class StatusClocks(_Isolated):
     def test_only_the_last_three_lines_of_propose_log_are_shown(self):
         # HANDOFF "Tooling": make status shows the tail of propose.log (status.LOG_TAIL = 3 lines), not the whole file
         plog = os.path.join(self.tmp, "propose.log")
-        with open(plog, "w") as fh:
+        with open(plog, "w", encoding="utf-8") as fh:
             fh.write("".join(f"line {i}\n" for i in range(6)))
         out = status._nightly_lines(self._props("p", {"2026-09-22.md": "x\n"}), plog, _dt("2026-09-23T12:00"))
         self.assertEqual(out[1:], ["  line 3", "  line 4", "  line 5"])
@@ -114,7 +115,7 @@ class StatusClocks(_Isolated):
     def test_halt_line_reads_config_halt_when_called(self):
         # status.py docstring: the screen reads data/HALT (config.HALT, resolved at call time, as dash.heartbeat resolves config.HEARTBEAT)
         self.assertEqual(status._halt_line(), "HALT absent: sends allowed")
-        with open(config.HALT, "w") as fh:
+        with open(config.HALT, "w", encoding="utf-8") as fh:
             fh.write("prereg: 3 bad days\n")
         self.assertIn(": prereg: 3 bad days -- nothing is sent", status._halt_line())
 
@@ -198,7 +199,7 @@ class DashPage(_Isolated):
 
     def test_the_hourly_strip_has_24_hours_and_a_short_hour_is_pale_not_empty(self):
         # dash._bin_hour docstring: 1-29 priced ticks is bin 0 (a pale cell), 0 is empty; the strip is one cell per UTC hour
-        strip = _between(self._render(FIX[:10]), "<div class='strip'>", "<div class='legend'>")
+        strip = _between(self._render(FIX[:10], now=_dt("2026-09-23T12:00")), "<div class='strip'>", "<div class='legend'>")   # the day itself: one line
         self.assertEqual(re.findall(r"<div class='hr'>(\d+)</div>", strip), [f"{h:02d}" for h in range(24)])
         self.assertEqual(strip.count("<div class='cell"), 24)
         self.assertIn("<div class='cell b0' title='2026-09-23 10:00Z: 10/60 priced ticks'></div>", strip)

@@ -26,6 +26,7 @@ def _row(s, mid, absence=None, mode="live"):
     """A row at T0+s seconds, tick_id its minute."""
     d = T0 + datetime.timedelta(seconds=s)
     return {"v": 1, "tick_id": d.strftime("%Y%m%dT%H%M00Z"), "ts_rx": _iso(s), "mode": mode,
+            "venue": "coinbase", "product": "SOL-USD", "cadence_s": 60, "horizon_s": 900,   # outcomes.WRITER_KEYS: every row has them
             "mid": mid, "absence": absence}
 
 

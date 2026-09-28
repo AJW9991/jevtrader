@@ -16,7 +16,7 @@ FIX = os.path.join(config.REPO, "fixtures")
 
 
 def _load(name):
-    with open(os.path.join(FIX, name)) as fh:
+    with open(os.path.join(FIX, name), encoding="utf-8") as fh:
         return json.load(fh)
 
 
@@ -209,7 +209,7 @@ class JevTest(unittest.TestCase):
         self.enterContext(mock.patch.object(config, "JEV_URL", URL))
         self.enterContext(mock.patch.dict(os.environ, {"TYPESAFE_API_KEY_LOOP": KEY}))
         self.protocol = os.path.join(self.tmp, "PROTOCOL.md")
-        with open(self.protocol, "w") as fh:
+        with open(self.protocol, "w", encoding="utf-8") as fh:
             fh.write("# PROTOCOL\n\nIn force from: `2026-09-24`  Signed: `test`\n")
         self.enterContext(mock.patch.object(config, "PROTOCOL", self.protocol))
         self.sleeps = []
@@ -270,7 +270,7 @@ class JevTest(unittest.TestCase):
     def test_the_ledger_fsync_finds_the_row_already_in_the_file(self):
         at_fsync, real = [], os.fsync
         def fsync(fd):
-            with open(self.sends) as fh:
+            with open(self.sends, encoding="utf-8") as fh:
                 at_fsync.append(fh.read())
             return real(fd)
         with mock.patch("os.fsync", side_effect=fsync):
