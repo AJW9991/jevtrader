@@ -61,22 +61,27 @@ def _day_field(line):
     and is returned whole, so the caller refuses it. So is a tab line that is not the header's four
     fields (tabs after a reason are ignored; the reason may be empty), or whose fill% or jev-err% is
     not a number (n/a, as the report prints an undefined share, and 0/0 count), or whose reason begins
-    with one: a tab typed inside the day ('d1<TAB>6<TAB>80.0<TAB>0.0 ...') shifts every column right,
-    so it makes five fields, or, with the reason left out or typed after a space, four whose last
-    begins with the jev-err%. A reason that itself begins with a number ('3 h asleep') is refused
-    too and can be reworded. Two typos cannot be caught: in the two-space form 'd1  6  80.0 ...'
-    (meant d16) reads as d01, because a reason may itself hold two spaces; and a tab typed inside the
-    day of a line that also leaves out its jev-err% ('d1<TAB>6<TAB>80.0<TAB>asleep') is a well-formed
-    d01 line. make status prints the parsed days every morning, and the day-28 output recomputes stop
-    rule 3 beside them, so such a line shows as a listed day the rule judged fine."""
+    with one that is not run into a letter (_leads_with_value): a tab typed inside the day
+    ('d1<TAB>6<TAB>80.0<TAB>0.0 ...') shifts every column right, so it makes five fields, or, with the
+    reason left out or typed after a space, or after punctuation with or without a space ('0.0',
+    '0.3%. Mac', '0.0.', '0.3%, Mac', '0.0-Mac', '0.3%/Mac', '0.0,Mac', '0.0—Mac'), four whose last
+    begins with the jev-err%. A reason that itself begins with a number standing apart ('3 h asleep',
+    '401 from Jev', '3-hour outage', '1:30 feed down', '24/7') is refused too and can be reworded; one
+    whose number runs into a letter ('3h asleep', '1.5h', '2nd night') is taken. Three typos cannot be
+    caught: in the two-space form 'd1  6  80.0 ...' (meant d16) reads as d01, because a reason may
+    itself hold two spaces; a tab typed inside the day of a line that also leaves out its fill% or
+    jev-err% ('d1<TAB>6<TAB>80.0<TAB>asleep') is a well-formed d01 line; and so is one whose jev-err%
+    has no % and runs into the reason with nothing between, so that a number meets a letter
+    ('d1<TAB>6<TAB>80.0<TAB>0.0Mac asleep'), as in the reason '3h asleep'. make status prints the
+    parsed days every morning, and the day-28 output recomputes stop rule 3 beside them, so such a
+    line shows as a listed day the rule judged fine."""
     if "\t" in line:
         fields = line.split("\t")
         if len(fields) > len(HEADER) and fields[3].strip() and not "".join(fields[4:]).strip():
             fields = fields[:4]                        # tabs typed after the reason
         if len(fields) != len(HEADER):
             return line.strip(), TAB_FORM
-        reason = fields[3].split()
-        if not (_value(fields[1]) and _value(fields[2])) or (reason and _value(reason[0])):
+        if not (_value(fields[1]) and _value(fields[2])) or _leads_with_value(fields[3]):
             return line.strip(), TAB_FORM
         return fields[0].strip(), ""
     parts = re.split(r" {2,}", line.strip(), maxsplit=1)
@@ -93,6 +98,22 @@ def _value(s):
     line puts a day's fill), or typed with a comma for the point, a space before the %, or a trailing
     ',', ';' or ':'."""
     return bool(_VALUE.fullmatch(s.strip().rstrip(",;:")))
+
+
+_LEAD = re.compile(r"[0-9]+(?:[.,][0-9]+)*|[.,][0-9]+|n/a", re.ASCII | re.IGNORECASE)
+
+
+def _leads_with_value(reason):
+    """Whether the reason, stripped, begins with a number (ASCII digits with any '.' or ',' points
+    between them, '0.3', '94,2', '1.5.2', or one point before them, '.5') or with 'n/a' in any case,
+    and the character after it is not one str.isalnum takes (a letter, or a digit or numeral of any
+    script): the end, a space of any kind, '%', '.', ',', ';', ':', '-', '/', '—', '(' and so on.
+    So a jev-err% run into the reason by a typo is caught ('0.0', '0.3%. Mac', '0.0-Mac'), and so is
+    '401 from Jev'; '3h asleep', '1.5h' and 'n/about' are words and are not. The number is read
+    whole before the next character is looked at, so '1.5h' is not '1' followed by '.'."""
+    r = reason.strip()
+    m = _LEAD.match(r)
+    return bool(m) and not r[m.end():m.end() + 1].isalnum()
 
 
 def status_line(path):

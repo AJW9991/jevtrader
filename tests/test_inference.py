@@ -251,6 +251,40 @@ class DaysAndExclusions(unittest.TestCase):
             fh.write("day  fill%  jev-err%  reason\nd1  6  80.0  0.0  two spaces\n")   # the two-space typo it cannot catch
         self.assertEqual(exclusions.read_exclusions(p)[0], {1})
 
+    def test_a_tab_typed_inside_the_day_is_refused_when_the_reason_follows_the_jev_err_after_punctuation(self):
+        # the reason's first word was refused only when it was a whole value, so a tab typed inside the day was
+        # still read as d01, silently, when the reason followed the jev-err% after a period or after punctuation
+        # with no space ('d1<TAB>6<TAB>94.2%<TAB>0.3%/Mac asleep'), while the line meant was refused (2026-09-28,
+        # round-4 checker). A reason is refused when it begins with a number not run into a letter
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        p = os.path.join(tmp, "exclusions.tsv")
+        for bad in ("d1\t6\t94.2%\t0.3%. Mac asleep", "d1\t6\t80.0\t0.0.", "d1\t6\t80.0\t0.0-Mac asleep",
+                    "d1\t6\t94.2%\t0.3%/Mac asleep", "d1\t6\t80.0\t0.0,Mac asleep", "d1\t6\t80.0\t0.0\u2014Mac asleep",
+                    "d1\t6\t80.0\t0.0:Mac", "d1\t6\t80.0\t0.0;Mac", "d1\t6\t94.2%\t0.3%Mac asleep", "d1\t6\t80.0\t0,3.",
+                    "d1\t6\t80.0\t.3-Mac", "d1\t6\tn/a\tn/a.", "d1\t6\t80.0\t0.0 Mac", "d1\t6\t80.0\t0.0\u00a0Mac",
+                    "d1\t6\t80.0\t0.0-Mac\t", "d1\t6\t80.0\t 0.0(Mac)", "d16\t80.0\t0.0\t3-hour outage",
+                    "d16\t80.0\t0.0\t1:30 feed down", "d16\t80.0\t0.0\t24/7", "d16\t80.0\t0.0\t1.5.2 update"):
+            with open(p, "w", encoding="utf-8") as fh:              # the last four: the cost, a reason to reword
+                fh.write("day\tfill%\tjev-err%\treason\n" + bad + "\n")
+            with self.assertRaises(ValueError, msg=repr(bad)) as cm:
+                exclusions.read_exclusions(p)
+            self.assertEqual(str(cm.exception), f"{p}:2: day {bad.strip()!r} is not d01..d28; {exclusions.TAB_FORM} "
+                                                f"(the line: {bad!r})")
+            self.assertTrue(exclusions.status_line(p).startswith(f"exclusions: REFUSED, fix before day 28: {p}:2: day "), bad)
+        # a number run into a letter is a word: the whole number is read first, so '1.5h' is not '1' and '.'
+        for good in ("d16\t80.0\t0.0\t3h asleep", "d16\t80.0\t0.0\t1.5h asleep", "d16\t80.0\t0.0\t2nd night",
+                     "d16\t80.0\t0.0\t0,5h", "d16\t80.0\t0.0\t.5h", "d16\t80.0\t0.0\tn/about", "d16\t80.0\t0.0\t3été",
+                     "d16\t80.0\t0.0\tMac asleep 0.3%.", "d16\t80.0\t0.0\t-0.3 below the line"):
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write("day\tfill%\tjev-err%\treason\n" + good + "\n")
+            self.assertEqual(exclusions.read_exclusions(p), ({16}, [good]), repr(good))
+        # what it cannot catch, as the docstring says: the fill% or jev-err% left out, or a jev-err% without a %
+        # run into the reason with nothing between, so that a number meets a letter (a reason may be '3h asleep')
+        for gap in ("d1\t6\t80.0\tasleep", "d1\t6\t0.0\tMac asleep", "d1\t6\t80.0\t0.0Mac asleep", "d1\t6\t80.0\t0.03h asleep"):
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write("day\tfill%\tjev-err%\treason\n" + gap + "\n")
+            self.assertEqual(exclusions.read_exclusions(p)[0], {1}, repr(gap))
+
 
 class Guard(unittest.TestCase):
     @classmethod
