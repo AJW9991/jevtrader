@@ -167,6 +167,32 @@ class ReadersDiff(unittest.TestCase):
                 self.assertEqual(os.listdir(tmpdir), [])
                 self.assertIs(signal.getsignal(sig), unguarded)          # the handler is put back, whatever it was
 
+    def test_a_signal_the_caller_ignores_stays_ignored(self):
+        # under nohup (SIGHUP) or `trap '' TERM` the signal is set to SIG_IGN before the tool starts; one
+        # sent mid-probe must not stop it (it did from 152cf59 on: exit 129, no report), and the probes it
+        # starts inherit the ignore (a caught signal is reset to the default in a child at exec)
+        for sig in (signal.SIGHUP, signal.SIGTERM):
+            with self.subTest(signal=sig.name):
+                mod = self._module()
+                tmpdir = tempfile.mkdtemp()
+                self.addCleanup(shutil.rmtree, tmpdir, ignore_errors=True)
+                self.addCleanup(signal.signal, sig, signal.signal(sig, signal.SIG_IGN))
+                real, seen = mod.read_with, []
+
+                def hung_up(tree, log, sig=sig):
+                    seen.append(signal.getsignal(sig))                  # what the probe started now inherits
+                    if seen[-1] is not signal.SIG_DFL:                  # never to the default action: it would end the run
+                        os.kill(os.getpid(), sig)
+                    return real(tree, log)
+                out = io.StringIO()
+                with mock.patch.object(mod, "read_with", hung_up), mock.patch.object(mod.tempfile, "tempdir", tmpdir), \
+                        contextlib.redirect_stdout(out):
+                    self.assertEqual(mod.main([REPO, REPO, "--log", self.log]), 0)
+                self.assertEqual(seen, [signal.SIG_IGN, signal.SIG_IGN])
+                self.assertIn("ticks whose joined outcome differs old vs new: 0\n", out.getvalue())   # the whole report
+                self.assertEqual(os.listdir(tmpdir), [])
+                self.assertIs(signal.getsignal(sig), signal.SIG_IGN)
+
     def test_a_copy_that_cannot_be_written_is_a_message(self):
         mod = self._module()
         real_open = open

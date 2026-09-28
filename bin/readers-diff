@@ -96,7 +96,10 @@ def main(argv=None):
         return 2
     def _stop(signum, frame):                               # a SIGTERM or SIGHUP mid-probe: unwind, so the copy
         raise SystemExit(128 + signum)                      # of the decision log is removed below
-    old = {s: signal.signal(s, _stop) for s in (signal.SIGTERM, signal.SIGHUP)}
+    old = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGHUP)}
+    caught = [s for s, h in old.items() if h is not signal.SIG_IGN]   # one the caller ignores (nohup, trap '') stays
+    for s in caught:                                                  # ignored, here and in the probes it starts
+        signal.signal(s, _stop)
     try:
         copy = os.path.join(snap, "decisions.jsonl")
         try:
@@ -113,8 +116,8 @@ def main(argv=None):
                 return 2
     finally:
         shutil.rmtree(snap, ignore_errors=True)
-        for s, h in old.items():
-            signal.signal(s, h)
+        for s in caught:
+            signal.signal(s, old[s])
     sys.stdout.write(f"log {args.log} ({len(data)} bytes, one copy read by both): read by old {os.path.abspath(args.old)}"
                      f" and new {os.path.abspath(args.new)}\n")
     sys.stdout.write("\n".join(lines(read["old"], read["new"])) + "\n")
