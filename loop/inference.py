@@ -192,7 +192,7 @@ def h2(rows, outs, anchor, excluded=(), resamples=RESAMPLES, n_blocks=BLOCKS_PER
     """PREREG §5 on the kept days' live rows only: the units (report.h2_units; blocks nest in days,
     so they are the units of every live row with the excluded days' units removed), the statistic
     and its bootstrap, and the descriptive side numbers (report._h2_stats) on the kept units and on
-    every kept live tick with an outcome."""
+    every kept live row with an outcome (a second decision in a minute shares its outcome)."""
     live = sorted((r for r in rows if report._live(r) and kept_tick(r["tick_id"], anchor, excluded, n_blocks)),
                   key=lambda r: r["tick_id"])
     units, drop, firsts = report.h2_units(live, outs, anchor)
@@ -234,8 +234,8 @@ def _rv(s, what="r"):
 
 
 def side_lines(h):
-    """PREREG §5's numbers beside the statistic, on the kept units and every kept live tick: all
-    descriptive, never claimed (§6). Spearman rho; r and rho on every tick (overlapping horizons);
+    """PREREG §5's numbers beside the statistic, on the kept units and every kept live row: all
+    descriptive, never claimed (§6). Spearman rho; r and rho on every row (overlapping horizons);
     Brier of up15 and down15 against the base rate's; the measured-tail counts; the `trend` word as
     a no-model comparator (+1 pumping, 0 flat, -1 dumping)."""
     su, se = h["side_units"], h["side_every"]
@@ -258,20 +258,24 @@ def side_lines(h):
     return [f"  descriptive (PREREG §5, never claimed): Spearman rho {_rv(su, 'rho')} over the {su['n']} units;"
             f" every kept live row (overlapping horizons; a second decision in a minute shares its outcome): r {_rv(se)}, rho {_rv(se, 'rho')} over {se['n']} rows"
             f" (dropped: gap {de.get('gap', 0)}, missing noul {de.get('noul', 0)})",
-            f"  descriptive: Brier on the units {brier(su)}; on every tick {brier(se)}",
-            f"  descriptive: measured tails (>= {report.NOUL_HIGH:g} / < {report.NOUL_LOW:g}) on the units {tails(su)}; on every tick {tails(se)}",
-            f"  descriptive: the trend word (no model): units {word(su)}; every tick {word(se)}"]
+            f"  descriptive: Brier on the units {brier(su)}; on every kept live row {brier(se)}",
+            f"  descriptive: measured tails (>= {report.NOUL_HIGH:g} / < {report.NOUL_LOW:g}) on the units {tails(su)}; on every kept live row {tails(se)}",
+            f"  descriptive: the trend word (no model): units {word(su)}; every kept live row {word(se)}"]
 
 
-def pending_units(rows, scope, outs, anchor, excluded=(), n_blocks=BLOCKS_PER_DAY * N_DAYS):
+def pending_units(rows, scope, outs, anchor, excluded=(), n_blocks=BLOCKS_PER_DAY * N_DAYS, now=None):
     """The H2 units whose t + h the log has not reached yet: a kept block's first live row with
     both nouls (report._h2_pair says "gap", not "noul") whose ts_rx + HORIZON_S + JOIN_TOL_S is
     later than the last ts_rx of the whole log (`rows`), so a row inside its join window can still
     be written. Counting such a unit as a gap would drop it for good (PREREG §5: the join is over
-    the whole log, the block is never refilled). Returns [(tick_id, the ts_rx epoch it waits for)]."""
+    the whole log, the block is never refilled). `now` (epoch, the live log's real clock) caps the
+    log's last ts_rx: a row stamped after the clock (a forward step) must not read as the t + h the
+    unit waits for. Returns [(tick_id, the ts_rx epoch it waits for)]."""
     last = max((outcomes.ts_epoch(r["ts_rx"]) for r in rows), default=None)
     if last is None:
         return []
+    if now is not None:
+        last = min(last, now)
     live = sorted((r for r in scope if report._live(r)), key=lambda r: r["tick_id"])
     _, _, firsts = report.h2_units(live, outs, anchor)
     out = []
@@ -579,6 +583,7 @@ def main(argv=None, now=None):
             return EXIT_NOT_YET
     outs = outcomes.join(rows)
     cut = None
+    cap = now.timestamp() if live_log else None           # the live log's real clock: no row can lie after it
     if args.sample:
         mode, anchor = "sample", t0
         scope = report.in_sample(rows, t0)
@@ -595,7 +600,7 @@ def main(argv=None, now=None):
         n_blocks = max((int((report.tick_epoch(r["tick_id"]) - anchor) // report.BLOCK_S) for r in scope), default=-1) + 1
     pending = None
     if mode == "sample":                                    # before any number: a pending unit would be dropped as a gap
-        pend = pending_units(rows, scope, outs, anchor, excluded, n_blocks)
+        pend = pending_units(rows, scope, outs, anchor, excluded, n_blocks, cap)
         if pend and not args.accept_pending:
             sys.stderr.write(f"inference: refusing to run: {len(pend)} H2 unit(s) wait for a t + h the log has not reached"
                              f" (first live row {pend[0][0]}; the log's last row is {rows[-1]['tick_id']}); counted now they would"
@@ -607,7 +612,7 @@ def main(argv=None, now=None):
     text = render(mode, t0, now, log, excluded, excl_lines, kept,
                   h1(scope, outs, anchor, excluded, args.resamples, n_blocks), h2(scope, outs, anchor, excluded, args.resamples, n_blocks),
                   args.resamples, pending, cut, excl_path,
-                  rule3_lines(report.days_table(scope, outs, t0, max(report.tick_epoch(r["tick_id"]) for r in rows)), excluded)
+                  rule3_lines(report.days_table(scope, outs, t0, max(report.tick_epoch(r["tick_id"]) for r in rows), cap), excluded)
                   if mode == "sample" and rows else None)
     if args.now:
         text = text.replace("\n", f" (clock overridden with --now {args.now})\n", 1)

@@ -458,6 +458,7 @@ class RuleThree(unittest.TestCase):
         self.assertIn("stop rule 3 cross-check (PREREG §8.3, descriptive; the exclusions file above decides, this changes no number):", out)
         self.assertIn("  open, not yet judged (a day's last t + h is not in the log): d01, listed: d01", out)   # a 4-hour log
         self.assertIn("includes any day after the log's last row): d02 d03", out)                          # d02..d28 have no row
+        self.assertRegex(out, r"includes any day after the log's last row\): d02 .* d27 d28, listed: d02\n")   # d28, the last day, too
         self.assertIn(", listed: d02\n", out)
         code, out, err = _main(["--pre-t0", "--log", log, "--t0", "2026-09-23T12:00", "--resamples", "20", "--exclusions", ex])
         self.assertEqual(code, 0, err)
@@ -477,6 +478,28 @@ class EveryRow(unittest.TestCase):
         lines = inference.side_lines(inference.h2(both, outcomes.join(both), T0, resamples=20))
         self.assertTrue(any("every kept live row (overlapping horizons; a second decision in a minute shares its outcome)" in l
                             and f"over {two['n']} rows" in l for l in lines), lines)
+
+
+class LiveClock(unittest.TestCase):
+    """On the live log the real clock caps 'the log's last row': a row stamped after it (a clock that
+    stepped forward) must not satisfy the pending refusal, nor close d28 in the stop-rule-3 lines."""
+
+    def test_a_row_stamped_after_the_clock_does_not_lift_the_pending_refusal(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        sealed = report._t0("2026-09-25T21:40")
+        end = sealed + 28 * 86400
+        rows = _minutes(end - 30 * 60, end, up=0.6, down=0.4)          # the last two blocks; the log stops at 21:39
+        stray = dict(rows[-1], tick_id="20261101T000000Z", ts_rx="2026-11-01T00:00:00.100Z")   # a clock stepped forward
+        log = os.path.join(tmp, "decisions.jsonl")
+        _write(log, rows + [stray], garbage=False)
+        ex = _exclusions(os.path.join(tmp, "none.tsv"))
+        run_at = datetime.datetime.fromtimestamp(end + 10, datetime.timezone.utc)   # 21:40:10, the 21:40 row not yet written
+        with mock.patch.object(inference.config, "DECISIONS", log), \
+                mock.patch.object(inference, "bootstrap", side_effect=AssertionError("the draw ran")):
+            code, out, err = _main(["--sample", "--exclusions", ex], now=run_at)
+        self.assertEqual((code, out), (3, ""), err)
+        self.assertIn("refusing to run: 1 H2 unit(s) wait for a t + h the log has not reached", err)
 
 
 class Reading(unittest.TestCase):

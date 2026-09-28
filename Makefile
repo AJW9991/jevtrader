@@ -43,7 +43,7 @@ status:
 inference-smoke:
 	$(PY) -m loop.inference --pre-t0
 
-# Day 28 (2026-10-23 21:40Z or later; loop/inference.py refuses, exit 3, until the log holds the t + h row
+# Day 28 (2026-10-23 21:56Z or later, when d28 closes; loop/inference.py refuses, exit 3, until the log holds the t + h row
 # of every kept block's first live row: ~30 s after the end normally, ~15.5 min at worst): the one run of
 # PREREG §4-§5 on the sample, written to RESULTS.md and committed beside PREREG.md (§10). By hand,
 # once; the stop rules (PREREG §8) are read from its output.
