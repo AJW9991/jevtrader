@@ -524,6 +524,54 @@ class PolicyTableTest(unittest.TestCase):
         with open(out, encoding="utf-8") as fh:
             self.assertIn(f"proposal sha256: {sha}", fh.read())
 
+    def test_the_table_says_where_each_candidate_changes_current(self):
+        # the 09-25 review's hand read, by table: a wording that holds on every violent state moves
+        # exactly the 27 violent states (all sell under rule_c), a third of each other adjective
+        by = _by_state()
+
+        def fake(s, qs, **kw):
+            rc = state.rule_c(by[s])
+            if s == policy_table.states()[0][0]:
+                raise jev.JevError("timeout", "slow")               # one unanswered state: the counts are of answered ones
+            return {"answers": {"cand_0": _answer("hold" if by[s]["vol"] == "violent" else rc, 0.7),
+                                "current": _answer(rc, 0.9)}, "model": config.MODEL}
+        self.ask.side_effect = fake
+        out = os.path.join(self.tmp, "t.md")
+        with redirect_stdout(io.StringIO()):
+            policy_table.main([self.prop, "--out", out])
+        with open(out, encoding="utf-8") as fh:
+            text = fh.read()
+        first = by[policy_table.states()[0][0]]                    # liq thin, flow quiet, trend dumping, vol calm
+        self.assertEqual((first["liq"], first["flow"], first["trend"], first["vol"]), ("thin", "quiet", "dumping", "calm"))
+        block = ("where it changes CURRENT's answer (27 of 80 answered states; per adjective, changed / answered):\n"
+                 "- liq: thin 9/26, normal 9/27, deep 9/27\n"
+                 "- flow: quiet 9/26, organic 9/27, bot_war 9/27\n"
+                 "- trend: dumping 9/26, flat 9/27, pumping 9/27\n"
+                 "- vol: calm 0/26, normal 0/27, violent 27/27\n"
+                 "- moves: sell -> hold 27\n")
+        self.assertIn("differs from CURRENT on 27 of 80 answered states; from rule_c on 27 of 80\n\n" + block + "\n```diff", text)
+        from loop import dash                                      # the dash still reads the counts line
+        self.assertEqual(dash.PROPOSAL_COUNTS.search(text).groups(), ("27", "80", "27", "80"))
+
+    def test_a_candidate_that_changes_nothing_says_so(self):
+        self.ask.side_effect = lambda s, qs, **kw: {"answers": {q: _answer("hold", 0.6) for q in qs}, "model": config.MODEL}
+        out = os.path.join(self.tmp, "t.md")
+        with redirect_stdout(io.StringIO()):
+            policy_table.main([self.prop, "--out", out])
+        with open(out, encoding="utf-8") as fh:
+            self.assertIn("\nwhere it changes CURRENT's answer: nowhere (0 of 81 answered states)\n", fh.read())
+
+    def test_the_moves_are_listed_most_first(self):
+        results = [{"state": s, "rule_c": rc, "error": None, "model": config.MODEL,
+                    "answers": {"cand_0": (("buy" if i % 3 else "sell") if i < 5 else rc, 0.5), "current": (rc, 0.5)}}
+                   for i, (s, rc) in enumerate(policy_table.states())]
+        moves = [ln for ln in policy_table.landing(results, "cand_0") if ln.startswith("- moves: ")]
+        self.assertEqual(len(moves), 1)
+        got = moves[0][len("- moves: "):].split(", ")
+        counts = [int(m.rsplit(" ", 1)[1]) for m in got]
+        self.assertEqual(counts, sorted(counts, reverse=True), got)
+        self.assertEqual(sum(counts), sum(1 for r in results if r["answers"]["cand_0"][0] != r["answers"]["current"][0]))
+
     def test_transient_error_continues(self):
         by = _by_state()
         calls = []

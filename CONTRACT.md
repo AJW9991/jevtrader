@@ -383,7 +383,9 @@ else a usage error, exit 2). Then
 question on the 81 synthetic state strings (3⁴ combinations of the alphabet; ~$0.005) and
 writes `proposals/<date>.md`: per candidate, the 81-row table of choice/confidence, the diff
 of its wording vs CURRENT, the count of states where it differs from CURRENT and from
-rule_c, and the sha256 of the json it was built from (`bin/promote` checks it). Last, on
+rule_c, where those changes land (per adjective, changed / answered states, and the
+CURRENT -> candidate moves; since 2026-09-28, for the person who promotes, never the digest),
+and the sha256 of the json it was built from (`bin/promote` checks it). Last, on
 every night whatever happened, `loop.dash` rebuilds `data/dash.html`. Every failure is one
 line in `logs/propose.log` and exit 0 (launchd throttles a failing job); the night also
 writes `data/digest-<date>.md` and `logs/claude-<date>.{txt,err}`.

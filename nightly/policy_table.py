@@ -12,8 +12,10 @@ the CURRENT `action` question, send ONE request per state through loop.jev.ask
 carrying every candidate and the current question as separate choice questions
 (cand_0 .. cand_{K-1}, current: 81 requests for K+1 wordings, not 81 x (K+1)), and
 write proposals/<date>.md: per wording the 81-row table (state, choice, confidence),
-the unified diff of its instructions+criteria against CURRENT, and the counts of
-states where it differs from CURRENT and from rule_c.
+the unified diff of its instructions+criteria against CURRENT, the counts of
+states where it differs from CURRENT and from rule_c, and where those changes land
+(landing(): per adjective, and the CURRENT -> wording moves; which states moved, not
+whether a move follows the wording's criteria).
 May not: read the log, the key (jev.py holds it), or anything under the crypto
 repo; write under prompts/ or data/ (jev.py appends its own ledger row per send;
 the one exception is data/HALT on a rejected key, CONTRACT §2 "the caller writes
@@ -42,7 +44,7 @@ Exit 0 complete or HALT present at the start (nothing sent, no table), 4 INCOMPL
 input, 2 usage. --out defaults to <date>.md under the repo's proposals/
 (config.PROPOSALS), not beside the json; propose.sh always passes it.
 """
-import hashlib, argparse, difflib, json, os, re, sys, time
+import argparse, collections, difflib, hashlib, json, os, re, sys, time
 
 if __package__ in (None, ""):      # run as a script (CONTRACT §5 names `nightly/<file>.py`), not -m: sys.path[0]
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # is nightly/, so add the repo
@@ -191,6 +193,37 @@ def counts(results, qid):
     return cur, rule, n
 
 
+def landing(results, qid):
+    """Where a wording changes CURRENT's answer, over the states where both answered: for each
+    adjective, the states it changed out of the answered states that carry that adjective, and the
+    CURRENT -> wording moves. For the person who promotes (the digest never carries a table). It
+    says which states moved, not whether a move follows the wording's own criteria: that stays a
+    person's read, as proposals/2026-09-25.review.md did by hand (cand_0 moved none of the 81
+    states; cand_1 moved the 27 vol-violent states, not the vol-normal ones its wording named)."""
+    by = {state.state_string(adj): adj for adj in state.all_states()}
+    seen = {d: dict.fromkeys(state.ALPHABET[d], 0) for d in state.DIMS}
+    changed = {d: dict.fromkeys(state.ALPHABET[d], 0) for d in state.DIMS}
+    moves = collections.Counter()
+    for r in results:
+        a, adj = r["answers"], by.get(r["state"])
+        if not a or qid not in a or CURRENT not in a or adj is None:
+            continue
+        moved = a[qid][0] != a[CURRENT][0]
+        for d in state.DIMS:
+            seen[d][adj[d]] += 1
+            changed[d][adj[d]] += moved
+        if moved:
+            moves[(str(a[CURRENT][0]), str(a[qid][0]))] += 1
+    n, total = sum(seen[state.DIMS[0]].values()), sum(moves.values())
+    if not total:
+        return [f"where it changes CURRENT's answer: nowhere (0 of {n} answered states)"]
+    out = [f"where it changes CURRENT's answer ({total} of {n} answered states; per adjective, changed / answered):"]
+    for d in state.DIMS:
+        out.append(f"- {d}: " + ", ".join(f"{w} {changed[d][w]}/{seen[d][w]}" for w in state.ALPHABET[d]))
+    out.append("- moves: " + ", ".join(f"{c} -> {w} {k}" for (c, w), k in sorted(moves.items(), key=lambda x: (-x[1], x[0]))))
+    return out
+
+
 def _cell(a):
     if a is None:
         return "-", "-"
@@ -235,6 +268,7 @@ def render(date, cur_name, cur_sha, cands, cur_q, results, proposal_sha=None):
         cur, rule, n = counts(results, qid)
         out += ["", f"## {qid}", "", f"rationale: {c['rationale'] or '(none given)'}", "",
                 f"differs from CURRENT on {cur} of {n} answered states; from rule_c on {rule} of {n}", "",
+                *landing(results, qid), "",
                 "```diff", diff(cur_q, c["q"], qid) or "(identical wording)", "```", "",
                 "| state | choice | confidence | rule_c | current |", "|---|---|---|---|---|"]
         for r in results:
