@@ -82,7 +82,7 @@ class Transcription(Case):
         self.assertEqual(b["lower"], want[249])                           # the 250th = ceil(0.025 x 10,000), nearest rank
         # The pre-registered draw's value for this series: computed once from the transcription above
         # and pasted here, so a change to the draw, the rank or the sort order shows as a number.
-        self.assertEqual(b["lower"], H1_LOWER_N24)
+        self.assertAlmostEqual(b["lower"], H1_LOWER_N24, places=9)      # the draw is exact (above); the bound is a float sum
 
     def test_h2_draw_n24_at_10000_is_the_transcription_and_its_lower_bound_is_pinned(self):
         ps = _pairs(24, 2)
@@ -91,7 +91,7 @@ class Transcription(Case):
         self.same(b["sorted"], want, "H2 n 24")
         self.assertNotEqual(want[249], want[250])
         # The pre-registered draw's value for this series (computed once, pasted; see above).
-        self.assertEqual(b["lower"], H2_LOWER_N24)
+        self.assertAlmostEqual(b["lower"], H2_LOWER_N24, places=12)     # sum() is compensated from 3.12 on: 3.11 differs in the last bit
 
     def test_h1_draw_n2013_is_the_transcription(self):
         s = _floats(2013, 3)                                              # n not a multiple of 4: the last start is cut
