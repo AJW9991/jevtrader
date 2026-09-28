@@ -190,29 +190,28 @@ def _halt_when():
 
 def realised_horizon(rows):
     """What the outcome join actually reached, in wall-clock seconds between the two snapshots:
-    the join matches by tick_id (minutes), but launchd's StartInterval drifts inside the minute,
-    so ts_rx(t + h) - ts_rx(t) is not 900 s. Also the isolated skipped minutes: a minute with no
-    row whose neighbours both have one, which is what a 61 s grid produces (~28 a day) and each of
-    which costs the row 15 minutes earlier its outcome. A longer hole is sleep or an outage."""
-    first = {}
+    for the row that speaks for each tick (outcomes.rank: the live decision first), the ts_rx of
+    the row outcomes.pick takes for it minus its own ts_rx, so the line measures the horizon the
+    join realised and nothing else (until 2026-09-28 this paired rows by tick_id, 900 s apart by
+    the minute, and reported offsets outside the join's +-30 s window from rows it never used).
+    Also the isolated skipped minutes: a minute with no row whose neighbours both have one, which
+    is what launchd's ~61 s StartInterval grid produced (~28 a day until 2026-09-27 05:18Z) and
+    which since then means one missed :00 fire; each costs the row 15 minutes earlier its outcome.
+    A longer hole is sleep or an outage."""
+    speaks = {}
     for r in rows:
         t = r.get("tick_id")
-        if _num(r.get("mid")) and isinstance(t, str) and t not in first:
-            first[t] = r
-    ticks = sorted(first)
-    ep = [tick_epoch(t) for t in ticks]
+        if isinstance(t, str) and (t not in speaks or outcomes.rank(r) < outcomes.rank(speaks[t])):
+            speaks[t] = r
+    times, _ = outcomes.priced_points(rows)
     offs = []
-    for t, e in zip(ticks, ep):
-        target = e + config.HORIZON_S
-        i = bisect.bisect_left(ep, target)
-        best = None
-        for j in (i - 1, i):
-            if 0 <= j < len(ep) and abs(ep[j] - target) <= outcomes.JOIN_TOL_S and (best is None or abs(ep[j] - target) < abs(ep[best] - target)):
-                best = j
-        if best is not None:
-            a, b = outcomes.ts_epoch(first[t].get("ts_rx")), outcomes.ts_epoch(first[ticks[best]].get("ts_rx"))
-            if a is not None and b is not None:
-                offs.append(b - a - config.HORIZON_S)
+    for r in speaks.values():
+        a = outcomes.ts_epoch(r.get("ts_rx"))
+        if a is None or not _num(r.get("mid")):
+            continue
+        j = outcomes.pick(times, a)
+        if j is not None:
+            offs.append(times[j] - a - config.HORIZON_S)
     all_ticks = sorted({tick_epoch(r["tick_id"]) for r in rows if isinstance(r.get("tick_id"), str)})
     skips = sum(1 for a, b in zip(all_ticks, all_ticks[1:]) if b - a == 2 * config.CADENCE_S)
     ab = [abs(o) for o in offs]

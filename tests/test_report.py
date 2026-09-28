@@ -190,12 +190,16 @@ class Synthetic(unittest.TestCase):
         for r in rows:
             r["jev"] = dict(r["jev"], key_path="file:~/.secondbrain-secrets/typesafe-api-key")   # the brain's key, not the loop's
         rows[1]["ts_rx"] = "2026-09-23T10:06:40.000Z"                            # received 40 s into its minute: the join
-        h = report.health(rows, outcomes.join(rows))                             # still lands on 10:21 by tick_id, 860 s later
+        outs = outcomes.join(rows)                                               # takes the 10:22 row (+20.1 s), not 10:21
+        h = report.health(rows, outs)                                            # (-39.9 s, outside the +-30 s window)
         text = "\n".join(h["lines"])
         self.assertIn("SHARED KEY on 34 rows", text)
         self.assertEqual(h["horizon"]["skips"], 1)
         self.assertIn("isolated skipped minutes 1 (a launchd StartInterval of 60 s runs a ~61 s grid", text)
-        self.assertAlmostEqual(h["horizon"]["max"], 39.9, places=6)                # the fixture rows carry .100 ms
+        self.assertEqual(outs[rows[1]["tick_id"]]["mid_h"], rows[16]["mid"])      # minute 22's row (minute 20 is missing)
+        self.assertAlmostEqual(h["horizon"]["max"], 20.1, places=6)                # the fixture rows carry .100 ms
+        self.assertLessEqual(h["horizon"]["max"], outcomes.JOIN_TOL_S)             # never a row the join did not take
+        self.assertEqual(h["horizon"]["n"], sum(1 for r in rows if outs[r["tick_id"]]["absence"] is None))
         self.assertEqual(h["days"][0]["skips"], 1)
         self.assertIn("    20260923     34   2.4%", text)
 
