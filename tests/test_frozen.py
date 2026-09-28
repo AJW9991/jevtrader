@@ -8,8 +8,9 @@ prereg-v2 after the sample) updates the pin here in the same commit, and its mes
 Not pinned: prompts/CURRENT and any prompt file after v2 (bin/promote writes those, and no test
 depends on what CURRENT names); the digest's content (its own golden test in test_nightly);
 PROTOCOL.md (Alex's signed carve-out, not an input of the measurement); the spend guard's dollar
-figures and the venue fee (a spending decision and a descriptive column, neither in a row's
-meaning). The pins were taken 2026-09-28 from bytes identical to the sealed prereg-v1 commit
+figures, the venue fee and the fee columns FEE_BPS_COLUMNS beside the 0 bps primary (a spending
+decision and descriptive report columns, none in a row's meaning; FEE_BPS_PRIMARY, the H1 cell,
+is pinned). The pins were taken 2026-09-28 from bytes identical to the sealed prereg-v1 commit
 (cfaa3f9) for SPEC, PREREG, PROMPT.md and v1.json, and to the promote commit (d155042) for v2.json.
 """
 import hashlib, json, os, unittest
@@ -28,6 +29,7 @@ FILES = {                                            # sha256 of the bytes on di
 
 THRESHOLDS = {                                       # what a row's words, columns and label are computed from
     "VENUE": "coinbase", "PRODUCT": "SOL-USD", "CADENCE_S": 60, "HORIZON_S": 900, "MODEL": "jev-1.13.0",
+    "JEV_TIMEOUT_S": 20,                             # SPEC: which slow answers become absence "jev" rows
     "NOTIONAL_USD": 1000.0, "BOOK_LEVELS": 100, "LIQ_THIN_BPS": 5.0, "LIQ_DEEP_BPS": 1.0,
     "FLOW_P_LO": 10, "FLOW_P_HI": 90, "TREND_Z": 1.0, "VOL_RATIO_LO": 0.5, "VOL_RATIO_HI": 2.0,
     "WINDOW_MIN": 300, "DEAD_BAND_BPS": 5.0, "FEE_BPS_PRIMARY": 0.0,
