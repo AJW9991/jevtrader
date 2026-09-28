@@ -20,10 +20,13 @@ Written 2026-09-28 by Claude (Fable 5.1) in a CLOUD session on branch `claude/co
    `--safe-mode` do). CLAUDE.md was committed 2026-09-28 00:15Z (written ~05:40Z on 09-27), so
    the 09-27 08:30Z run may have seen it and tonight's will; it carries the "Jev reads calm as
    not violent" line the 09-25 review kept out of PROMPT.md. Commit 11a0b76 runs the one call from
-   an empty temp directory (restoring nights 1-3's context; `~/.claude/CLAUDE.md` user memory
-   still loads as it always has) and logs the CLI version and the user-memory sha each night.
-   (a) merge and `git pull` on the Mac before 08:30Z (recommended); (b) leave it and record the
-   deviation date here; (c) for prereg-v2, `--safe-mode` so the model sees PROMPT.md + digest only.
+   an empty temp directory (no repo CLAUDE.md; `~/.claude/CLAUDE.md` user memory still loads as
+   it always has), fails the night if a CLAUDE.md sits above that directory, and logs the CLI
+   version and the user-memory sha each night. Note: the CLI's own per-machine context (cwd,
+   git status, memory paths) differs between the repo and an empty non-git directory, so the
+   night this is deployed is itself a change of the model's context; record the date. (a) merge
+   and `git pull` on the Mac before 08:30Z (recommended); (b) leave it and record the deviation
+   date here; (c) for prereg-v2, `--safe-mode` so the model sees PROMPT.md + digest only.
 2. **A day with no live rows** (the Mac off all day, or all-HALT): stop rule 3's fill is 0/0,
    undefined. The report and dash now list every T0 day and flag such a day NO LIVE ROWS, never
    BAD by code. Decide before day 28: excluded whole, or kept (96 blocks of S_k = 0, no H2 unit).
@@ -33,6 +36,12 @@ Written 2026-09-28 by Claude (Fable 5.1) in a CLOUD session on branch `claude/co
 4. **Model pin for the nightly.** Nothing pins or records which Claude model writes the
    proposals; the CLI version is now logged per night. `--model` is a spending/treatment call.
 5. **120 bps taker fee** still unverified in-account (`config.FEE_BPS_VENUE`).
+6. **Counts to take on the Mac after merging** (numbers, never a statistic; no §4-§7 look): the
+   `skipped lines` figure of `make health` (a glued torn line is now read back as a row: if it
+   is 0 nothing moved); duplicate priced tick_ids (item 3); dry rows inside [T0, ...); and how
+   many ticks' outcomes differ between the old and new `outcomes.join` (the whole-millisecond
+   tie rule can move an exact tie to the earlier row, as SPEC §11 says; on a one-row-a-minute
+   log that needs an off-grid row, so expect 0). Record them here.
 
 ## Day 28 (`make results`, after 2026-10-23 21:55Z)
 `loop.inference --sample` now refuses while the last block's H2 unit still waits for its t + h
@@ -78,6 +87,11 @@ and says so) · `make dash` · `make inference-smoke` · `make results` (day 28;
   join now ranks the live row first (the rank matters only when two priced rows share a tick).
 - An `unexpected` exception at the columns stage (not a TypeError/ValueError) still keeps the
   answers on the row, against SPEC §2's letter; pre-existing, untouched.
+- `jev.error: "watchdog"` is now also written when the alarm lands while the answer becomes
+  columns (SPEC §2 defines it as "inside the send"); such a row has `input_tokens > 0` and no
+  answers. A SPEC erratum for after the sample.
+- `propose.sh --dry` now needs `--root DIR` outside the repo; a HALT night leaves the json
+  without a table, and the log names the by-hand `policy_table` command for once HALT is cleared.
 
 ## Working from a cloud checkout
 No `data/` there. `make test` is the gate (python3 on PATH; the Makefile falls back). Subagent
