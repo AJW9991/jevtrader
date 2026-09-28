@@ -152,7 +152,8 @@ def health(rows, outs, bad=(), t0=None, last=None, now=None, since=None):
     errors = collections.Counter((_jev(r, "error") or "?") for r in attempted if r.get("absence") == "jev")
     lat = [_jev(r, "latency_ms") for r in rows if _num(_jev(r, "latency_ms"))]
     tokens = sum(_jev(r, "input_tokens") for r in rows if _num(_jev(r, "input_tokens")))
-    uncounted = sum(1 for r in rows if isinstance(_jev(r, "input_tokens"), int) and not _num(_jev(r, "input_tokens")))
+    uncounted = sum(1 for r in rows if type(_jev(r, "input_tokens")) is int and not _num(_jev(r, "input_tokens")))   # not a
+                                                                    # bool: an int subclass that _num refuses, and cycle.billed_tokens skips
     try:
         usd = tokens * config.USD_PER_MTOK / 1e6
     except OverflowError:                   # counts that each fit a float can sum past one (two server replies of 1e308)

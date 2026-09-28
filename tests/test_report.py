@@ -1154,6 +1154,20 @@ class PerDay(unittest.TestCase):
         page = dash.render(rows, outcomes.join(rows), now=datetime.datetime(2026, 9, 23, 12, 0, tzinfo=datetime.timezone.utc))
         self.assertIn("JevTrader health", page)
 
+    def test_a_bool_token_count_is_not_named_past_a_floats_range(self):
+        # bool is an int subclass and _num(True) is False, so health counted a `true` input_tokens (a hand-edited
+        # or foreign row; jev._parse int()s the count) as past a float's range and said the spend guard trips on it,
+        # while cycle.billed_tokens skips a bool and the guard charged the row 2000 tokens instead
+        from loop import cycle
+        rows = [dict(_row(m)) for m in range(20, 30)]
+        rows[3] = dict(rows[3], jev=dict(rows[3]["jev"], input_tokens=True))
+        self.assertEqual(cycle.billed_tokens(rows[3]), config.JEV_TOKENS_IF_UNKNOWN)   # the guard does not trip on it
+        with mock.patch.object(config, "HALT", os.path.join(self.enterContext(tempfile.TemporaryDirectory()), "no-HALT")):
+            h = report.health(rows, outcomes.join(rows))
+        line = [l for l in h["lines"] if l.startswith("  input tokens")]
+        self.assertEqual(line, [f"  input tokens 9000 = ${9000 * config.USD_PER_MTOK / 1e6:.6f} to date at ${config.USD_PER_MTOK}/Mtok"])
+        self.assertNotIn("float's range", "\n".join(h["lines"]))
+
     def test_counts_that_fit_a_float_but_sum_past_one_are_named_not_a_crash(self):
         # jev._parse int()s a server reply of 1e308, which fits a float, so _num lets two such counts into
         # the sum; their int sum does not fit one, and `tokens * USD_PER_MTOK` raised OverflowError: the
