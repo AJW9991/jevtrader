@@ -103,7 +103,7 @@ class Dash(unittest.TestCase):
             r["absence"], r["mid"], r["bid"], r["ask"] = "feed", None, None, None
         self.assertEqual(dash.hourly(rows)[("20260923", 10)], 32)
         self.assertEqual(dash.absent(rows)[("20260923", 10)]["feed"], 10)
-        page = dash.render(rows, outcomes.join(rows))
+        page = dash.render(rows, outcomes.join(rows), now=datetime.datetime(2026, 9, 23, 12, 0, tzinfo=datetime.timezone.utc))   # the strip's window ends today
         self.assertIn("32/60 priced ticks; absent feed 10", page)
         self.assertIn("absence in the sample: feed 10", page)
         self.assertEqual([dash._bin_hour(n) for n in (0, 1, 29, 30, 44, 45, 54, 55, 59, 60)], [-1, 0, 0, 1, 1, 2, 2, 3, 3, 4])
