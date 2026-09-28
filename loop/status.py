@@ -71,7 +71,7 @@ def _today_line(rows, now, log):
     return (f"today {now.strftime('%Y-%m-%d')}Z: {len(today)} rows in {elapsed} min ({100.0 * len(today) / elapsed:.0f}%), live answered {live},"
             f" absence " + (", ".join(f"{k} {v}" for k, v in sorted(absent.items())) or "none")
             + (f"; spend UNREADABLE: the log cannot be read, so the next tick's guard trips (HALT) rather than count it" if usd == float("inf")
-               else f"; spend UNCOUNTED: a token count today is past a float's range, so the guard trips (HALT)" if usd == cycle.SPEND_UNCOUNTED
+               else f"; spend UNCOUNTED: a token count today is past a float's range, so the next tick's guard trips (HALT)" if usd == cycle.SPEND_UNCOUNTED
                else f"; spend ${usd:.4f} of the ${config.DAILY_SPEND_HALT_USD:g} tripwire (as the guard counts it)"))
 
 

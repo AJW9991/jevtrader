@@ -218,6 +218,31 @@ class Status(unittest.TestCase):
         self.assertTrue(out.startswith(f"LOG UNREADABLE: {self.tmp}: "), out[:200])
         self.assertIn("spend UNREADABLE: the log cannot be read, so the next tick's guard trips (HALT) rather than count it", out)
 
+    def _today(self, tokens):
+        """status.render's today line on a log of three of today's rows, the middle one carrying `tokens`."""
+        log = os.path.join(self.tmp, "uncounted.jsonl")
+        rows = [dict(_row(m)) for m in range(5, 8)]                       # 2026-09-23 10:05 .. 10:07, live answered
+        for i, t in enumerate(tokens):
+            rows[1 + i] = dict(rows[1 + i], jev=dict(rows[1 + i]["jev"], input_tokens=t))
+        _write(log, rows, garbage=False)
+        rows = outcomes.load(log, [])
+        text = status.render(rows, outcomes.join(rows), None, _now("2026-09-23T10:42"), None, self.halt, log,
+                             os.path.join(self.tmp, "no-proposals"), os.path.join(self.tmp, "no.log"), None)
+        self.assertIn("HALT absent: sends allowed", text)                  # status writes no HALT; the next tick's guard does
+        today = [l for l in text.splitlines() if l.startswith("today ")]
+        self.assertEqual(len(today), 1, text)
+        return today[0]
+
+    def test_a_token_count_past_a_floats_range_is_named_on_the_today_line(self):
+        # the spend UNCOUNTED branch had no test: without it the line printed float max as a 309-digit
+        # dollar figure "of the $0.25 tripwire"; and it said "the guard trips (HALT)" under "HALT absent",
+        # where its UNREADABLE sibling says the next tick's guard trips (status itself writes no HALT)
+        line = self._today([10 ** 400])
+        self.assertIn("; spend UNCOUNTED: ", line)
+        self.assertTrue(line.endswith(" past a float's range, so the next tick's guard trips (HALT)"), line)
+        self.assertNotIn("spend $", line)
+        self.assertIn("; spend $0.0001 of the $0.25 tripwire", self._today([1000]))   # a count in range is still priced
+
     def test_no_h1_h2_pair_or_confidence_number(self):
         text = self._render("2026-09-23T10:42")
         for banned in ("H1 statistic", "H2 statistic", "pair B-C", "mean_S", "Pearson", "Brier", "calibration", "c99", "noultail", "pbuy", "confidence"):
