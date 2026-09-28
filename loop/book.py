@@ -102,8 +102,10 @@ def replay(rows, outcomes, arm, column, fee_bps):
     A row with absence set, a dry row, null columns, or an unpriced book is a
     "hold" for every arm (so neither an outage nor a dry run ever manufactures a
     disagreement) and is counted
-    in forced_hold; its pnl is 0.0 and the position is carried, so the move
-    across a gap lands on the first priced tick after it.
+    in forced_hold. The position is carried through it: a priced forced hold marks
+    that position to its mid (SPEC §10; so d_t is not 0 there when the arms hold
+    different positions), an unpriced one adds 0.0, and the move across a gap lands
+    on the first priced tick after it.
     `outcomes` is accepted for the contract's signature; a mark-to-mid book
     needs no t+h join, and using one here would let t see t+h."""
     if arm not in ARMS:
