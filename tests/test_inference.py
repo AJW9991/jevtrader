@@ -391,6 +391,53 @@ class SealedCopy(unittest.TestCase):
         self.assertIn("rows before 2026-09-25T21:40Z (the earlier of --t0 and PREREG §11's T0)", out)
 
 
+class RuleThree(unittest.TestCase):
+    """PREREG §8.3 recomputed beside the exclusions file: descriptive lines that change no number."""
+
+    @staticmethod
+    def _day(d, bad=False, empty=False):
+        return {"day": d, "bad": bad, "empty": empty}
+
+    def test_the_lines_name_where_the_file_and_the_rule_differ(self):
+        table = {"days": [self._day("d01", bad=True), self._day("d02"), self._day("d03", empty=True), self._day("d04", bad=True)]}
+        lines = inference.rule3_lines(table, {2, 3, 4})
+        self.assertEqual(lines[1], "  BAD by the rule, recomputed from the log: d01 d04 (2; the rule pauses the run at 3)")
+        self.assertEqual(lines[2], "  listed and BAD: d04; listed but NOT bad by the rule: d02; BAD but NOT listed: d01")
+        self.assertEqual(lines[3], "  no live rows (0/0, the rule undefined; Alex's call): d03, listed: d03")
+
+    def test_agreement_reads_none_everywhere(self):
+        lines = inference.rule3_lines({"days": [self._day("d01"), self._day("d02", bad=True)]}, {2})
+        self.assertEqual(lines[2], "  listed and BAD: d02; listed but NOT bad by the rule: none; BAD but NOT listed: none")
+        self.assertEqual(lines[3], "  no live rows (0/0, the rule undefined; Alex's call): none")
+
+    def test_a_sample_run_prints_them_and_a_pre_t0_run_does_not(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        log, ex = os.path.join(tmp, "edge.jsonl"), _exclusions(os.path.join(tmp, "ex.tsv"), [1])
+        _write(log, _edge_rows(), garbage=False)
+        code, out, err = _main(["--sample", "--log", log, "--t0", T0S, "--now", "2026-10-21T10:00", "--resamples", "20",
+                                "--exclusions", ex, "--accept-pending"])
+        self.assertEqual(code, 0, err)
+        self.assertIn("stop rule 3 cross-check (PREREG §8.3, descriptive; the exclusions file above decides, this changes no number):", out)
+        self.assertIn("listed but NOT bad by the rule: d01", out)          # d01 is open in this 4-hour log: never BAD
+        code, out, err = _main(["--pre-t0", "--log", log, "--t0", "2026-09-23T12:00", "--resamples", "20", "--exclusions", ex])
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("stop rule 3 cross-check", out)
+
+
+class EveryTick(unittest.TestCase):
+    def test_the_every_tick_side_numbers_take_one_row_per_tick(self):
+        # a second live decision in a minute shares the minute's outcome (the join is per tick): counting
+        # it would score it with the first row's return, so "every kept live tick" is one row a tick
+        rows = _edge_rows(blocks=4)
+        extra = dict(rows[5], ts_rx=rows[5]["ts_rx"][:17] + "30.000Z")
+        both = rows + [extra]
+        o1, o2 = outcomes.join(rows), outcomes.join(both)
+        one = inference.h2(rows, o1, T0, resamples=20)["side_every"]
+        two = inference.h2(both, o2, T0, resamples=20)["side_every"]
+        self.assertEqual(json.dumps(one, sort_keys=True, default=str), json.dumps(two, sort_keys=True, default=str))
+
+
 class Reading(unittest.TestCase):
     """PREREG §8.1-§8.2's stop rules and §5/§9's reading, each on a line of its own, from the verdicts."""
 

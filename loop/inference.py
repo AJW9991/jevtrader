@@ -215,8 +215,11 @@ def h2(rows, outs, anchor, excluded=(), resamples=RESAMPLES, n_blocks=BLOCKS_PER
                   key=lambda r: r["tick_id"])
     units, drop, firsts = report.h2_units(live, outs, anchor)
     units = [u for u in units if 0 <= u["k"] < n_blocks and day_of_block(u["k"]) not in excluded]   # a no-op now; kept as the rule
-    every, drop_every = [], {}
-    for r in live:
+    every, drop_every, seen = [], {}, set()
+    for r in live:                                          # one row per tick, the first written: a second decision
+        if r["tick_id"] in seen:                           # in the minute would be scored with the first's outcome
+            continue
+        seen.add(r["tick_id"])
         p = report._h2_pair(r, outs)
         if isinstance(p, dict):
             every.append(p)
@@ -351,6 +354,22 @@ def day_lines(per_day):
     return lines
 
 
+def rule3_lines(table, excluded):
+    """PREREG §8.3's stop rule 3 recomputed from the log (report.days_table over the sample) beside
+    the exclusions file that decided: the file is Alex's act and is applied as written; this only
+    says where the two differ, so a mistaken or missing line is visible in the one pre-registered
+    output. Descriptive: no number above changes."""
+    bad = [x["day"] for x in table["days"] if x["bad"]]
+    empty = [x["day"] for x in table["days"] if x["empty"]]
+    listed = {f"d{d:02d}" for d in excluded}
+    fmt = lambda xs: " ".join(sorted(xs)) if xs else "none"
+    return [f"stop rule 3 cross-check (PREREG §8.3, descriptive; the exclusions file above decides, this changes no number):",
+            f"  BAD by the rule, recomputed from the log: {fmt(bad)} ({len(bad)}; the rule pauses the run at 3)",
+            f"  listed and BAD: {fmt(listed & set(bad))}; listed but NOT bad by the rule: {fmt(listed - set(bad) - set(empty))};"
+            f" BAD but NOT listed: {fmt(set(bad) - listed)}",
+            f"  no live rows (0/0, the rule undefined; Alex's call): {fmt(empty)}" + (f", listed: {fmt(listed & set(empty))}" if listed & set(empty) else "")]
+
+
 def reading(h1s, h2s, void=False, pre_t0=False):
     """The stop rules (PREREG §8.1-§8.2) and the reading (§5's last paragraph, §9) from the verdicts
     already computed; nothing new is tested here. Stop rule 1 fires when NEITHER B - C nor A - C
@@ -408,11 +427,11 @@ def reading(h1s, h2s, void=False, pre_t0=False):
     return lines
 
 
-def render(mode, t0, now, log, excluded, excl_lines, kept_days, h1s, h2s, resamples, pending=None, cut=None, excl_path=None):
+def render(mode, t0, now, log, excluded, excl_lines, kept_days, h1s, h2s, resamples, pending=None, cut=None, excl_path=None, rule3=None):
     """log: {"path", "sha", "bytes", "last", "scope"} of the one read (read_log) and the rows in scope.
     pending: None when --accept-pending was not given, else the pending_units it overrode.
     cut: --pre-t0's end of scope, the earlier of --t0 and PREREG §11's T0. excl_path: the
-    exclusions file actually read (or looked for)."""
+    exclusions file actually read (or looked for). rule3: rule3_lines' output, sample mode only."""
     excl_path = excl_path or os.path.join(config.DATA, "exclusions.tsv")
     lines = [f"jev-paper-loop inference (PREREG §4-§5), mode {mode}, run at {now.strftime('%Y-%m-%dT%H:%MZ')}",
              f"  python {' '.join(sys.version.split())}",
@@ -473,6 +492,9 @@ def render(mode, t0, now, log, excluded, excl_lines, kept_days, h1s, h2s, resamp
     if mode == "sample":
         lines.extend(day_lines(h2s["per_day"]))
         lines.append("")
+        if rule3:
+            lines.extend(rule3)
+            lines.append("")
     if mode == "sample":
         lines.append(f"{excl_path}, verbatim:" if excl_lines else f"{excl_path}: absent or empty")
         lines.extend("  " + l for l in excl_lines)
@@ -596,7 +618,9 @@ def main(argv=None, now=None):
     log = {"path": args.log, "sha": sha, "bytes": nbytes, "last": rows[-1]["tick_id"] if rows else "-", "skipped": len(bad), "scope": len(scope)}
     text = render(mode, t0, now, log, excluded, excl_lines, kept,
                   h1(scope, outs, anchor, excluded, args.resamples, n_blocks), h2(scope, outs, anchor, excluded, args.resamples, n_blocks),
-                  args.resamples, pending, cut, excl_path)
+                  args.resamples, pending, cut, excl_path,
+                  rule3_lines(report.days_table(scope, outs, t0, max(report.tick_epoch(r["tick_id"]) for r in rows)), excluded)
+                  if mode == "sample" and rows else None)
     if args.now:
         text = text.replace("\n", f" (clock overridden with --now {args.now})\n", 1)
     sys.stdout.write(text)
