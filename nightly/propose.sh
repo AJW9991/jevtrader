@@ -167,6 +167,7 @@ fi
 
 # 2. the slow model, or the fixture.
 RAW="$LOGS/claude-$DATE.txt"
+WROTE=""                                           # the model that wrote the proposal: none on --dry (a fixture)
 if [ $DRY -eq 1 ]; then
   cat >"$RAW" <<'EOF'
 Fixture reply (propose.sh --dry): one candidate, no digits, full text.
@@ -234,6 +235,13 @@ $(cat "$DIGEST")"
   unset CLAUDE_CODE_OAUTH_TOKEN
   rm -rf "$WORK"
   log "claude exit $rc after $(( $(date +%s) - T_START )) s wall clock (cap $CLAUDE_CAP_S s awake)"
+  # Which model answered, read AFTER the call from the CLI's own transcript of it (the call names
+  # none and stays as it was: HANDOFF decision 4, record not pin, approved 2026-09-28). Capped
+  # like --version; it only reads, and says nothing rather than fail the night.
+  WROTE="$("$PY" "$REPO/nightly/capped.py" 10 -- "$PY" -I -B "$REPO/nightly/answered_model.py" \
+    "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" "$WORK" 2>/dev/null | head -1)"
+  WROTE="${WROTE:-unrecorded}"
+  log "claude model $WROTE (read from the CLI's transcript of this call, which names no model)"
   [ $rc -eq 124 ] && fail "claude capped at $CLAUDE_CAP_S s awake (see $LOGS/claude-$DATE.err)"
   [ $rc -eq 0 ] || fail "claude exit $rc (see $LOGS/claude-$DATE.err)"
 fi
@@ -278,11 +286,11 @@ log "wrote proposals/$DATE.json"
 #    cannot see these sends (they never reach decisions.jsonl), so the check is here and
 #    again in policy_table.py. Checked in --dry too, so the suite can exercise it.
 if [ -e "$ROOT/data/HALT" ]; then
-  log "HALT present ($ROOT/data/HALT): no Jev send; proposals/$DATE.json written, no table (once HALT is cleared: $PY -m nightly.policy_table --out proposals/$DATE.md proposals/$DATE.json)"
+  log "HALT present ($ROOT/data/HALT): no Jev send; proposals/$DATE.json written, no table (once HALT is cleared: $PY -m nightly.policy_table${WROTE:+ --writer-model $WROTE} --out proposals/$DATE.md proposals/$DATE.json)"
   exit 0
 fi
 if [ $DRY -eq 1 ]; then DRYFLAG="--dry"; else DRYFLAG=""; fi
-"$PY" -m nightly.policy_table $DRYFLAG ${PROMPTS_ROOT:+--prompts "$PROMPTS_ROOT"} \
+"$PY" -m nightly.policy_table $DRYFLAG ${PROMPTS_ROOT:+--prompts "$PROMPTS_ROOT"} ${WROTE:+--writer-model "$WROTE"} \
   --out "$ROOT/proposals/$DATE.md" "$ROOT/proposals/$DATE.json" >>"$LOG" 2>&1
 rc=$?
 [ $rc -eq 0 ] || fail "policy_table exit $rc"

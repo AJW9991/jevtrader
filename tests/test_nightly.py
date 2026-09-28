@@ -97,6 +97,7 @@ def _sh_env(tc, tmp=None, **extra):
     .claude in any ancestor, and the runner's own TMPDIR may sit under ~ (beside ~/.claude) or inside
     a checkout. `extra` overrides any of it."""
     env = {**os.environ, "TYPESAFE_API_KEY_LOOP": "", "TYPESAFE_API_KEY": "", "CLAUDE_CODE_OAUTH_TOKEN": "",
+           "CLAUDE_CONFIG_DIR": "",                       # the CLI's sessions: under HOME (a temp dir), never the runner's
            "HOME": tc.enterContext(tempfile.TemporaryDirectory()), "TYPESAFE_BASE_URL": "http://127.0.0.1:9",
            "JEVLOOP_PY": sys.executable, **{v: "" for v in PROXY_VARS}, "NO_PROXY": "*", "no_proxy": "*",
            "TMPDIR": tc.enterContext(tempfile.TemporaryDirectory(dir="/tmp"))}
@@ -1300,6 +1301,44 @@ class LiveBranch(unittest.TestCase):
         # and the night's record: that cwd, the user memory's sha, the CLI's version
         self.assertIn("(empty); user memory ", log)
         self.assertIn("CLAUDE.md sha256 " + hashlib.sha256(memory.encode()).hexdigest()[:12] + "; cli 9.9.9 (stub claude)", log)
+
+    REPLY = ('cat <<"EOF"\nreply\n\n```json\n{"candidates": [{"rationale": "t", "instructions": "Decide.",'
+             ' "criteria": {"buy": "pumping", "sell": "dumping", "hold": "else"}}]}\n```\nEOF\n')
+
+    def test_the_model_that_answered_is_logged_from_the_clis_own_transcript(self):
+        # the stub keeps a session as the CLI does, under HOME's .claude/projects/<its cwd as a slug>;
+        # propose.sh reads the model back after the call, which itself names none
+        stub = self._stub('[ "$1" = --version ] && { echo "9.9.9 (stub claude)"; exit 0; }\n'
+                          'printf "%s\\0" "$@" >"' + self.saw + '/argv"\n'
+                          'd="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$(pwd -P | sed "s/[^A-Za-z0-9]/-/g")"\n'
+                          'mkdir -p "$d"\n'
+                          'printf "%s\\n" \'{"type":"user","message":{"content":"x"}}\' '
+                          '\'{"type":"assistant","message":{"model":"claude-stub-1","content":[]}}\' >"$d/0b9d.jsonl"\n'
+                          + self.REPLY)
+        home = self._home()
+        r = self._run(stub, HOME=home)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(os.path.join(self.tmp, "logs", "propose.log"), encoding="utf-8") as fh:
+            log = fh.read()
+        self.assertIn("claude model claude-stub-1 (read from the CLI's transcript of this call, which names no model)", log)
+        self.assertIn("$PY -m nightly.policy_table --writer-model claude-stub-1 --out proposals/", log.replace(sys.executable, "$PY"))
+        with open(os.path.join(self.saw, "argv"), "rb") as fh:
+            argv = fh.read().decode("utf-8").split("\0")[:-1]
+        self.assertNotIn("--model", argv)                                     # recorded, not pinned
+        self.assertEqual(argv[-2:], ["--output-format", "text"])
+        projects = os.listdir(os.path.join(home, ".claude", "projects"))             # the temp HOME's, nowhere else
+        self.assertEqual(len(projects), 1, projects)
+        self.assertRegex(projects[0], r"-jevloop-claude-[A-Za-z0-9]+$")
+
+    def test_a_night_whose_transcript_is_not_found_logs_unrecorded(self):
+        stub = self._stub('[ "$1" = --version ] && { echo "9.9.9 (stub claude)"; exit 0; }\n' + self.REPLY)
+        r = self._run(stub, HOME=self._home())
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(os.path.join(self.tmp, "logs", "propose.log"), encoding="utf-8") as fh:
+            log = fh.read()
+        self.assertIn("claude model unrecorded (read from the CLI's transcript", log)
+        self.assertIn("HALT present", log)
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, "proposals", f"{DAY.isoformat()}.json")))   # the night went on
 
     def test_a_claude_md_above_the_temp_cwd_fails_the_night_before_any_send(self):
         # /tmp is shared and world-writable: a CLAUDE.md planted above claude's empty cwd would be

@@ -370,7 +370,10 @@ empty temporary directory so the CLI auto-loads no CLAUDE.md from the repo (the 
 model sees PROMPT.md and the digest, nothing the repo's working rules say, and
 `~/.claude/CLAUDE.md` user memory as it always has, whose sha256 is logged; the night
 fails if a CLAUDE.md, CLAUDE.local.md or .claude sits in any ancestor of the temp
-directory; 2026-09-28):
+directory; 2026-09-28). The call names no model; after it, `nightly/answered_model.py` reads
+the model that answered from the CLI's own transcript of that session and the night logs it
+(`claude model <id>`, or `unrecorded`) and passes it to the table's header (recorded, not
+pinned: HANDOFF decision 4, approved 2026-09-28):
 `caffeinate -i python3 nightly/capped.py 2700 -- claude -p "$(cat nightly/PROMPT.md)
 
 $(cat data/digest-<date>.md)" --tools "" --restricted --strict-mcp-config --settings
