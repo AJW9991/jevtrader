@@ -20,14 +20,17 @@ step that did not happen:
          minutes before a HALT survive it. No ledger row, no request, no body printed.
          A feed or prompts failure under HALT keeps its own absence (it came first).
   lock   another process holds data/loop.lock (launchd double-fire)
-  feed   FeedError, or state.py refusing the window (ValueError)
+  feed   FeedError, state.py refusing the window (ValueError), or the watchdog
+         firing while the feed was still fetching
   jev    JevError (its kind in jev.error; 401/403 also write HALT), an answer the
          rules refuse (jev.error "parse", the raw answer still logged), the watchdog
-         firing inside the send (jev.error "watchdog"), or any other exception once
-         the send had begun (jev.error "unexpected"): the request may have left, so
-         the spend guard must charge the row, and "guard" rows are charged nothing
+         firing inside the send or while its answer became columns (jev.error
+         "watchdog", no answer kept), or any other exception once the send had begun
+         (jev.error "unexpected"): the request may have left, so the spend guard must
+         charge the row, and "guard" rows are charged nothing
   guard  anything else that stopped the tick before the send: prompts that do
-         not load, the watchdog before the feed answered, an unexpected exception
+         not load, the watchdog after the feed answered (state, prompts), an
+         unexpected exception
 The path guard writes nothing: a row under a forbidden tree is what it prevents.
 SIGTERM mid-tick writes nothing either -- an operator stop is not a measurement
 event -- unless the write has begun, in which case it completes, the lock is
@@ -37,7 +40,9 @@ Timing: --forever sleeps to the next multiple of CADENCE_S computed from
 time.time() each round, so a slow tick shortens the next wait instead of
 shifting every later tick. A 50 s SIGALRM watchdog wraps each tick (macOS has
 no `timeout`): feed is 3 x 10 s and jev is 20 + 5 + 20 s, 75 s worst case, so
-the alarm CAN land inside the send, and the row then says so.
+the alarm CAN land inside the send, and the row then says so. Past the lock the
+row is written wherever the alarm lands (inside _run's handlers too); the write
+disarms it. In the guards before the lock it costs the row, never the exit code.
 """
 import argparse, fcntl, hashlib, json, os, signal, sys, time, traceback
 
@@ -238,10 +243,13 @@ def write_row(row):
     without the lock, and a race costs at most a blank line, which every reader skips.
     NaN is allowed through rather than raised on: a non-finite feature must still cost
     only that feature, and every reader already checks isfinite. SIGTERM arriving
-    inside is deferred until the heartbeat is written."""
-    line = (json.dumps(row, separators=(",", ":")) + "\n").encode()
+    inside is deferred until the heartbeat is written. The critical section opens before
+    the row is serialised and disarms the watchdog first: the tick is ending anyway, and
+    an alarm landing in json.dumps or just after the write would otherwise lose the row."""
     _SIG["critical"] = True
     try:
+        signal.alarm(0)
+        line = (json.dumps(row, separators=(",", ":")) + "\n").encode()
         fd = os.open(config.DECISIONS, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o644)   # RDWR: pread below
         try:
             size = os.fstat(fd).st_size
@@ -264,24 +272,38 @@ def write_row(row):
 
 
 # ---- the tick ------------------------------------------------------------------------------
-def _run(row, dry, halt=False):
+def _watchdog_absence(row, stage):
+    """The row of a tick the watchdog stopped at `stage`. From "ask" on, the request may have
+    left: jev/watchdog, which the spend guard bills, keeping no answer and no column (SPEC §2
+    keeps answers on a parse row only). During the feed: feed. Otherwise: guard."""
+    if stage in ("ask", "columns"):
+        row["absence"], row["jev"]["error"] = "jev", "watchdog"
+        row["answers"], row["columns"] = None, {"a": None, "b": None}
+    else:
+        row["absence"] = "feed" if stage == "feed" else "guard"
+
+
+def _run(row, dry, halt=False, where=None):
     """Steps 2-7 of CONTRACT §3 into `row`. Every failure lands in row["absence"]; the
     caller writes the row whatever happened here. `halt`: steps 2-4 run as usual and the
     row is closed with absence "halt" where step 5/6 would begin -- nothing is printed,
-    ledgered or sent."""
-    stage = "feed"
+    ledgered or sent. `where` (a dict) receives the stage reached and, after a 401/403,
+    the HALT reason: the watchdog can fire inside one of the handlers below, and tick()
+    then closes the row and writes that HALT from them."""
+    where = {} if where is None else where
+    stage = where["stage"] = "feed"
     try:
         snap = feed.snapshot()
         row["ts_rx"], row["tick_id"] = snap["ts_rx"], tick_id(snap["ts_rx"])
         row.update(bid=snap["bid"], bid_size=snap["bid_size"], ask=snap["ask"],
                    ask_size=snap["ask_size"], book_time=snap["book_time"],
                    feed_age_s=snap["feed_age_s"])
-        stage = "state"
+        stage = where["stage"] = "state"
         feat = state.features(snap)
         adj = state.adjectives(feat)
         s = state.state_string(adj)
         row.update(mid=feat["mid"], features=feat, adj=adj, state=s, rule_c=state.rule_c(adj))
-        stage = "prompts"
+        stage = where["stage"] = "prompts"
         v1, cur = prompts.load("v1"), prompts.current()
         curdoc = prompts.load(cur)
         qs = prompts.build(v1, curdoc)
@@ -293,13 +315,13 @@ def _run(row, dry, halt=False):
         if dry:                              # the free thing: the exact body, on stdout, unsent
             print(json.dumps(jev.dry_payload(s, qs)))
             return
-        stage = "ask"
+        stage = where["stage"] = "ask"
         res = jev.ask(s, qs)
         row["jev"].update(latency_ms=res["latency_ms"], input_tokens=res["input_tokens"],
                           key_path=res["key_path"])
         row.update(answers=res["answers"], model_answered=res["model"],
                    drift=res["model"] != config.MODEL)
-        stage = "columns"
+        stage = where["stage"] = "columns"
         row["columns"] = {"a": rules.for_arm(res["answers"], "a"),
                           "b": rules.for_arm(res["answers"], "b")}
     except feed.FeedError as e:
@@ -307,9 +329,11 @@ def _run(row, dry, halt=False):
         _err(f"feed: {e}")
     except jev.JevError as e:
         row["absence"], row["jev"]["error"], row["jev"]["key_path"] = "jev", e.kind, e.key_path
+        if e.status in (401, 403):           # recorded before any call: see `where` above
+            where["halt"] = f"{HALT_KEY_REJECTED}: {e.kind} {e.status} via {e.key_path} at {row['ts_rx']}"
         _err(f"jev: {e}")                    # kind and detail; a key's PATH at most, never a value
-        if e.status in (401, 403):
-            _halt(f"{HALT_KEY_REJECTED}: {e.kind} {e.status} via {e.key_path} at {row['ts_rx']}")
+        if "halt" in where:
+            _halt(where["halt"])
     except prompts.PromptError as e:         # a ValueError subclass: must precede the next clause
         row["absence"] = "guard"
         _err(f"prompts: {e}")
@@ -321,11 +345,8 @@ def _run(row, dry, halt=False):
         else:
             row["absence"] = "feed" if stage == "state" else "guard"
         _err(f"{stage}: {e}")
-    except _Watchdog:
-        if stage == "ask":
-            row["absence"], row["jev"]["error"] = "jev", "watchdog"
-        else:
-            row["absence"] = "feed" if stage == "feed" else "guard"
+    except _Watchdog:                        # at "columns" too: the send had left and is billed
+        _watchdog_absence(row, stage)
         _err(f"watchdog: {WATCHDOG_S} s passed during {stage}")
     except Exception as e:
         if stage == "columns" and isinstance(e, (TypeError, AttributeError)):
@@ -383,27 +404,43 @@ def tick(dry=False, now=None):
                   f"${config.DAILY_SPEND_HALT_USD} (config.DAILY_SPEND_HALT_USD) at {row['ts_rx']}")
             halt = True
     lk = _lock()
-    if lk is None:
-        row["absence"] = "lock"
-        return _finish(row)
     try:
-        _run(row, dry, halt)
-        return _finish(row)
+        if lk is None:
+            row["absence"] = "lock"
+        else:
+            where = {}
+            try:
+                _run(row, dry, halt, where)
+            except _Watchdog:                # fired inside one of _run's own handlers (a 401's _halt,
+                if row["absence"] is None:   # an _err to a stalled stderr); the one alarm is now spent.
+                    _watchdog_absence(row, where.get("stage"))   # an absence already set stays: it came first
+                if "halt" in where:
+                    _halt(where["halt"])     # the key-rejected HALT the handler may not have written
+                _err(f"watchdog: {WATCHDOG_S} s passed while handling {where.get('stage')}")
+        _SIG["critical"] = True              # the row is complete: an alarm from here on is ignored and
+        return _finish(row)                  # SIGTERM waits for the write (write_row clears the flag)
     finally:
         _unlock(lk)
 
 
 def _guarded_tick(dry):
-    """tick() under the watchdog. An alarm that escapes tick() fired in the guards, before
-    any row could be owed; it is reported and the round ends with 0."""
-    signal.alarm(WATCHDOG_S)
+    """tick() under the watchdog, armed and disarmed inside one outer try, so that no alarm
+    can leave this function (main() would exit 1 with a traceback). An alarm that escapes
+    tick() fired in the guards, before the lock, when no row is owed yet: it is reported
+    and the round ends with 0. One that lands in the finally, after tick() returned and
+    before alarm(0) ran, finds the tick over and is dropped; tick()'s code stands."""
+    code = 0
     try:
-        return tick(dry)
+        try:
+            signal.alarm(WATCHDOG_S)
+            code = tick(dry)
+        except _Watchdog:
+            _err(f"watchdog: {WATCHDOG_S} s passed in the guards; no row")
+        finally:
+            signal.alarm(0)
     except _Watchdog:
-        _err(f"watchdog: {WATCHDOG_S} s passed in the guards; no row")
-        return 0
-    finally:
-        signal.alarm(0)
+        pass
+    return code
 
 
 def _sleep_to_boundary():

@@ -6,7 +6,7 @@ config points into a temp dir; feed.snapshot is replaced by the fixture snapshot
 assembled through feed.assemble); time.time is pinned
 to the fixture's ts_rx so tick_id is known. main() installs and restores its own
 SIGTERM/SIGALRM handlers; the two signal tests raise the signal in-process."""
-import email.message, io, fcntl, hashlib, json, os, re, signal, tempfile, time, unittest, urllib.error
+import email.message, io, fcntl, hashlib, json, os, re, signal, sys, tempfile, time, unittest, urllib.error
 from unittest import mock
 from fixture_prompts import pin_v1
 from loop import book, config, cycle, feed, jev, outcomes, prompts, rules
@@ -665,6 +665,121 @@ class CycleTest(unittest.TestCase):
         self.assertEqual((row["absence"], row["jev"]["error"]), ("jev", "watchdog"))
         self.assertEqual(row["state"], STATE)
         self.assertEqual(len(self.sends()), 2)                 # the ledger row preceded the hung send
+        self.assertEqual(signal.alarm(0), 0)
+
+    # A real SIGALRM, raised in-process at the moment a mock is reached: main()'s handler runs
+    # before signal.raise_signal returns, exactly as when the 50 s alarm lands there.
+    def test_watchdog_while_the_answer_becomes_columns_is_jev_watchdog_and_billed(self):
+        self.urlopen.side_effect = None
+        self.urlopen.return_value = _Resp(GOOD)
+        def for_arm(answers, arm):
+            signal.raise_signal(signal.SIGALRM)
+            return rules.null_columns()
+        with mock.patch.object(rules, "for_arm", side_effect=for_arm):
+            self.assertEqual(cycle.main(["--once"]), 0)
+        row = self.only_row()
+        self.assertEqual((row["absence"], row["jev"]["error"]), ("jev", "watchdog"))   # was "guard", billed 0
+        self.assertEqual(cycle.billed_tokens(row), 480)
+        self.assertIsNone(row["answers"])                      # SPEC §2: answers on a parse row only
+        self.assertEqual(row["columns"], {"a": None, "b": None})
+        self.assertEqual(self.heartbeat(), TS_RX)
+        self.assertEqual(signal.alarm(0), 0)
+
+    def test_watchdog_inside_a_handler_still_writes_the_row_and_the_halt(self):
+        # The alarm lands in the 401 handler's _halt, before HALT is written: the row was lost
+        # ("in the guards; no row") and so was the HALT, until the next tick's 401.
+        self.urlopen.side_effect = _http(401)
+        real, calls = cycle._halt, []
+        def halt(reason):
+            calls.append(reason)
+            if len(calls) == 1:
+                signal.raise_signal(signal.SIGALRM)
+            real(reason)
+        with mock.patch.object(cycle, "_halt", side_effect=halt):
+            self.assertEqual(cycle.main(["--once"]), 0)
+        row = self.only_row()
+        self.assertEqual((row["absence"], row["jev"]["error"]), ("jev", "http-4xx"))    # the first failure stays
+        self.assertEqual(cycle.billed_tokens(row), config.JEV_TOKENS_IF_UNKNOWN)
+        self.assertEqual(len(calls), 2)
+        with open(config.HALT) as fh:
+            self.assertIn(cycle.HALT_KEY_REJECTED + ": http-4xx 401", fh.read())
+        self.assertNotIn("no row", self.err.getvalue())
+        self.assertIn("watchdog", self.err.getvalue())
+        self.assertEqual(self.heartbeat(), TS_RX)
+        self.assertEqual(signal.alarm(0), 0)
+
+    def test_watchdog_escaping_run_marks_the_row_by_the_stage_it_reached(self):
+        cases = (("feed", ("feed", None)), ("state", ("guard", None)), ("prompts", ("guard", None)),
+                 ("ask", ("jev", "watchdog")), ("columns", ("jev", "watchdog")))
+        for i, (stage, want) in enumerate(cases):
+            def run(row, dry, halt, where, stage=stage):
+                where["stage"] = stage
+                if stage == "columns":
+                    row["answers"] = ANSWERS
+                signal.raise_signal(signal.SIGALRM)
+            with self.subTest(stage=stage), mock.patch.object(cycle, "_run", side_effect=run), \
+                    mock.patch("time.time", return_value=NOW + 60 * i):
+                self.assertEqual(cycle.main(["--once"]), 0)
+                row = self.rows()[-1]
+                self.assertEqual((row["absence"], row["jev"]["error"]), want)
+                self.assertIsNone(row["answers"])
+        self.assertEqual(len(self.rows()), len(cases))
+        self.assertNotIn("no row", self.err.getvalue())
+        self.assertEqual(signal.alarm(0), 0)
+
+    def test_watchdog_while_the_row_is_serialised_still_writes_it(self):
+        real, fired = json.dumps, []
+        def dumps(obj, *a, **k):
+            if isinstance(obj, dict) and "tick_id" in obj and not fired:   # write_row's, not the body's or a sha's
+                fired.append(1)
+                signal.raise_signal(signal.SIGALRM)
+            return real(obj, *a, **k)
+        with mock.patch("json.dumps", side_effect=dumps):
+            self.assertEqual(cycle.main(["--dry", "--once"]), 0)
+        self.assertEqual(fired, [1])
+        self.assertEqual((self.only_row()["absence"], self.only_row()["state"]), (None, STATE))
+        self.assertNotIn("no row", self.err.getvalue())
+
+    def test_write_row_serialises_in_its_critical_section_and_disarms_the_alarm(self):
+        os.makedirs(self.data)
+        old = signal.signal(signal.SIGALRM, cycle._on_alarm)
+        self.addCleanup(signal.signal, signal.SIGALRM, old)
+        self.addCleanup(signal.alarm, 0)
+        real = json.dumps
+        def dumps(obj, *a, **k):
+            signal.raise_signal(signal.SIGALRM)                        # ignored: the write has begun
+            return real(obj, *a, **k)
+        with mock.patch("json.dumps", side_effect=dumps):
+            cycle.write_row(cycle.new_row(TS_RX, "dry"))
+        signal.alarm(30)
+        cycle.write_row(cycle.new_row(TS_RX, "dry"))
+        self.assertEqual(signal.alarm(0), 0)                            # the write disarmed it
+        self.assertEqual(len(self.rows()), 2)
+        self.assertFalse(cycle._SIG["critical"])
+
+    def test_watchdog_after_the_tick_ended_never_escapes_main(self):
+        # A SIGALRM pending as the tick ends runs its handler at the next call: the disarm in
+        # _guarded_tick's finally. It used to leave main() with exit 1 and a traceback.
+        real = signal.alarm
+        def alarm(n):
+            left = real(n)
+            if n == 0 and sys._getframe(1).f_code.co_name == "_guarded_tick":
+                signal.raise_signal(signal.SIGALRM)
+            return left
+        with mock.patch.object(signal, "alarm", new=alarm):
+            self.assertEqual(cycle.main(["--dry", "--once"]), 0)
+        self.assertEqual(self.only_row()["absence"], None)
+        self.assertNotIn("Traceback", self.err.getvalue())
+        self.assertEqual(signal.alarm(0), 0)
+
+    def test_watchdog_in_the_guards_costs_the_row_never_the_exit_code(self):
+        def spend(now):
+            signal.raise_signal(signal.SIGALRM)
+        with mock.patch.object(cycle, "spend_today", side_effect=spend):
+            self.assertEqual(cycle.main(["--once"]), 0)
+        self.assertEqual(self.rows(), [])
+        self.assertIn("in the guards; no row", self.err.getvalue())
+        self.snapshot.assert_not_called()
         self.assertEqual(signal.alarm(0), 0)
 
     # ---- SIGTERM -----------------------------------------------------------------------------------
