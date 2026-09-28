@@ -4,7 +4,7 @@ in --dry; promote refuses on a dirty tree and carries v1's three nouls byte for 
 propose.sh --dry turns the fixture reply into a proposals json. Offline: loop.jev.ask
 is mocked wherever the table is run, subprocess.run is mocked for git, and every
 write lands in a temp dir. Nothing here opens a socket."""
-import ast, datetime, hashlib, importlib.util, io, json, os, shutil, subprocess, sys, tempfile, time, unittest, urllib.request
+import ast, datetime, hashlib, importlib.util, io, json, os, shutil, signal, subprocess, sys, tempfile, time, unittest, urllib.request
 from contextlib import redirect_stdout
 from unittest import mock
 
@@ -110,6 +110,44 @@ def _sh_env(tc, tmp=None, **extra):
         os.chmod(stub, 0o755)
         env["JEVLOOP_CAFFEINATE"] = stub
     return env
+
+
+def _alive(pid):
+    """True while `pid` is a live process: gone, or a zombie waiting for its reaper (Linux /proc), is not."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
+            return fh.read().rsplit(")", 1)[1].split()[0] != "Z"
+    except (OSError, IndexError):
+        return True
+
+
+def _gone(pids, within=5.0):
+    """The pids of `pids` still alive after up to `within` seconds."""
+    deadline = time.monotonic() + within
+    while any(_alive(p) for p in pids) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    return [p for p in pids if _alive(p)]
+
+
+def _pids(path, n, within=10.0):
+    """The first `n` pids written one per line to `path`, once there are `n`."""
+    deadline = time.monotonic() + within
+    while time.monotonic() < deadline:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                got = [int(x) for x in fh.read().split()]
+            if len(got) >= n:
+                return got[:n]
+        except (OSError, ValueError):
+            pass
+        time.sleep(0.01)
+    raise AssertionError(f"{path}: fewer than {n} pids after {within} s")
 
 
 def _table_rows(text):
@@ -1212,6 +1250,33 @@ class Capped(unittest.TestCase):
         self.assertEqual(r.returncode, 124)
         self.assertLess(time.monotonic() - t, 10)
         self.assertIn("exceeded 1 s awake", r.stderr)
+
+    def test_the_cap_ends_the_childs_whole_process_group(self):
+        # a stub that hangs in `wait` on two children of its own: one that dies of SIGTERM and one that
+        # ignores it. Only the direct child used to be terminated, and the stub's `sleep 30` outlived
+        # every hung-claude test. Now the group gets SIGTERM, then SIGKILL once the child is gone.
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        pids = os.path.join(tmp, "pids")
+        script = (f'sleep 30 >/dev/null 2>&1 & echo $! >>"{pids}"; (trap "" TERM; exec sleep 30) >/dev/null 2>&1 &'
+                  f' echo $! >>"{pids}"; wait')                        # (off the pipes: a survivor must not hold run() open)
+        t = time.monotonic()
+        r = self._run("0.3", "--", "sh", "-c", script)
+        self.assertEqual(r.returncode, 124, r.stderr)
+        self.assertLess(time.monotonic() - t, 5)                         # SIGKILL follows the child, not the whole grace
+        self.assertEqual(_gone(_pids(pids, 2)), [], "a grandchild outlived the cap")
+
+    def test_a_signal_to_capped_is_passed_on_to_the_childs_group(self):
+        # the child leads a session of its own, so launchd's SIGTERM (or ^C at a terminal) no longer
+        # reaches it directly: capped passes it on, and exits as the child did (128 + 15)
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        pids = os.path.join(tmp, "pids")
+        p = subprocess.Popen([self.PY, "-m", "nightly.capped", "30", "--", "sh", "-c", f'sleep 30 & echo $! >"{pids}"; wait'],
+                             cwd=REPO, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=_sh_env(self))
+        self.addCleanup(p.stderr.close)
+        grandchild = _pids(pids, 1)
+        p.send_signal(signal.SIGTERM)
+        self.assertEqual(p.wait(timeout=10), 128 + signal.SIGTERM)
+        self.assertEqual(_gone(grandchild), [])
 
     def test_usage_is_2_and_a_missing_command_is_127(self):
         self.assertEqual(self._run("x", "--", "true").returncode, 2)
