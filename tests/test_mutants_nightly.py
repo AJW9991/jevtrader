@@ -460,6 +460,19 @@ class PromoteHeld(unittest.TestCase):
                 self.assertIn("no candidate 0", err)
                 self._untouched()
 
+    def test_a_proposal_that_is_not_a_json_object_is_refused_in_one_line(self):
+        # an array (or a bare value) escaped main() as an AttributeError traceback; it is refused like
+        # every other bad proposal, exit 1, one line, nothing written
+        for doc in ([{"instructions": "x"}], 5, "abc", None):
+            with self.subTest(doc=doc):
+                with open(self.prop, "w", encoding="utf-8") as fh:
+                    json.dump(doc, fh)
+                rc, _, err = self._run(self.prop, "0", "--prompts", self.root)
+                self.assertEqual(rc, 1)
+                self.assertIn("not a JSON object with a candidates list", err)
+                self.assertNotIn("Traceback", err)
+                self._untouched()
+
     def test_a_version_file_that_appears_meanwhile_is_never_overwritten(self):
         # docstring: May not edit any existing prompt file (a second promote racing this one wrote v2 first)
         real = self.promote.next_version

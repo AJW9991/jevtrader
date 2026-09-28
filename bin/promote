@@ -143,7 +143,10 @@ def main(argv=None):
         with open(a.proposal, "rb") as fh:                 # read ONCE: vouched and parsed from the same bytes
             raw = fh.read()
         vouched(a.proposal, raw)                           # the committed table names this file's sha, or says so
-        cands = json.loads(raw.decode("utf-8")).get("candidates")
+        doc = json.loads(raw.decode("utf-8"))
+        if not isinstance(doc, dict):                      # an array (or a bare value) is refused like any bad proposal
+            raise RuntimeError(f"{a.proposal}: not a JSON object with a candidates list")
+        cands = doc.get("candidates")
         if not isinstance(cands, list) or not 0 <= a.k < len(cands):
             raise RuntimeError(f"{a.proposal}: no candidate {a.k} (has {len(cands) if isinstance(cands, list) else 0})")
         v1 = prompts.load("v1", root)
