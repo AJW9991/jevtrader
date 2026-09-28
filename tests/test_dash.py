@@ -268,6 +268,19 @@ class Dash(unittest.TestCase):
         self.assertIn('<div class="tile crit"><div class="k">spend, whole log</div><div class="v">past range</div>', page)
         self.assertNotIn("$inf", page)
 
+    def test_a_latency_near_a_floats_limit_draws_a_full_bar_and_the_page_is_built(self):
+        # 2026-09-28 (round 4b): a bar's height was 100 * v / top, and 100 * v is inf for a p95 of 1e308 (a
+        # latency_ms that passes report._num), so render died on "cannot convert float infinity to integer"
+        rows = [dict(_row(m)) for m in range(20, 30)]
+        rows[3] = dict(rows[3], jev=dict(rows[3]["jev"], latency_ms=1e308))
+        rows.append(dict(_row(20), tick_id="20260924T100000Z", ts_rx="2026-09-24T10:00:00.100Z"))   # a day at 120 ms
+        self.assertEqual(dash.latency_by_day(rows)["20260923"][1], 1e308)
+        page = dash.render(rows, outcomes.join(rows), now=datetime.datetime(2026, 9, 24, 12, 0, tzinfo=datetime.timezone.utc))
+        self.assertRegex(page, r"<div class='vbc' title='20260923: p95 \d{309} ms[^']*'><div class='vbar' style='height:100%'>")
+        self.assertIn("<div class='vbc' title='20260924: p95 120 ms, mean 120 ms, n 1'><div class='vbar' style='height:2%'>", page)
+        self.assertIn("height:100%", dash._vbars([("x", 1e308, "", False)], 1e308))
+        self.assertEqual(dash._vbars([("x", float("inf"), "", False), ("y", None, "", False)], 1.0).count("height:0%"), 2)   # no number, no bar
+
     def test_skipped_log_lines_show_on_the_page_as_in_report_health(self):
         # the dash never passed the log's skipped lines to report.health, so its "skipped log lines"
         # text could not render: the one count of rows lost to torn lines was missing from the page

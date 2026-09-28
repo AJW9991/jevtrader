@@ -356,10 +356,14 @@ def _mbar(x, crit_below=None, warn_below=None):
 
 
 def _vbars(items, top, label_every=1):
-    """Vertical bars, CSS only: items = [(label, value, title, crit)], heights as a share of `top`."""
+    """Vertical bars, CSS only: items = [(label, value, title, crit)], heights as a share of `top`. The
+    share is taken before the percent, and a value that is no finite number draws no bar: 100 * v was
+    inf for a latency p95 of 1e308 (a value report._num accepts), and until the evening of 2026-09-28
+    the page died on it. Each caller's `top` is at least its largest value (latency) or a fixed dollar
+    amount no finite day's spend can overflow against (spend), so the share is a finite number."""
     out = ["<div class='vb'>"]
     for i, (lab, v, title, crit) in enumerate(items):
-        h = 0 if not top or v is None else max(2, int(round(100 * v / top)))
+        h = max(2, int(round(100 * (v / top)))) if top and report._num(v) else 0
         out.append(f"<div class='vbc' title='{_esc(title)}'><div class='vbar{' crit' if crit else ''}' style='height:{h}%'></div>"
                    f"<div class='vbl'>{_esc(lab) if i % label_every == 0 else ''}</div></div>")
     out.append("</div>")
