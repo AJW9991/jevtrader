@@ -773,6 +773,24 @@ class ProposeDryTest(unittest.TestCase):
         self.assertNotIn("dry: 81 payloads", log)                    # policy_table.py never ran
         self.assertNotIn("OK proposals/", log)
         self.assertTrue(os.path.exists(os.path.join(tmp, "proposals", "2026-09-22.json")))
+        # a HALT night still rebuilds the health page (the EXIT trap), where the HALT shows
+        self.assertTrue(os.path.exists(os.path.join(tmp, "data", "dash.html")))
+        self.assertNotIn("dash: loop.dash exit", log)
+
+    def test_a_dash_that_fails_is_one_line_and_the_night_keeps_its_status(self):
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        _write_log(os.path.join(tmp, "data", "decisions.jsonl"), synthetic_log())
+        os.makedirs(os.path.join(tmp, "data", "dash.html"))                 # the page cannot be written
+        r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry",
+                            "--date", "2026-09-22", "--root", tmp],
+                           cwd=tmp, capture_output=True, text=True, timeout=120, env=_sh_env())
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(os.path.join(tmp, "logs", "propose.log")) as fh:
+            log = fh.read()
+        self.assertIn("OK proposals/2026-09-22.json", log)
+        self.assertIn("dash: loop.dash exit", log)
+        self.assertNotIn("FAIL", log)
+        self.assertLess(log.index("OK proposals/"), log.index("dash: loop.dash exit"))
 
     def test_usage_error_is_2_and_dry_needs_no_claude(self):
         r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--bogus"],
@@ -959,6 +977,7 @@ class LiveBranch(unittest.TestCase):
         self.assertIn("CLAUDE.md absent; cli unknown", log)                  # no user memory; --version failed too
         with open(os.path.join(self.saw, "cwd")) as fh:
             self.assertFalse(os.path.exists(fh.read().strip()), "a failed night left its empty cwd behind")
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, "data", "dash.html")))   # a failed night rebuilds it too
         with open(os.path.join(self.tmp, "logs", f"claude-{DAY.isoformat()}.err")) as fh:
             self.assertIn("boom", fh.read())
 
@@ -1026,7 +1045,7 @@ class Capped(unittest.TestCase):
                            cwd=REPO, capture_output=True, text=True, timeout=30)
         self.assertEqual(r.returncode, 128 + 15)
 
-    def test_propose_sh_rebuilds_the_dash_after_the_table_non_fatally(self):
+    def test_propose_sh_rebuilds_the_dash_at_the_end_of_every_night_non_fatally(self):
         with open(os.path.join(REPO, "nightly", "propose.sh")) as fh:
             src = fh.read()
         code = [l for l in src.splitlines() if not l.lstrip().startswith("#")]
@@ -1034,8 +1053,20 @@ class Capped(unittest.TestCase):
         self.assertEqual(len(dash), 1)
         self.assertIn('--log "$ROOT/data/decisions.jsonl" --out "$ROOT/data/dash.html"', dash[0])
         self.assertIn('|| log "dash:', code[code.index(dash[0]) + 1])
-        # the table's OK line comes BEFORE the dash, so a dash failure can never hide a good night
-        self.assertLess(code.index([l for l in code if 'log "OK proposals/$DATE.json"' in l][0]), code.index(dash[0]))
+        # the rebuild runs from an EXIT trap, so a HALT night or a failed claude night rebuilds it
+        # too. The trap is installed after the usage (2) and guard (3) exits and after logs/ exists,
+        # and before the first FAIL can end a night; it keeps the night's exit status.
+        at = lambda frag: [i for i, l in enumerate(code) if frag in l]
+        trap = at("trap on_exit EXIT")
+        self.assertEqual(len(trap), 1)
+        self.assertGreater(trap[0], at("guard_path \"$(pwd -P)\" cwd")[0])
+        self.assertGreater(trap[0], at('mkdir -p "$LOGS"')[0])
+        self.assertLess(trap[0], at('[ -x "$PY" ] || fail')[0])
+        self.assertTrue(all(i > trap[0] for i in at('fail "')), "a FAIL before the trap would skip the dash")
+        self.assertEqual(at("trap "), trap)                                           # no second EXIT trap replaces it
+        self.assertIn("exit $st", src.split("on_exit() {")[1].split("\n}")[0])
+        # the table's OK line is still logged before the night exits, so before the dash runs
+        self.assertEqual(len(at('log "OK proposals/$DATE.json"')), 1)
         # and a --dry run against a temp root writes the page there, never into the repo's data/
         tmp = tempfile.mkdtemp()
         with open(os.path.join(tmp, "decisions.jsonl"), "w") as fh:

@@ -66,6 +66,26 @@ LOG="$LOGS/propose.log"
 log()  { printf '%s propose %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$LOG" >&2; }
 fail() { log "FAIL $*"; exit 0; }
 
+# 5. the health page (report sections 1-3 only, loop/dash.py), rebuilt at the end of EVERY night --
+#    an OK table, a HALT, a failed claude call, a day with no ticks -- so the file is never older
+#    than a day and a bad night shows on it too. Decided by Alex 2026-09-26 ("rebuild it at the end
+#    of every nightly"). Non-fatal: a dash failure is one log line, never a FAIL, and the night's
+#    exit status is kept. The trap is installed here, after the usage (2) and guard (3) exits and
+#    once logs/ exists; it also removes the claude call's empty cwd however the night ended.
+WORK=""
+rebuild_dash() {
+  [ -x "$PY" ] || return 0
+  ( cd "$REPO" && "$PY" -m loop.dash --log "$ROOT/data/decisions.jsonl" --out "$ROOT/data/dash.html" ) >>"$LOG" 2>&1 \
+    || log "dash: loop.dash exit $? (non-fatal)"
+}
+on_exit() {
+  st=$?
+  [ -n "$WORK" ] && rm -rf "$WORK"
+  rebuild_dash
+  exit $st
+}
+trap on_exit EXIT
+
 [ -x "$PY" ] || fail "no python at $PY"
 [ -n "$DATE" ] || DATE="$("$PY" -c 'import datetime as d; print((d.datetime.now(d.timezone.utc) - d.timedelta(days=1)).strftime("%Y-%m-%d"))')"
 case "$DATE" in
@@ -126,7 +146,6 @@ else
   # path: `-m nightly.capped` resolves against the cwd, and it imports only the standard library.
   TMPBASE="${TMPDIR:-/tmp}"
   WORK="$(mktemp -d "${TMPBASE%/}/jevloop-claude.XXXXXX")" || fail "cannot make an empty cwd for claude"
-  trap 'rm -rf "$WORK"' EXIT                       # removed however the night ends
   MEM="$HOME/.claude/CLAUDE.md"
   if [ -f "$MEM" ]; then
     MEMSHA="$("$PY" -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest()[:12])' "$MEM" 2>/dev/null)"
@@ -204,10 +223,4 @@ if [ $DRY -eq 1 ]; then DRYFLAG="--dry"; else DRYFLAG=""; fi
 rc=$?
 [ $rc -eq 0 ] || fail "policy_table exit $rc"
 log "OK proposals/$DATE.json"
-
-# 5. the health page (report sections 1-3 only, loop/dash.py): rebuilt after every night so the
-#    file is never older than a day. Non-fatal: a dash failure is one log line, never a FAIL.
-#    Decided by Alex 2026-09-26 ("rebuild it at the end of every nightly").
-"$PY" -m loop.dash --log "$ROOT/data/decisions.jsonl" --out "$ROOT/data/dash.html" >>"$LOG" 2>&1 \
-  || log "dash: loop.dash exit $? (non-fatal; the night is OK)"
-exit 0
+exit 0                                             # on_exit (above) rebuilds the dash, after this OK line
