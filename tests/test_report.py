@@ -21,6 +21,7 @@ gap (past the log). Blocks (no --t0) are anchored at 10:00: k0 = m 0..14, k1 = m
 k2 = m 30..41.
 """
 import contextlib, datetime, io, json, math, os, tempfile, unittest
+from unittest import mock
 
 from loop import book, config, outcomes, report, rules, state
 
@@ -152,7 +153,9 @@ class Synthetic(unittest.TestCase):
         self.assertTrue(self.text.startswith("jev-paper-loop report: coinbase SOL-USD, cadence 60 s, horizon 900 s, log "))
 
     def test_health(self):
-        h = report.health(self.rows, self.outs, self.bad)
+        halt = os.path.join(tempfile.mkdtemp(), "HALT")                 # never the repo's data/HALT: a live HALT on the
+        with mock.patch.object(config, "HALT", halt):                   # Mac must not turn the commit gate red
+            h = report.health(self.rows, self.outs, self.bad)
         self.assertEqual((h["rows"], h["ticks"], h["live"], h["dry"], h["skipped"]), (40, 40, 34, 5, 1))
         self.assertEqual(h["absence"], {"jev": 1})
         self.assertEqual((h["priced"], h["filled"]), (40, 23))          # 5 up + 3 flat + 10 down + 5 flat
@@ -184,6 +187,13 @@ class Synthetic(unittest.TestCase):
         self.assertEqual((h["horizon"]["n"], h["horizon"]["mean"], h["horizon"]["max"], h["horizon"]["skips"]), (23, 900.0, 0.0, 0))
         self.assertIn("HALT: absent", text)
         self.assertFalse(h["halt"])
+        with open(halt, "w") as fh:
+            fh.write("spend: $0.2513 of input tokens today\n")
+        with mock.patch.object(config, "HALT", halt):
+            h = report.health(self.rows, self.outs, self.bad)
+        self.assertTrue(h["halt"])
+        self.assertIn("HALT: PRESENT since 20", "\n".join(h["lines"]))
+        self.assertIn("clearing it is a person's act", "\n".join(h["lines"]))
 
     def test_shared_key_skipped_minutes_and_the_receive_time_horizon_are_named(self):
         rows = [dict(_row(m)) for m in range(5, 40) if m != 20]                # minute 20 has no row: one isolated skip
