@@ -201,6 +201,7 @@ def _glued_note(k):
 
 _DECODER = json.JSONDecoder()
 WRITER_KEYS = ("venue", "product", "cadence_s", "horizon_s")   # in every row cycle.new_row writes; in no Jev answer
+_ROW_HEAD = re.compile(r'\{"v":\s*\d+,\s*"tick_id":\s*"')   # how every row begins (new_row's key order); a nest of "v" objects does not
 
 
 def _writer_row(r):
@@ -215,8 +216,9 @@ def _glued(line):
     ended, so nothing nested inside a row can surface here. Where a value does not parse (a torn
     row), the whole rows after it are rescued from the right: each from a row start whose value ends
     exactly where the next rescued piece (or the line) begins, and each must carry the writer's keys
-    (_writer_row), so an object nested in the torn row is never taken for a row. raw_decode reads
-    each piece once, and a depth past the parser's limit is a failed piece, not an exception. Each
+    (_writer_row), so an object nested in the torn row is never taken for a row. Only a candidate that
+    begins like a row ({"v":N,"tick_id":") is parsed, so a torn row nesting many "v"-first objects
+    costs no parse per level; a depth past the parser's limit is a failed piece, not an exception. Each
     value is then read as a row only if _not_row says so."""
     out, pos, end = [], 0, len(line.rstrip())
     while True:
@@ -235,6 +237,8 @@ def _glued(line):
         if i <= pos:
             break
         hi = i + len(ROW_START) - 1                             # the next candidate starts left of this one
+        if not _ROW_HEAD.match(line, i):                        # not a row's head: no parse (a torn row nesting
+            continue                                            # thousands of {"v": objects cost a parse each)
         try:
             v, stop = _DECODER.raw_decode(line, i)
         except (ValueError, RecursionError):

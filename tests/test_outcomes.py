@@ -316,6 +316,23 @@ class Load(unittest.TestCase):
         self.assertEqual([r["mid"] for r in rows], [101.0])
         self.assertEqual([n for n, _ in bad], [1, 2])
 
+    def test_a_torn_row_nesting_many_v_objects_costs_no_parse_per_level(self):
+        # a torn row whose kept answer nests {"v":{"v":...}} thousands deep: every nested row start used
+        # to be parsed (each through the rest of the nest), quadratic in the depth; only a candidate that
+        # begins like a row is parsed now
+        import time
+        p = os.path.join(_tmpdir(self), "d.jsonl")
+        depth = 10000                                                   # the old reader: ~2 s here; this one: ~5 ms
+        nest = '{"v":' * depth + "1" + "}" * depth
+        row = json.dumps(dict(_row(0, 100.0), answers={"a_action": {"choice": "X"}}), separators=(",", ":")).replace('"X"', nest)
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write(row[:len(row) // 2] + "\n")
+        t = time.perf_counter()
+        bad = []
+        self.assertEqual(outcomes.load(p, bad), [])
+        self.assertLess(time.perf_counter() - t, 0.5)
+        self.assertEqual(len(bad), 1)
+
     def test_a_long_line_of_glued_rows_costs_no_recursion(self):
         p = os.path.join(_tmpdir(self), "d.jsonl")
         rs = [_row(60 * k, 100.0) for k in range(1500)]
