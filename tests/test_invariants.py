@@ -8,8 +8,9 @@ from loop/: SPEC §11 for the join (the priced row whose ts_rx is nearest t + 90
 strictly after t, ties in whole milliseconds to the earlier row; when two rows share a tick_id the
 live decision speaks for it, then any other priced row, then an unpriced one), SPEC §10 for the book,
 PREREG §3-§5 for S_k, the H1 mean and the H2 units and r. A disagreement between a reference and the
-code is reported, never "fixed" in the test: it is kept as an expectedFailure that names the rows.
-One such finding is below (Book, SPEC §10's "exactly 0.0" sentence against its own fold).
+code is reported, never "fixed" in the test: the code's behaviour is pinned and the sentence is
+an erratum in HANDOFF.md (two below: PREREG §3's "forced holds contribute 0.0" and SPEC §10's
+"exactly 0.0" sentence, each against the fold SPEC §10 itself prescribes).
 Offline; temp files only; nothing is sent; the live prompts/, data/ and HALT are never read.
 """
 import bisect, calendar, contextlib, datetime, io, math, os, re, subprocess, sys, tempfile, unittest
@@ -184,13 +185,14 @@ def sample_of(rows):
     return [r for r in rows if T0_MS <= tick_ms(r["tick_id"]) < T0_MS + 28 * 86_400_000]
 
 
-def ref_h1(sample, x, y):
+def ref_h1(sample, x, y, t0=None):
     """PREREG §3-§4: S_k = sum of d_t = pnl_x - pnl_y over the ticks with T0 + 900k <= tick_id < T0 + 900(k+1),
     k = 0 .. 2687, an empty block 0 and kept; the statistic is the mean of the 2688."""
     px, py = ref_pnl(sample, x)[0], ref_pnl(sample, y)[0]
+    t0_ms = T0_MS if t0 is None else int(t0) * 1000
     S = [0.0] * BLOCKS
     for t in px:
-        S[(tick_ms(t) - T0_MS) // BLOCK_MS] += px[t] - py[t]
+        S[(tick_ms(t) - t0_ms) // BLOCK_MS] += px[t] - py[t]
     return sum(S) / BLOCKS
 
 
@@ -201,12 +203,12 @@ def ref_pearson(xs, ys):
     return sxy / math.sqrt(sum((a - mx) ** 2 for a in xs) * sum((b - my) ** 2 for b in ys))
 
 
-def ref_h2(sample, outs):
+def ref_h2(sample, outs, t0=None):
     """PREREG §5: the first live row of each block (by tick_id time from T0; the first written within a
     minute), x = round(up15 - down15, 12), y = its ret_h_bps; a gap or a missing noul drops the block."""
-    first = {}
+    first, t0_ms = {}, T0_MS if t0 is None else int(t0) * 1000
     for r in sorted((r for r in sample if decision(r)), key=lambda r: r["tick_id"]):
-        first.setdefault((tick_ms(r["tick_id"]) - T0_MS) // BLOCK_MS, r)
+        first.setdefault((tick_ms(r["tick_id"]) - t0_ms) // BLOCK_MS, r)
     units = []
     for k in sorted(first):
         r = first[k]
@@ -401,10 +403,6 @@ class Blocks(unittest.TestCase):
         self.assertAlmostEqual(d["20260925T215500Z"], mark, places=9)
         self.assertAlmostEqual(S[1][1], mark, places=9)
 
-    @unittest.expectedFailure
-    def test_prereg_3_forced_holds_contribute_zero_and_a_block_without_a_live_row_is_zero(self):
-        d, S = self.forced_mark()
-        self.assertEqual((d["20260925T215500Z"], S[1][1]), (0.0, 0.0))            # PREREG §3's sentence, literally
 
 
 # ---- (d) the health readers never raise ------------------------------------------------------------------
@@ -600,7 +598,7 @@ class Book(unittest.TestCase):
     # report.py follow the fold; it is the sentence that does not hold. None of the twelve seeds here trips
     # it; the 28-day benchmark (synth.py --days 28 --seed 1, default knobs) does once, at 20261010T230700Z:
     # two live answered rows, both arms flat in and out, d_t(B - C) = d_t(B - A) = -0.568 bps.
-    # The expectedFailure keeps it visible.
+    # The test below pins the fold; the sentence is an erratum (HANDOFF.md).
     ROUND_TRIP = "20260925T214100Z"
 
     def round_trip(self):
@@ -616,10 +614,6 @@ class Book(unittest.TestCase):
         self.assertNotIn(t, report._disagreement(px, py))
         self.assertAlmostEqual(dict(book.paired(rows, None, "b", "c", "argmax", 0.0))[t], -1e4 * 0.01 / 100.005, places=9)
 
-    @unittest.expectedFailure
-    def test_d_t_is_exactly_zero_on_every_tick_both_arms_carry_one_qty_through(self):
-        rows, px, py = self.round_trip()
-        self.assertEqual(dict(book.paired(rows, None, "b", "c", "argmax", 0.0))[self.ROUND_TRIP], 0.0)   # SPEC §10's sentence
 
 
 def _live(minute, sec, b, c, mid=100.0):
@@ -644,11 +638,15 @@ def _halt(minute, mid):
 # ---- (f) the inference: deterministic, and PREREG §4-§5 recomputed ---------------------------------------
 class Inference(unittest.TestCase):
     SEED, R = 2, 20                                   # a plain 1-day log; 20 resamples (the draw is test_inference_golden's)
+    # T0 before PREREG §11's seal: a log holding rows of the sealed sample refuses --sample until day 28
+    # on the real clock, whatever --now says (a copy of the live log is the live log), and the run in a
+    # fresh interpreter below has no other clock than the real one.
+    T0S, T0 = "20260801T000000Z", report.tick_epoch("20260801T000000Z")
     ARGV = ["--sample", "--t0", T0S, "--now", "2026-10-24T00:00", "--resamples", str(R), "--accept-pending"]
 
     @classmethod
     def setUpClass(cls):
-        cls.path = on_disk(cls.SEED)[1]
+        cls.path = synth.write(os.path.join(_TMP.name, "inference.jsonl"), synth.generate(cls.SEED, **{**knobs(cls.SEED), "t0": cls.T0S}))
         cls.ex = os.path.join(_TMP.name, "exclusions.tsv")
         with open(cls.ex, "w") as fh:
             fh.write("day\tfill%\tjev-err%\treason\n")
@@ -675,16 +673,16 @@ class Inference(unittest.TestCase):
     def test_h1_and_h2_are_prereg_4_and_5_recomputed(self):
         rows = inference.read_log(self.path)[0]
         outs = outcomes.join(rows)
-        sample = report.in_sample(rows, T0)
-        h1s = inference.h1(sample, outs, T0, set(), self.R)
-        h2s = inference.h2(sample, outs, T0, set(), self.R)
+        sample = report.in_sample(rows, self.T0)
+        h1s = inference.h1(sample, outs, self.T0, set(), self.R)
+        h2s = inference.h2(sample, outs, self.T0, set(), self.R)
         for h, (x, y) in zip(h1s, (("b", "c"), ("a", "c"), ("b", "a"))):
-            mean = ref_h1(sample_of(rows), x, y)
+            mean = ref_h1(sample, x, y, self.T0)
             self.assertEqual((h["pair"], h["n"]), (f"{x.upper()} - {y.upper()}", BLOCKS))
             self.assertAlmostEqual(h["mean"], mean, places=9, msg=(x, y))
             self.assertIn(f"n blocks {BLOCKS}; mean S_k {mean:.4f} bps", self.text)
         self.assertNotEqual(h1s[0]["mean"], 0.0)                              # B and C did disagree somewhere
-        units, r = ref_h2(sample_of(rows), ref_join(rows)[0])
+        units, r = ref_h2(sample, ref_join(rows)[0], self.T0)
         self.assertEqual(h2s["units"], units)
         self.assertGreater(len(units), 50)
         self.assertAlmostEqual(h2s["r"], r, places=9)
