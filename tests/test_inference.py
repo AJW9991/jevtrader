@@ -4,7 +4,7 @@ import contextlib, datetime, hashlib, io, json, math, os, random, re, shutil, sy
 from unittest import mock
 
 from fixture_prereg import pin_prereg
-from loop import book, exclusions, inference, outcomes, report, rules
+from loop import book, dash, exclusions, inference, outcomes, report, rules
 from test_report import _row, _write
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -562,6 +562,10 @@ class LiveClock(unittest.TestCase):
     """On the live log the real clock caps 'the log's last row': a row stamped after it (a clock that
     stepped forward) must not satisfy the pending refusal, nor close d28 in the stop-rule-3 lines."""
 
+    @classmethod
+    def setUpClass(cls):
+        pin_prereg(cls)                                               # T0 2026-09-25T21:40Z, whatever the repository's §11 says
+
     def test_a_row_stamped_after_the_clock_does_not_lift_the_pending_refusal(self):
         tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
@@ -578,6 +582,47 @@ class LiveClock(unittest.TestCase):
             code, out, err = _main(["--sample", "--exclusions", ex], now=run_at)
         self.assertEqual((code, out), (3, ""), err)
         self.assertIn("refusing to run: 1 H2 unit(s) wait for a t + h the log has not reached", err)
+
+
+class SealUnread(unittest.TestCase):
+    """tests/fixture_prereg.py: no test may depend on what the repository's PREREG.md §11 says (its T0 line
+    is to be blanked, then re-sealed for prereg-v2, after 2026-10-23). The classes in SEAL_READERS read the
+    repository's seal through dash.PREREG_PATH (the live log with no --t0, the sealed-copy guard, the
+    pre-T0 cut), so each pins the fixture: run here under a blanked and under a re-sealed §11 standing
+    in for the repository's, every one still passes. A new class that reads the seal belongs in
+    SEAL_READERS. LiveClock was added without the pin (2026-09-28): the suite was green, and a blanked
+    line would have errored it and a re-sealed one failed it."""
+    SEAL_READERS = (LiveLog, PreT0Cut, SealedCopy, LiveClock)
+
+    @staticmethod
+    def _run_alone(cls):
+        """cls's tests on a fresh result, between its own setUpClass and class cleanups and nothing else. A
+        nested TestSuite.run would also run this module's setUpModule and tearDownModule and every pending
+        module cleanup (unittest keeps one list for the whole run), undoing a fixture the rest of the run
+        stands on. Returns the test names and the result."""
+        names = unittest.TestLoader().getTestCaseNames(cls)                # a fresh loader: -k narrows the default one
+        result = unittest.TestResult()
+        try:
+            cls.setUpClass()
+            try:
+                for name in names:
+                    cls(name).run(result)
+            finally:
+                cls.tearDownClass()
+        finally:
+            cls.doClassCleanups()                                          # its pin and temp dirs, whatever failed
+        return names, result
+
+    def test_the_classes_that_read_the_seal_pass_whatever_the_repository_section_11_says(self):
+        for t0 in (None, "20261024T120000Z"):                              # blanked; re-sealed a month on
+            path = pin_prereg(self, t0)                                    # stands in for the repository's PREREG.md
+            for cls in self.SEAL_READERS:
+                with self.subTest(t0=t0, cls=cls.__name__):
+                    names, result = self._run_alone(cls)
+                    self.assertEqual(dash.PREREG_PATH, path)               # the class's pin is undone: none leaks to the next
+                    self.assertEqual(cls.tearDown_exceptions, [])
+                    self.assertTrue(result.wasSuccessful(), "\n".join(tb for _, tb in result.errors + result.failures))
+                    self.assertEqual(result.testsRun, len(names))
 
 
 class Reading(unittest.TestCase):
