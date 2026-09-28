@@ -80,7 +80,13 @@ ARMS = ("a", "b", "c")
 
 # ---- small helpers: every rate in the report goes through _pct so n/0 is never a crash ----
 def _num(x):
-    return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+    """A finite real number. An int past a float's range is not one (math.isfinite would raise on it)."""
+    if not isinstance(x, (int, float)) or isinstance(x, bool):
+        return False
+    try:
+        return math.isfinite(x)
+    except OverflowError:
+        return False
 
 
 def _mean(xs):
@@ -146,6 +152,7 @@ def health(rows, outs, bad=(), t0=None, last=None, now=None, since=None):
     errors = collections.Counter((_jev(r, "error") or "?") for r in attempted if r.get("absence") == "jev")
     lat = [_jev(r, "latency_ms") for r in rows if _num(_jev(r, "latency_ms"))]
     tokens = sum(_jev(r, "input_tokens") for r in rows if _num(_jev(r, "input_tokens")))
+    uncounted = sum(1 for r in rows if isinstance(_jev(r, "input_tokens"), int) and not _num(_jev(r, "input_tokens")))
     usd = tokens * config.USD_PER_MTOK / 1e6
     models = collections.Counter(r["model_answered"] for r in rows if isinstance(r.get("model_answered"), str))
     drift = sum(1 for r in rows if r.get("drift") is True)
@@ -164,7 +171,8 @@ def health(rows, outs, bad=(), t0=None, last=None, now=None, since=None):
         f"  jev errors {_pct(sum(errors.values()), len(attempted))} of attempted sends"
         + (": " + ", ".join(f"{k} {v}" for k, v in sorted(errors.items())) if errors else ""),
         f"  latency ms: mean {_f(_mean(lat), 1)}, p95 {_f(_p95(lat), 0)} (n {len(lat)})",
-        f"  input tokens {tokens} = ${usd:.6f} to date at ${config.USD_PER_MTOK}/Mtok",
+        f"  input tokens {tokens} = ${usd:.6f} to date at ${config.USD_PER_MTOK}/Mtok"
+        + (f"; {uncounted} row(s) report a count past a float's range, left out (the spend guard trips on one)" if uncounted else ""),
         f"  model_answered: " + (", ".join(f"{k} {v}" for k, v in sorted(models.items())) or "none")
         + f" ({len(models)} distinct); drift {drift}",
         f"  prompt_b versions: " + ", ".join(f"{k} {v}" for k, v in sorted(versions.items())),

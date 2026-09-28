@@ -70,7 +70,8 @@ def _today_line(rows, now, log):
     elapsed = max(1, int((now - now.replace(hour=0, minute=0, second=0, microsecond=0)).total_seconds() // config.CADENCE_S))
     return (f"today {now.strftime('%Y-%m-%d')}Z: {len(today)} rows in {elapsed} min ({100.0 * len(today) / elapsed:.0f}%), live answered {live},"
             f" absence " + (", ".join(f"{k} {v}" for k, v in sorted(absent.items())) or "none")
-            + (f"; spend UNREADABLE: the log cannot be read, so the guard trips (HALT) rather than count it" if usd == float("inf")
+            + (f"; spend UNREADABLE: the log cannot be read, so the next tick's guard trips (HALT) rather than count it" if usd == float("inf")
+               else f"; spend UNCOUNTED: a token count today is past a float's range, so the guard trips (HALT)" if usd == cycle.SPEND_UNCOUNTED
                else f"; spend ${usd:.4f} of the ${config.DAILY_SPEND_HALT_USD:g} tripwire (as the guard counts it)"))
 
 
@@ -169,7 +170,7 @@ def main(argv=None, now=None):
         rows = []
     except OSError as e:                                    # a 0200 log (write_row still appends), a directory, EIO,
                                                             # a data/ this user cannot enter (exists() says False there)
-        rows, unreadable = [], f"LOG UNREADABLE: {args.log}: {e.strerror or e}; the spend guard trips (HALT) until it can be read\n"
+        rows, unreadable = [], f"LOG UNREADABLE: {args.log}: {e.strerror or e}; the next tick's spend guard trips (HALT) until it can be read\n"
     outs = outcomes.join(rows)
     text = (unreadable or "") + render(rows, outs, t0, now, dash.heartbeat(), config.HALT, args.log, config.PROPOSALS,
                   os.path.join(config.REPO, "logs", "propose.log"), dash.current_version(),

@@ -206,7 +206,7 @@ class Status(unittest.TestCase):
         self.assertEqual(code, 0)
         out = buf.getvalue()
         self.assertTrue(out.startswith(f"LOG UNREADABLE: {self.tmp}: "), out[:200])
-        self.assertIn("spend UNREADABLE: the log cannot be read, so the guard trips (HALT) rather than count it", out)
+        self.assertIn("spend UNREADABLE: the log cannot be read, so the next tick's guard trips (HALT) rather than count it", out)
 
     def test_no_h1_h2_pair_or_confidence_number(self):
         text = self._render("2026-09-23T10:42")

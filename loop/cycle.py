@@ -51,6 +51,8 @@ disarms it. In the guards before the lock it costs the row, never the exit code.
 """
 import argparse, fcntl, hashlib, json, math, os, signal, sys, time, traceback
 
+SPEND_UNCOUNTED = sys.float_info.max   # spend_today: a token count past a float's range (over any limit; not 'unreadable')
+
 from loop import config, feed, jev, prompts, rules, state
 
 ROW_V = 1
@@ -191,7 +193,7 @@ def spend_today(now, path=None):
     try:
         return tokens * config.USD_PER_MTOK / 1e6
     except OverflowError:                   # a server-reported count past a float's range: over any limit,
-        return math.inf                     # and a raise here would cost every later tick of the day its row
+        return SPEND_UNCOUNTED              # and a raise here would cost every later tick of the day its row
 
 
 def new_row(ts_rx, mode):
@@ -437,6 +439,10 @@ def tick(dry=False, now=None):
         if usd == math.inf:
             _halt(f"{HALT_SPEND}: {config.DECISIONS} exists but cannot be read, so today's spend cannot be counted"
                   f" against ${config.DAILY_SPEND_HALT_USD} (config.DAILY_SPEND_HALT_USD) at {row['ts_rx']}; make it readable")
+            halt = True
+        elif usd == SPEND_UNCOUNTED:
+            _halt(f"{HALT_SPEND}: a logged input_tokens count today is past a float's range (the server reported it), over"
+                  f" ${config.DAILY_SPEND_HALT_USD} (config.DAILY_SPEND_HALT_USD) whatever the rest is, at {row['ts_rx']}")
             halt = True
         elif usd >= config.DAILY_SPEND_HALT_USD:
             _halt(f"{HALT_SPEND}: ${usd:.4f} of input tokens today >= "

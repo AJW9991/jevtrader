@@ -294,10 +294,14 @@ class CycleTest(unittest.TestCase):
         os.makedirs(self.data)
         with open(config.DECISIONS, "w", encoding="utf-8") as fh:
             fh.write(json.dumps(_row(DAY + "T010000Z", 10 ** 400)) + "\n")
-        self.assertEqual(cycle.spend_today(NOW), float("inf"))
+        self.assertEqual(cycle.spend_today(NOW), cycle.SPEND_UNCOUNTED)
         self.assertEqual(cycle.main(["--once"]), 0)
         self.assertEqual(self.rows()[-1]["absence"], "halt")
         self.assert_nothing_sent()
+        with open(config.HALT, encoding="utf-8") as fh:
+            reason = fh.read()
+        self.assertIn("past a float's range", reason)                   # the cause, not "cannot be read"
+        self.assertNotIn("cannot be read", reason)
 
     def test_spend_widens_when_the_tail_starts_after_today(self):
         # rows stamped later than today (a clock that ran ahead, then stepped back) fill the tail, so

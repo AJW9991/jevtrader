@@ -118,7 +118,7 @@ def spend_by_day(rows, t0=None):
     for r in rows:
         j = r.get("jev")
         tok = j.get("input_tokens") if isinstance(j, dict) else None     # a foreign row's jev may not be a dict
-        if isinstance(tok, (int, float)) and not isinstance(tok, bool) and tok > 0:
+        if report._num(tok) and tok > 0:                                     # a count past a float's range is not charted
             c[report.day_of(r.get("tick_id"), t0)] += tok
     return {d: t * config.USD_PER_MTOK / 1e6 for d, t in c.items()}
 

@@ -1080,6 +1080,18 @@ class PerDay(unittest.TestCase):
         self.assertIn("BAD days 1: d28", buf.getvalue())
         self.assertNotIn("d29", buf.getvalue())                                  # the two hours after the sample are not a sample day
 
+    def test_a_token_count_past_a_floats_range_is_named_not_a_crash(self):
+        # report._num ran math.isfinite on the int, which raises OverflowError: the day-14 health look,
+        # the dash and status all died on one such row. It is left out of the sum and named.
+        rows = [dict(_row(m)) for m in range(20, 30)]
+        rows[3] = dict(rows[3], jev=dict(rows[3]["jev"], input_tokens=10 ** 400))
+        self.assertFalse(report._num(10 ** 400))
+        h = report.health(rows, outcomes.join(rows))
+        self.assertIn("1 row(s) report a count past a float's range, left out (the spend guard trips on one)", "\n".join(h["lines"]))
+        from loop import dash
+        page = dash.render(rows, outcomes.join(rows), now=datetime.datetime(2026, 9, 23, 12, 0, tzinfo=datetime.timezone.utc))
+        self.assertIn("JevTrader health", page)
+
     def test_since_cuts_the_view_not_the_sample_days(self):
         # --since is a display cut: the per-day table used to pre-list every T0 day from d01, so the
         # days before it read 0 ticks and NO LIVE ROWS (a false stop-rule-3 prompt), and the day it
