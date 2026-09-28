@@ -158,14 +158,23 @@ def spend_by_day(rows, t0=None, over=None):
     too, and its label goes on `over` (a list) when one is given, so the page can name it: until
     2026-09-28 two rows of int(1e308) on one day raised OverflowError here and the page was not built,
     and until the evening of that day two float counts of 1e308 (or an int and a float) summed to inf
-    without raising, were charted as inf, named nowhere, and the page died drawing that bar."""
-    c = collections.Counter()
+    without raising, were charted as inf, named nowhere, and the page died drawing that bar; and until
+    later that evening two int counts whose sum passed a float's range, then a float count on the same
+    day, raised OverflowError in the adding itself (int + float), as report.health did before 64aaa4e."""
+    c, past = collections.Counter(), set()
     for r in rows:
         j = r.get("jev")
         tok = j.get("input_tokens") if isinstance(j, dict) else None     # a foreign row's jev may not be a dict
         if report._num(tok) and tok > 0:                                     # a count past a float's range is not charted
-            c[report.day_of(r.get("tick_id"), t0)] += tok
-    out, past = {}, []
+            d = report.day_of(r.get("tick_id"), t0)
+            if d in past:
+                continue
+            try:
+                c[d] += tok
+            except OverflowError:                                            # an int sum past a float's range meets a float
+                past.add(d)
+                del c[d]
+    out = {}
     for d, t in c.items():
         try:
             usd = t * config.USD_PER_MTOK / 1e6                              # an int sum becomes a float here
@@ -174,7 +183,7 @@ def spend_by_day(rows, t0=None, over=None):
         if report._num(usd):
             out[d] = usd
         else:                                                                # a float sum past it is inf, and raises nothing
-            past.append(d)
+            past.add(d)
     if over is not None:
         over.extend(sorted(past))
     return out

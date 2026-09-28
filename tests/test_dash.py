@@ -287,6 +287,20 @@ class Dash(unittest.TestCase):
         self.assertIn('<div class="tile crit"><div class="k">spend, whole log</div><div class="v">past range</div>', page)
         self.assertNotIn("$inf", page)
 
+    def test_two_int_counts_past_a_float_then_a_float_on_the_same_day_are_not_charted(self):
+        # the pre-merge check: int 10**308 + int 10**308 is an int, and adding the day's next count, a float,
+        # raised OverflowError in the adding itself (report.health guarded its twin in 64aaa4e; the dash did not)
+        rows = []
+        for m, tok in enumerate([10 ** 308, 10 ** 308, 1.0, 5]):
+            r = dict(_row(20), tick_id=f"20260923T10{m:02d}00Z", ts_rx=f"2026-09-23T10:{m:02d}:00.100Z")
+            r["jev"] = dict(r["jev"], input_tokens=tok)
+            rows.append(r)
+        over = []
+        self.assertEqual(dash.spend_by_day(rows, None, over), {})
+        self.assertEqual(over, ["20260923"])
+        page = dash.render(rows, outcomes.join(rows), now=datetime.datetime(2026, 9, 23, 12, 0, tzinfo=datetime.timezone.utc))
+        self.assertIn("1 day(s) not charted</span> 20260923", page)
+
     def test_a_latency_near_a_floats_limit_draws_a_full_bar_and_the_page_is_built(self):
         # 2026-09-28 (round 4b): a bar's height was 100 * v / top, and 100 * v is inf for a p95 of 1e308 (a
         # latency_ms that passes report._num), so render died on "cannot convert float infinity to integer"
