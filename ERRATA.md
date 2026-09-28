@@ -65,7 +65,7 @@ follows; fix the sentence), **gap** (the document is silent where the code decid
 
 | Where | The code does | What the revision should do | Kind |
 |---|---|---|---|
-| disagreements, the confidence filter | A b_action confidence that is NaN or +Infinity (kept on a `jev`/`parse` row) passes `< 0.85` as False, so it is counted in "B disagreements" and listed as `nan`/`inf` ahead of the 0.99 rows, where it can push a real row out of the 25 shown | Require a finite confidence (as report and outcomes do); no live row is known to carry one | choice |
+| disagreements, the confidence filter | A b_action confidence that is NaN or +Infinity (kept on a `jev`/`parse` row) passes `< 0.85` as False, so it is counted in "B disagreements"; a NaN also breaks the "highest confidence first" sort, so real rows can be listed out of order and one can drop out of the 25 shown (an integer past a float's range raised and lost the night; since 2026-09-28 such a row is skipped) | Require a finite confidence (as report and outcomes do); no live row is known to carry one | choice |
 | disagreements, the choice | A list or dict choice (also a `jev`/`parse` row) raised TypeError and lost the night; since 2026-09-28 such a row is skipped, and every digest that rendered before is byte-identical | Keep | gap |
 
 ## The nightly's context (a decision, not an erratum)

@@ -285,6 +285,31 @@ class DigestTest(unittest.TestCase):
         _write_log(self.log, synthetic_log())
         self.assertEqual(digest.build(DAY, self.log)[0], base)                       # the clean day is byte-identical
 
+    def test_a_confidence_past_a_floats_range_neither_crashes_nor_changes_the_digest(self):
+        # the same kind of jev/parse row as a list choice: an integer confidence of 10**400 passed the
+        # >= 0.85 filter and float() raised OverflowError, so that date never got a proposal
+        base, _ = digest.build(DAY, self.log)
+        rows = synthetic_log()
+        odd = dict(rows[7], absence="jev", columns={"a": None, "b": None})
+        odd["answers"] = dict(odd["answers"], b_action={"choice": "buy", "confidence": 10 ** 400,
+                                                         "probabilities": {"buy": 1.0, "sell": 0.0, "hold": 0.0}})
+        rows[7] = odd
+        _write_log(self.log, rows)
+        text, _ = digest.build(DAY, self.log)
+        self.assertEqual(_table_rows(text), [("buy", 0.95, "down"), ("sell", 0.90, "up"), ("sell", 0.86, "up")])
+        out = os.path.join(self.tmp, "d.md")
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(digest.main(["--date", "2026-09-22", "--log", self.log, "--out", out]), 0)
+
+    def test_the_digest_of_the_fixture_day_is_the_bytes_main_wrote(self):
+        # the digest's content is the treatment (CLAUDE.md): every byte of it must stay what the code on
+        # main (09e867f) produced for the same log and the same CURRENT. The sha was taken by running
+        # main's own nightly/digest.py on synthetic_log() with prompts pinned to v1, 2026-09-28; a change
+        # to the digest's text, order or numbers on this day turns this red.
+        text, n = digest.build(DAY, self.log)
+        self.assertEqual(n, 41)
+        self.assertEqual(hashlib.sha256(text.encode()).hexdigest(), "6201884e4235a5b271aab78714c0779a1c627f289633bb20dcf293a62835b679")
+
     def test_main_writes_file_and_day_zero_exits_4(self):
         out = os.path.join(self.tmp, "digest.md")
         with redirect_stdout(io.StringIO()):

@@ -100,7 +100,11 @@ def disagreements(day, joined, cur_name=None):
         o = joined.get(r["tick_id"]) or outcomes.GAP
         if not isinstance(a.get("choice"), str) or (a["choice"], o["label"]) not in CONTRADICTS:
             continue                                # a list or dict choice (a jev/parse row keeps the answer) is unhashable
-        out.append({"state": r.get("state") or "?", "choice": a["choice"], "confidence": float(a["confidence"]),
+        try:
+            conf = float(a["confidence"])
+        except OverflowError:                       # an integer past a float's range (a jev/parse row keeps it): not a row
+            continue                                # the table can show; it raised and lost the night
+        out.append({"state": r.get("state") or "?", "choice": a["choice"], "confidence": conf,
                     "ret_h_bps": o["ret_h_bps"], "label": o["label"], "tick_id": r["tick_id"]})
     out.sort(key=lambda x: (-x["confidence"], x["tick_id"]))
     return out
