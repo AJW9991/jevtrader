@@ -10,7 +10,7 @@ options below). Nothing here reaches the Mac until Alex pulls (below). Supersede
 - The Mac's loop is untouched by this session (no `data/` here). Sample: `prereg-v1`, T0
   2026-09-25 21:40Z, ends 2026-10-23 21:40Z; day 3 of 28 on 2026-09-28. Arm B is v2 since
   2026-09-26 22:21Z. Spend ≈ $0.05 to date.
-- The merge (`git log 09e867f..origin/main`): `make test` green (834 tests) under 3.11-3.13 here, and in CI on
+- The merge (`git log 09e867f..origin/main`): `make test` green (836 tests) under 3.11-3.13 here, and in CI on
   every push (`.github/workflows/test.yml`): Linux 3.11-3.14, macOS 3.14, and six modes on 3.14 that were hand runs
   until 2026-09-28: warnings as errors, a C locale with UTF-8 mode off, a shuffled order, and the clock moved to the
   day-28 run, to 2026-11-15 and to 2027 (`make test-modes` runs them here, ~7 min). Reviewed by five code reviews, a
@@ -18,8 +18,10 @@ options below). Nothing here reaches the Mac until Alex pulls (below). Supersede
   a fourth round (76 agents, 33 confirmed findings) with two rounds of fixes after it, each patch re-run and tried
   by an agent that did not write it. None found a defect on the normal path (a tick or a night on the inputs the
   loop itself writes); every fix is a guard, a report line, a test or tooling. Nothing frozen changed: SPEC,
-  PREREG, PROTOCOL, prompts/, PROMPT.md, the digest's content, config thresholds, and tests/test_frozen.py now
-  pins them (an edit fails the suite the day it is made).
+  PREREG, PROTOCOL, prompts/, PROMPT.md, the digest's content, config thresholds. tests/test_frozen.py now pins
+  SPEC, PREREG, PROMPT.md, prompts/v1 and v2, every config threshold a row depends on, the alphabet and arm C
+  (an edit fails the suite the day it is made); the digest has its own golden test; PROTOCOL.md and
+  prompts/CURRENT are not pinned.
 
 ## Decisions for Alex (options, not done)
 1. **The slow model's context.** `claude -p` run with cwd = the repo auto-loads `./CLAUDE.md`
@@ -178,8 +180,8 @@ and says so) · `make dash` · `make inference-smoke` · `make results` (day 28;
 
 - Found by the fourth round and its two fix rounds (2026-09-28), each fixed with a test that failed
   before: the day-28 pending refusal waits for the last row stamped at or before the clock (a row
-  stamped after it no longer lifts it), and so do the health readers; report §1 sums token counts
-  without overflowing and prices only what the spend guard charges; `--since` in ISO week form
+  stamped after it no longer lifts it), and so do the health readers; report §1 and the dash sum
+  token counts without overflowing and name as uncounted only a count the spend guard trips on; `--since` in ISO week form
   works; the spend HALT and the status screen name an uncounted total; propose.sh knows the
   forbidden tree by identity (a case-only name, the firmlink, a bind mount), writes only under the
   --root it checked, refuses a newline in --root or the cwd, and runs every python before `cd` isolated;
