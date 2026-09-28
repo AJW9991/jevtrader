@@ -317,8 +317,8 @@ def render(rows, outs, t0=None, now=None, hb=None, halt=False, props=(), current
     now = now or datetime.datetime.now(datetime.timezone.utc)
     sample = report.in_sample(rows, t0) if t0 is not None else rows
     last = max((report.tick_epoch(r["tick_id"]) for r in rows if isinstance(r.get("tick_id"), str)), default=None)
-    h_all = report.health(rows, outs)
-    h = report.health(sample, outs, t0=t0, last=last)                # last: the sample's last day closes on rows after the cut
+    h_all = report.health(rows, outs, now=now.timestamp())
+    h = report.health(sample, outs, t0=t0, last=last, now=now.timestamp())                # last: the sample's last day closes on rows after the cut
     occ = report.occupancy(sample)
     rt = report.retest(sample)
     age = _age(hb, now)

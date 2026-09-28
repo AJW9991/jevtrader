@@ -131,9 +131,9 @@ def answered(rows):
 
 
 # ---- §4.1 health ---------------------------------------------------------------------------
-def health(rows, outs, bad=(), t0=None, last=None):
+def health(rows, outs, bad=(), t0=None, last=None, now=None):
     """`last`: the epoch of the whole log's last tick when `rows` were cut to a sample (--t0), so
-    the sample's last day can close; None reads it from `rows`."""
+    the sample's last day can close; None reads it from `rows`. `now` (epoch): see days_table."""
     live = [r for r in rows if r.get("mode") == "live" and r.get("absence") is None]
     dry = [r for r in rows if r.get("mode") == "dry"]
     absence = collections.Counter(r["absence"] for r in rows if r.get("absence") is not None)
@@ -151,7 +151,7 @@ def health(rows, outs, bad=(), t0=None, last=None):
     drift = sum(1 for r in rows if r.get("drift") is True)
     versions = collections.Counter(str(r.get("prompt_b")) for r in rows)
     span = f"{ticks[0]}..{ticks[-1]}" if ticks else "-"
-    per_day = days_table(rows, outs, t0, last)
+    per_day = days_table(rows, outs, t0, last, now)
     keys = collections.Counter(_jev(r, "key_path") for r in rows if isinstance(_jev(r, "key_path"), str))
     shared = sum(v for k, v in keys.items() if "loop" not in k.lower())      # PROTOCOL §3.6: the loop's own key, or it says so
     hz = realised_horizon(rows)
@@ -261,14 +261,16 @@ def _tick_of(epoch):
     return datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
-def days_table(rows, outs, t0=None, last=None):
+def days_table(rows, outs, t0=None, last=None, now=None):
     """Per day (day_of: T0-anchored 'dNN' with T0, else the UTC calendar day): distinct ticks,
     coverage of a full day, live rows, the share of them with a non-gap outcome, the Jev error
     share over rows that reached the ask, and the BAD flag of PREREG §8 stop rule 3. `outs` is the
     join over the WHOLE log, so a day's last 15 minutes are filled by the next day's rows.
     `last` is the epoch of the whole log's last tick: with --t0 the rows are cut to the sample,
     and without it the sample's last day (d28) could never close, since its last row can fill
-    only from rows after the cut. None reads it from `rows`.
+    only from rows after the cut. None reads it from `rows`. `now` (epoch), when given, caps it:
+    a row stamped after the clock (a forward clock step) closes no day that has not happened, turns
+    no pending row into a gap, and lists no future day as NO LIVE ROWS; it shows as an open day.
     With T0, every day from d01 to the day of `last` (at most d28) is listed, rows or not: a day
     the log has no row for is the worst health event and would otherwise be the one day the
     table never shows (2026-09-28). Its fill is 0/0, which PREREG §8.3 does not define, so it is
@@ -279,6 +281,8 @@ def days_table(rows, outs, t0=None, last=None):
     per = {}
     rows_last = max((tick_epoch(r["tick_id"]) for r in rows if isinstance(r.get("tick_id"), str)), default=None)
     last = rows_last if last is None else max(last, rows_last or last)
+    if now is not None and last is not None:
+        last = min(last, now)
     if t0 is not None and last is not None:
         for j in range(1, min(SAMPLE_DAYS, math.floor((last - t0) / 86400) + 1) + 1):
             per.setdefault(f"d{j:02d}", {"ticks": set(), "live": 0, "filled": 0, "pending": 0, "attempted": 0, "errors": 0})
@@ -830,14 +834,14 @@ def withheld_until(rows, t0, now=None):
     return end if any(t0 <= tick_epoch(r["tick_id"]) < end for r in rows) else None
 
 
-def render(rows, bad=(), log=None, since=None, missing=False, t0=None, outs=None, health_only=False, last=None, withheld=None):
+def render(rows, bad=(), log=None, since=None, missing=False, t0=None, outs=None, health_only=False, last=None, withheld=None, now=None):
     """t0: T0 in epoch seconds when the rows were cut to the sample; outs: the join over the
     WHOLE log (a sample row's t+h may sit after the sample), else the join over `rows`; last:
     the whole log's last tick (epoch) for the same reason, so the sample's last day can close.
     health_only: sections 1-3 only (PREREG §8.4); 4-7 are neither computed nor printed, so the
     blind look cannot show an H1 or H2 number by accident."""
     outs = outcomes.join(rows) if outs is None else outs
-    secs = (health(rows, outs, bad, t0, last), occupancy(rows), retest(rows))
+    secs = (health(rows, outs, bad, t0, last, now), occupancy(rows), retest(rows))
     if not health_only:
         secs += (agreement(rows), table(rows, outs, t0, last), h2(rows, outs, t0), calibration(rows, outs))
     lines = [f"jev-paper-loop report: {config.VENUE} {config.PRODUCT}, cadence {config.CADENCE_S} s, horizon {config.HORIZON_S} s"
@@ -943,7 +947,8 @@ def main(argv=None, now=None):
             withheld = None
         elif withheld is not None:
             health_only = True
-    sys.stdout.write(render(rows, bad, args.log, args.since, missing, t0, outs, health_only, last, withheld))
+    clock = datetime.datetime.now(datetime.timezone.utc).timestamp() if now is None else now
+    sys.stdout.write(render(rows, bad, args.log, args.since, missing, t0, outs, health_only, last, withheld, clock))
     return 0
 
 

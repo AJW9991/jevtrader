@@ -1073,10 +1073,37 @@ class PerDay(unittest.TestCase):
         self.assertIn("BAD days 1: d28", text)
         log = os.path.join(self.enterContext(tempfile.TemporaryDirectory()), "past-end.jsonl")
         _write(log, rows, garbage=False)
-        code, out = _main(["--log", log, "--health", "--t0", "20260925T214000Z"])
+        buf = io.StringIO()                                           # the clock past the log: its rows have happened
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+            code = report.main(["--log", log, "--health", "--t0", "20260925T214000Z"], now=end + 3 * 3600)
         self.assertEqual(code, 0)
-        self.assertIn("BAD days 1: d28", out)
-        self.assertNotIn("d29", out)                                  # the two hours after the sample are not a sample day
+        self.assertIn("BAD days 1: d28", buf.getvalue())
+        self.assertNotIn("d29", buf.getvalue())                                  # the two hours after the sample are not a sample day
+
+    def test_a_row_stamped_after_the_clock_closes_no_day(self):
+        # a forward clock step (then back) leaves a row stamped in the future; `last` took it, so every
+        # day before it closed: the open day turned BAD on its pending rows and the days between were
+        # NO LIVE ROWS. With the clock given, the stray row is an open day of its own and nothing else moves.
+        t0 = report.tick_epoch("20260925T214000Z")
+        rows = []
+        for m in range(0, 1440 + 20):                                  # d01 and 20 minutes of d02
+            r = dict(_row(7))
+            e = t0 + 60 * m
+            r["tick_id"] = report._tick_of(e)
+            r["ts_rx"] = datetime.datetime.fromtimestamp(e, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.100Z")
+            rows.append(r)
+        now = t0 + 60 * (1440 + 20) + 30
+        stray = dict(rows[100], tick_id=report._tick_of(t0 + 4 * 86400), ts_rx="2026-09-29T21:40:00.100Z")
+        clean = report.health(rows, outcomes.join(rows), t0=t0, now=now)
+        both = rows + [stray]
+        h = report.health(both, outcomes.join(both), t0=t0, now=now)
+        self.assertEqual((h["bad_days"], h["empty_days"]), (clean["bad_days"], clean["empty_days"]))
+        self.assertEqual((h["bad_days"], h["empty_days"]), ([], []))
+        d02 = [d for d in h["days"] if d["day"] == "d02"][0]
+        self.assertEqual((d02["open"], d02["pending"] > 0), (True, True))
+        self.assertTrue([d for d in h["days"] if d["day"] == "d05"][0]["open"])                 # the stray row's own day
+        no_clock = report.health(both, outcomes.join(both), t0=t0)                                # what it did before
+        self.assertIn("d02", no_clock["bad_days"] + no_clock["empty_days"])
 
     def test_every_t0_day_is_listed_and_a_day_without_live_rows_is_flagged(self):
         # 2026-09-28: a day the log has no row for (the Mac off) never appeared in the table, and a day

@@ -619,7 +619,7 @@ def main(argv=None, now=None):
     text = render(mode, t0, now, log, excluded, excl_lines, kept,
                   h1(scope, outs, anchor, excluded, args.resamples, n_blocks), h2(scope, outs, anchor, excluded, args.resamples, n_blocks),
                   args.resamples, pending, cut, excl_path,
-                  rule3_lines(report.days_table(scope, outs, t0, max(report.tick_epoch(r["tick_id"]) for r in rows)), excluded)
+                  rule3_lines(report.days_table(scope, outs, t0, max(report.tick_epoch(r["tick_id"]) for r in rows), now.timestamp()), excluded)
                   if mode == "sample" and rows else None)
     if args.now:
         text = text.replace("\n", f" (clock overridden with --now {args.now})\n", 1)

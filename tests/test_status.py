@@ -143,6 +143,17 @@ class Status(unittest.TestCase):
         self.assertIn("prompt_b CURRENT: v9", out)
         self.assertIn("sample: day d01 of 28", out)
 
+    def test_a_row_stamped_after_the_clock_closes_no_day_on_the_status_screen(self):
+        t0 = report._t0("2026-09-23T10:00")
+        stray = dict(self.rows[-1], tick_id="20260927T100000Z", ts_rx="2026-09-27T10:00:00.100Z")
+        rows = self.rows + [stray]
+        lines = status._days_lines(rows, outcomes.join(rows), t0, _now("2026-09-23T10:42"))
+        text = "\n".join(lines)
+        self.assertNotIn("NO LIVE ROWS", text.split("\n", 1)[1])
+        self.assertNotIn("BAD (", text)
+        without = status._days_lines(rows, outcomes.join(rows), t0)                  # no clock: the stray row closes d01..d04
+        self.assertIn("NO LIVE ROWS", "\n".join(without))
+
     def test_an_unreadable_log_is_named_not_a_traceback(self):
         # a 0200 log (write_row still appends to it) or a directory: the spend guard trips on it, and
         # the morning screen says why instead of dying in outcomes.load

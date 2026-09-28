@@ -86,14 +86,14 @@ def _sample_line(t0, now):
     return f"sample: day d{n:02d} of {report.SAMPLE_DAYS} (T0 {report._iso_minute(t0)}, ends {end})"
 
 
-def _days_lines(rows, outs, t0):
+def _days_lines(rows, outs, t0, now=None):
     """The sample's per-day table (rows cut to [T0, T0 + 28 d) with the whole log's last tick, as the
     dash and `make health` do), so a pre-T0 or post-sample day never counts as BAD here."""
     if not rows:
         return ["per day: no rows"]
     last = max((report.tick_epoch(r["tick_id"]) for r in rows if isinstance(r.get("tick_id"), str)), default=None)
     scope = report.in_sample(rows, t0) if t0 is not None else rows
-    d = report.days_table(scope, outs, t0, last)
+    d = report.days_table(scope, outs, t0, last, now.timestamp() if now is not None else None)
     shown = d["days"][-DAYS_SHOWN:]
     out = [f"per day (last {len(shown)} of {len(d['days'])}; BAD days so far {len(d['bad'])}" + (": " + ", ".join(d["bad"]) if d["bad"] else "")
            + (f"; NO LIVE ROWS {len(d['empty'])}: " + ", ".join(d["empty"]) + " (fill 0/0; the exclusion is Alex's call)" if d["empty"] else "") + "):"]
@@ -138,7 +138,7 @@ def render(rows, outs, t0, now, hb, halt_path, log, proposals_root, propose_log,
     lines = [f"jev-paper-loop status at {now.strftime('%Y-%m-%dT%H:%MZ')} (health only, PREREG §8.4; nothing here is H1 or H2)",
              _age_line(hb, now), _halt_line(halt_path), _last_row_line(rows), _today_line(rows, now, log), _sample_line(t0, now)]
     lines.append(f"prompt_b CURRENT: {current or '?'}; rows {len(rows)} in the log")
-    lines.extend(_days_lines(rows, outs, t0))
+    lines.extend(_days_lines(rows, outs, t0, now))
     lines.extend(_nightly_lines(proposals_root, propose_log, now))
     return "\n".join(lines) + "\n"
 
