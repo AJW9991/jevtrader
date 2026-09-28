@@ -646,6 +646,16 @@ class LiveClock(unittest.TestCase):
                       " 2 row(s) stamped after the clock (2026-10-23T21:40:10Z), first 20261101T000000Z, are not counted as"
                       " reached);" + wait, err)                                  # first by its stamp, not by its place in the file
 
+    def test_a_log_with_no_row_stamped_at_or_before_the_clock_has_reached_nothing(self):
+        # every row stamped a day after its tick (a hand-edited log: the loop's tick is its stamp's minute), so no
+        # row is reached: the unit still waiting on a gap refuses the run, and the refusal says why, not a traceback
+        late = lambda r: dict(r, ts_rx=f"2026-10-24T{r['ts_rx'][11:]}")
+        rows = [late(r) for r in self._rows(-30, 0)]
+        code, out, err = self._run(rows, 10)
+        self.assertEqual((code, out), (3, ""), err)
+        self.assertIn("(first live row 20261023T212500Z; the log has no row stamped at or before the clock; 30 row(s) stamped"
+                      " after the clock (2026-10-23T21:40:10Z), first 20261023T211000Z, are not counted as reached);", err)
+
     def test_the_day_28_run_waits_for_the_tick_that_closes_d28_as_the_makefile_and_handoff_say(self):
         # both said "21:56Z or later" (2026-09-28 review): a run at 21:56:00 reads the log through the 21:55 tick (a
         # tick writes its row during its minute), so d28 read open in the one output --out writes
