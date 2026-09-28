@@ -78,7 +78,7 @@ jev-paper-loop/
   launchd/com.alexward.jevloop.loop.plist  launchd/com.alexward.jevloop.nightly.plist
   prompts/v1.json        frozen (written)   prompts/v2.json (promoted 2026-09-26)   prompts/CURRENT  → "v2" (one line)
   fixtures/              one recorded Coinbase snapshot set, committed
-  tests/                 unittest, stdlib; tests/fixture_prompts.py pins a v1-only prompts root (no test depends on what the live prompts/CURRENT names; one checks it builds, whatever it names)
+  tests/                 unittest, stdlib; tests/fixture_prompts.py pins a v1-only prompts root and tests/fixture_prereg.py a PREREG.md (dash.PREREG_PATH) (no test depends on what the live prompts/CURRENT names; one checks it builds, whatever it names)
   data/   logs/   proposals/   (gitignored except proposals/*.md and data/exclusions.tsv, versioned when it exists)
 ```
 

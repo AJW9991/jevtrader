@@ -5,7 +5,8 @@ writes a temp PREREG.md whose §11 line has exactly the shape dash.T0_RE parses 
 with the fixture named as the sealer), patches dash.PREREG_PATH to it for the test's lifetime
 (or the class's, when `tc` is the class in setUpClass), and returns the path. Every program
 reads the repository's PREREG through dash.PREREG_PATH (report, status, dash, inference), so
-this is the one pin. t0=None writes an unsealed line. Not a test module: unittest discovers
+this is the one pin (tests/test_prereg_line.py is the one test that reads the real line, and accepts any
+T0: it checks only that a sealed line parses). t0=None writes an unsealed line. Not a test module: unittest discovers
 test*.py only."""
 import os, tempfile
 from unittest import mock
