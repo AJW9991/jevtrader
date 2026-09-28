@@ -613,6 +613,31 @@ class CycleTest(unittest.TestCase):
         self.assertEqual([r["tick_id"] for r in rows], [TICK, "20260924T022900Z"])
         self.assertEqual(outcomes.join(rows)[TICK]["absence"], "gap")   # one minute apart: no t+h yet
 
+    def test_a_torn_last_line_costs_itself_only(self):
+        # A short write (disk full) or a crash mid-write leaves the log without its final
+        # newline. The next row must start on a fresh line: glued onto the torn one, both fail
+        # to parse. Nothing is truncated: the torn bytes stay where they are.
+        cycle.main(["--dry", "--once"])
+        with open(config.DECISIONS, "rb") as fh:
+            whole = fh.read()
+        torn = whole[:len(whole) // 2]
+        with open(config.DECISIONS, "ab") as fh:
+            fh.write(torn)                                     # half a row, no newline
+        self.snapshot.side_effect = lambda: dict(SNAP, ts_rx=cycle.iso_ms(NOW + 60))
+        cycle.main(["--dry", "--once"])
+        bad = []
+        rows = outcomes.load(config.DECISIONS, bad)
+        self.assertEqual([r["tick_id"] for r in rows], [TICK, "20260924T022900Z"])   # both whole rows
+        self.assertEqual([n for n, _ in bad], [2])                                    # exactly one bad line
+        with open(config.DECISIONS, "rb") as fh:
+            raw = fh.read()
+        self.assertTrue(raw.startswith(whole + torn + b"\n{"))
+        self.assertTrue(raw.endswith(b"\n"))
+        self.assertEqual(raw.count(b"\n"), 3)
+        cycle.main(["--dry", "--once"])                          # an intact end gets no blank line
+        with open(config.DECISIONS, "rb") as fh:
+            self.assertEqual(fh.read().count(b"\n"), 4)
+
     def test_tick_id_floors_ts_rx_to_the_minute(self):
         self.assertEqual(cycle.tick_id("2026-09-24T02:28:49.000Z"), "20260924T022800Z")
         self.assertEqual(cycle.tick_id("2026-12-31T23:59:59.999Z"), "20261231T235900Z")

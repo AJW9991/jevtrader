@@ -129,7 +129,8 @@ def _rows(buf):
             try:
                 r = json.loads(line)
             except ValueError:
-                continue                     # a truncated line (crash mid-write) costs one row
+                continue                     # a truncated line (crash mid-write) costs that one row:
+                                             # write_row starts the next row on a fresh line
             if isinstance(r, dict):
                 out.append(r)
     return out
@@ -230,14 +231,22 @@ def _err(msg):
 def write_row(row):
     """Atomic append: the whole line in ONE os.write on an O_APPEND fd, then fsync. A
     reader (report, nightly) or a crash can therefore see at most one truncated line,
-    which outcomes.load() skips. NaN is allowed through rather than raised on: a
-    non-finite feature must still cost only that feature, and every reader already
-    checks isfinite. SIGTERM arriving inside is deferred until the heartbeat is written."""
+    which outcomes.load() skips. A torn last line (a short write on a full disk, a crash
+    mid-write) is closed first: when the file does not end in a newline this row goes
+    out as "\\n" + line, so the torn line costs itself only, instead of gluing the next
+    healthy row onto it and costing both. Never a truncate: lock rows are appended
+    without the lock, and a race costs at most a blank line, which every reader skips.
+    NaN is allowed through rather than raised on: a non-finite feature must still cost
+    only that feature, and every reader already checks isfinite. SIGTERM arriving
+    inside is deferred until the heartbeat is written."""
     line = (json.dumps(row, separators=(",", ":")) + "\n").encode()
     _SIG["critical"] = True
     try:
-        fd = os.open(config.DECISIONS, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        fd = os.open(config.DECISIONS, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o644)   # RDWR: pread below
         try:
+            size = os.fstat(fd).st_size
+            if size and os.pread(fd, 1, size - 1) != b"\n":
+                line = b"\n" + line          # close the torn line; the bytes before it stay as they are
             n = os.write(fd, line)
             while n < len(line):             # never on a regular file; the loop is the contract
                 n += os.write(fd, line[n:])
