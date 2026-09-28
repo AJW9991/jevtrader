@@ -317,6 +317,31 @@ class TestSnapshot(unittest.TestCase):
             self.assertEqual(set(s), KEYS)
             self.assertEqual(len(s["candles"]), EXP["candles_closed"])
 
+    def test_a_body_nested_past_the_parsers_depth_or_a_number_past_a_float_is_a_feed_error(self):
+        # RecursionError (json.loads on a deep body) and OverflowError (float of a 400-digit JSON
+        # integer, int of a JSON Infinity) escaped as non-FeedErrors: the tick logged absence
+        # "guard" and lost its whole observation to a bad ticker body. Venue garbage is "feed".
+        deep = b"[" * 100000 + b"]" * 100000
+        s, _ = snap(Fake(trades=deep))                                   # the ticker is tolerated
+        self.assertEqual(s["trades_5m"], -1)
+        self.assertEqual(len(s["candles"]), EXP["candles_closed"])
+        for kw in ({"book": deep}, {"candles": deep}):
+            with mock.patch("urllib.request.urlopen", Fake(**kw)), self.assertRaisesRegex(feed.FeedError, "^parse "):
+                feed.snapshot(config.PRODUCT, now=NOW)
+        huge = json.loads(json.dumps(BOOK))
+        huge["pricebook"]["asks"][0]["price"] = 10 ** 400                  # a JSON integer, not a string
+        with mock.patch("urllib.request.urlopen", Fake(book=json.dumps(huge).encode())), \
+                self.assertRaisesRegex(feed.FeedError, r"^parse (ask|level|book)"):
+            feed.snapshot(config.PRODUCT, now=NOW)
+        inf = json.loads(json.dumps(CANDLES))
+        inf["candles"][0]["start"] = float("inf")                           # json.dumps writes Infinity
+        with mock.patch("urllib.request.urlopen", Fake(candles=json.dumps(inf).encode())), \
+                self.assertRaisesRegex(feed.FeedError, r"^parse candles\.start$"):
+            feed.snapshot(config.PRODUCT, now=NOW)
+        tr = {"trades": [{"time": "9999-12-31T23:59:59+23:59", "size": "1"}]}
+        s, _ = snap(Fake(trades=tr))
+        self.assertIn(s["trades_5m"], (-1, 0, 1))                          # never a raise past the ticker's tolerance
+
     def test_book_sanity(self):
         def book(bid="114.8", bs="1", ask="114.82", az="1", product="SOL-USD"):
             return {"pricebook": {"product_id": product, "bids": [{"price": bid, "size": bs}],

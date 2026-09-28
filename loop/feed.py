@@ -72,14 +72,14 @@ def _get(url):
         raise FeedError(f"net {type(e).__name__} {where}") from None
     try:
         return json.loads(body)
-    except ValueError as e:
+    except (ValueError, RecursionError) as e:  # a body nested past the parser's depth is garbage too
         raise FeedError(f"parse {where}: {e}") from None
 
 
 def _num(d, k, what):
     try:
         return float(d[k])                      # the venue sends every number as a string
-    except (KeyError, TypeError, ValueError):
+    except (KeyError, TypeError, ValueError, OverflowError):   # a JSON integer past a float's range
         raise FeedError(f"parse {what}.{k}") from None
 
 
@@ -140,7 +140,7 @@ def parse_candles(j, now):
     for c in raw:
         try:
             s = int(c["start"])
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError):   # int(inf) from a JSON Infinity
             raise FeedError("parse candles.start") from None
         if s + 60 <= now:
             rows.append({"start": s, "open": _num(c, "open", "candle"), "high": _num(c, "high", "candle"),
@@ -182,7 +182,7 @@ def parse_trades(j, now):
     for t in raw:
         try:
             ts = _ep(t["time"])                 # "2026-09-24T02:28:45.725274Z"
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError):
             raise FeedError("parse trades.time") from None
         n += ts >= cut
     return n
