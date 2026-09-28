@@ -8,7 +8,7 @@ Written 2026-09-28 by Claude (Fable 5.1) in a CLOUD session on branch `claude/co
 - The Mac's loop is untouched by this session (no `data/` here). Sample: `prereg-v1`, T0
   2026-09-25 21:40Z, ends 2026-10-23 21:40Z; day 3 of 28 on 2026-09-28. Arm B is v2 since
   2026-09-26 22:21Z. Spend ≈ $0.05 to date.
-- This branch (`git log origin/main..`): 57 commits, `make test` green (410 tests) under 3.11-3.13 here and 3.12-3.14 in CI
+- This branch (`git log origin/main..`): 76 commits, `make test` green (448 tests) under 3.11-3.13 here and 3.12-3.14 in CI
   (`.github/workflows/test.yml`, every push). Five Opus reviews (tick/send, book+outcomes+report, inference, nightly,
   dash+docs) found no defect on the normal path; every fix below is a guard, a report line, a
   test or tooling. Nothing frozen changed: SPEC, PREREG, PROTOCOL, prompts/, PROMPT.md, the
@@ -102,8 +102,8 @@ and says so) · `make dash` · `make inference-smoke` · `make results` (day 28;
 - rules/cycle: a bool, NaN or wrong-typed answer field is `jev`/`parse` (the answer kept, no
   column), never a column; feed: a candle that is not finite and positive refuses the set.
 - outcomes: the live decision speaks for its tick when two rows share it; ties in whole ms; a
-  whole row glued onto a torn line is kept, and so are two whole rows that lost only their
-  newline. book: null columns hold C too (SPEC §10; latent).
+  whole row glued onto a torn line is kept, and so is every whole row on a line that lost its
+  newlines (one skip entry per such line). book: null columns hold C too (SPEC §10; latent).
 - **The outcomes and book changes are READERS** (an auditor of the whole diff, 2026-09-28): every
   report, digest and inference run re-reads the whole log with them. On a tick with two or more
   rows, on a torn line with a whole row glued to it, or on an exact-millisecond tie, `join`/`load`
