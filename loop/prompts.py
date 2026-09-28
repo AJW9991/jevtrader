@@ -31,8 +31,8 @@ def load(version, root=None):
         raise PromptError(f"not a version name: {version!r}")
     p = os.path.join(_root(root), version + ".json")
     try:
-        with open(p) as fh:
-            doc = json.load(fh)
+        with open(p, encoding="utf-8") as fh:        # not the locale's: v2 holds an em dash, and under LC_ALL=C
+            doc = json.load(fh)                      # the file was refused (or, elsewhere, read to another sha)
     except (OSError, ValueError) as e:
         raise PromptError(f"{p}: {e}") from None
     if not isinstance(doc, dict):
@@ -45,7 +45,7 @@ def current(root=None):
     name is not -- two names would make prompt_b ambiguous in every row after."""
     p = os.path.join(_root(root), "CURRENT")
     try:
-        with open(p) as fh:
+        with open(p, encoding="utf-8") as fh:
             names = [l.strip() for l in fh.read().splitlines() if l.strip()]
     except OSError as e:
         raise PromptError(f"{p}: {e}") from None

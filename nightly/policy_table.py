@@ -19,20 +19,28 @@ repo; write under prompts/ or data/ (jev.py appends its own ledger row per send;
 the one exception is data/HALT on a rejected key, CONTRACT §2 "the caller writes
 HALT", the same rule as cycle.py); send anything while data/HALT exists (PROTOCOL
 §3.8: HALT stops sends, and these sends never reach decisions.jsonl, so the spend
-guard cannot see them); retry beyond jev.py's one, or keep sending into a limiter
-(a 429 ends the night; so do MAX_TRANSIENT_RUN transient failures in a row: 81
-states x jev.py's two attempts would be 162 requests on the loop's own key, the
-key PROTOCOL §3.6 isolates because a limit or a suspension is the risk); run a
-candidate whose criteria are not exactly buy/sell/hold (prompts.question refuses
-it, so a malformed proposal sends nothing).
+guard cannot see them; checked before EVERY send, so a HALT a person or the loop
+writes mid-table stops the rest); retry beyond jev.py's one, or keep sending into a
+limiter (a 429 ends the night; so do MAX_TRANSIENT_RUN transient failures in a row,
+MAX_OTHER_RUN other failures in a row, and MAX_ERROR_RUN failures of any kind in a
+row, so alternating kinds cannot run to the deadline: 81 states x jev.py's two
+attempts would be 162 requests on the loop's own key, the key PROTOCOL §3.6
+isolates because a limit or a suspension is the risk); run a candidate whose
+criteria are not exactly buy/sell/hold (prompts.question refuses it, so a malformed
+proposal sends nothing).
+The proposal's bytes are read ONCE: the candidates are parsed from them and the
+table's "proposal sha256" line is their hash, so the committed .md vouches for
+exactly the json it was built from (bin/promote checks it).
 --dry prints the number of would-be payloads and the first one, and sends nothing.
 
 Cost: 81 states x (K+1) questions of ~50 words + a 10-word state; at K=3 that is
 ~30k input tokens = ~$0.0013 at config.USD_PER_MTOK, under CONTRACT §5's ~$0.005.
 Sends are sequential: typical 81 x ~0.5 s = 40 s, and DEADLINE_S bounds the night
 when the API is slow -- nothing new is sent after it and the table says INCOMPLETE.
-Exit 0 complete or HALT present (nothing sent, no table), 4 INCOMPLETE (written, some
-states unanswered), 1 bad input, 2 usage.
+Exit 0 complete or HALT present at the start (nothing sent, no table), 4 INCOMPLETE
+(written, some states unanswered: a HALT that appears mid-table is one way), 1 bad
+input, 2 usage. --out defaults to <date>.md under the repo's proposals/
+(config.PROPOSALS), not beside the json; propose.sh always passes it.
 """
 import hashlib, argparse, difflib, json, os, re, sys, time
 
@@ -52,6 +60,9 @@ MAX_OTHER_RUN = 3                         # ... and this many non-transient, non
                                           # 401/403/429, a parse): 78 more sends would repeat them
 MAX_TRANSIENT_RUN = 3                     # this many transient failures in a row end the night: one is
                                           # noise and the table goes on; three is an outage, not a blip
+MAX_ERROR_RUN = 3                         # ... and this many failures of ANY kind in a row: the two counters above
+                                          # each reset on the other's kind, so timeout, 404, timeout, 404 ... would
+                                          # otherwise run to the deadline
 HALT_STATUS = (401, 403)                  # the key is rejected: same rule as cycle.py's HALT
 EXIT_INCOMPLETE = 4
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -64,11 +75,17 @@ def states():
 
 
 def load_candidates(path):
-    """The proposal's 1-3 candidates, each projected onto the wire shape with type
-    'choice' added (proposals carry none, CONTRACT §5); rationale kept for the table.
-    Raises ValueError on any shape fault: a half-valid proposal would send half a table."""
-    with open(path, encoding="utf-8") as fh:
-        doc = json.load(fh)
+    """The proposal's 1-3 candidates, read from the file at `path` (see parse_candidates)."""
+    with open(path, "rb") as fh:
+        return parse_candidates(fh.read(), path)
+
+
+def parse_candidates(raw, path):
+    """The 1-3 candidates in `raw` (the proposal's bytes; `path` names it in errors), each
+    projected onto the wire shape with type 'choice' added (proposals carry none, CONTRACT
+    §5); rationale kept for the table. Raises ValueError on any shape fault (a byte that is
+    not UTF-8 is one too): a half-valid proposal would send half a table."""
+    doc = json.loads(raw.decode("utf-8"))
     c = doc.get("candidates") if isinstance(doc, dict) else None
     if not isinstance(c, list) or not 1 <= len(c) <= MAX_CANDIDATES:
         raise ValueError(f"{path}: candidates must be a list of 1-{MAX_CANDIDATES}")
@@ -114,15 +131,19 @@ def _halt(reason):
 def run(qs, ask=None, deadline_s=DEADLINE_S, clock=time.monotonic):
     """One row per state: {"state", "rule_c", "answers": {qid: (choice, confidence)}|None,
     "error": kind|None, "model": str|None}. A fatal kind (no key, no ledger, a 429, key
-    rejected -- which also writes data/HALT) or MAX_TRANSIENT_RUN transient failures in a
-    row stop the sending; the remaining rows carry that kind as their error. The deadline
-    is checked before each send, never mid-send: jev.py's own timeout bounds a send."""
+    rejected -- which also writes data/HALT), MAX_TRANSIENT_RUN transient failures in a
+    row, MAX_OTHER_RUN other failures in a row, or MAX_ERROR_RUN failures of any kind in a
+    row stop the sending; so does data/HALT, checked before every send (error kind
+    "halt"). The remaining rows carry that kind as their error. The deadline is checked
+    before each send, never mid-send: jev.py's own timeout bounds a send."""
     ask = ask or jev.ask                 # resolved at call time so tests can patch loop.jev.ask
-    t0, stop, out, streak, other = clock(), None, [], 0, 0
+    t0, stop, out, streak, other, errors = clock(), None, [], 0, 0, 0
     for s, rc in states():
         row = {"state": s, "rule_c": rc, "answers": None, "error": None, "model": None}
         if stop:
             row["error"] = stop
+        elif os.path.exists(config.HALT):          # PROTOCOL §3.8, per send: a HALT written mid-table stops the rest
+            stop = row["error"] = "halt"
         elif clock() - t0 > deadline_s:
             stop = row["error"] = "deadline"
         else:
@@ -131,14 +152,16 @@ def run(qs, ask=None, deadline_s=DEADLINE_S, clock=time.monotonic):
                 row["answers"] = {qid: (r["answers"][qid].get("choice"), r["answers"][qid].get("confidence"))
                                   for qid in qs}
                 row["model"] = r.get("model")
-                streak = other = 0
+                streak = other = errors = 0
             except jev.JevError as e:
                 row["error"] = e.kind
                 streak = streak + 1 if e.kind in TRANSIENT_KINDS else 0
                 other = other + 1 if e.kind not in TRANSIENT_KINDS else 0     # a 4xx or parse that repeats is not going to clear
+                errors += 1                                                   # any kind: alternating kinds reset the two above
                 if e.status in HALT_STATUS:
                     _halt(f"key rejected: {e.kind} {e.status} via {e.key_path} (nightly policy table)")
-                if e.kind in FATAL_KINDS or e.status in HALT_STATUS or streak >= MAX_TRANSIENT_RUN or other >= MAX_OTHER_RUN:
+                if (e.kind in FATAL_KINDS or e.status in HALT_STATUS or streak >= MAX_TRANSIENT_RUN
+                        or other >= MAX_OTHER_RUN or errors >= MAX_ERROR_RUN):
                     stop = e.kind
         out.append(row)
     return out
@@ -175,17 +198,16 @@ def _cell(a):
     return str(choice), f"{conf:.2f}" if isinstance(conf, (int, float)) and not isinstance(conf, bool) else "-"
 
 
-def sha256_of(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        h.update(fh.read())
-    return h.hexdigest()
-
-
 def render(date, cur_name, cur_sha, cands, cur_q, results, proposal_sha=None):
     n_err = sum(1 for r in results if r["error"])
-    models = sorted({r["model"] for r in results if r["answers"] and r["model"]})
-    drift = " -- DRIFT, requested " + config.MODEL if models and models != [config.MODEL] else ""
+    answered = [r for r in results if r["answers"]]
+    models = sorted({str(r["model"]) for r in answered if r["model"]})
+    unnamed = sum(1 for r in answered if not r["model"])
+    if unnamed:
+        models.append(f"no model named on {unnamed}")
+    # cycle.py's rule for the same reply (row "drift": model != config.MODEL): an answer that names
+    # no model is drift too, not a pass
+    drift = " -- DRIFT, requested " + config.MODEL if any(r["model"] != config.MODEL for r in answered) else ""
     out = [f"# policy table {date}", "",
            f"Eighty-one synthetic states, one request each, carrying {len(cands) + 1} questions. "
            "Nothing here is scored against a logged outcome: the table describes a wording, it does not backtest it.",
@@ -227,11 +249,15 @@ def main(argv=None):
                                  description="81 synthetic states per candidate; scores nothing against outcomes")
     ap.add_argument("proposal", help="proposals/<date>.json")
     ap.add_argument("--dry", action="store_true", help="print payload count and the first payload; send nothing")
-    ap.add_argument("--out", default=None, help="default: proposals/<date>.md beside the json")
+    ap.add_argument("--out", default=None,
+                    help="default: <date>.md under the repo's proposals/ (config.PROPOSALS), wherever the json is; "
+                         "propose.sh passes --out beside it")
     ap.add_argument("--prompts", default=None, help="prompts root (tests)")
     a = ap.parse_args(argv)
     try:
-        cands = load_candidates(a.proposal)
+        with open(a.proposal, "rb") as fh:          # read ONCE: the candidates and the sha are of the same bytes
+            raw = fh.read()
+        cands = parse_candidates(raw, a.proposal)
         cur_name, cur_q, cur_sha = current_action(a.prompts)
     except (OSError, ValueError) as e:              # PromptError is a ValueError
         print(f"policy_table: {e}", file=sys.stderr)
@@ -250,7 +276,7 @@ def main(argv=None):
     out = a.out or os.path.join(config.PROPOSALS, f"{date}.md")
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     with open(out, "w", encoding="utf-8") as fh:
-        fh.write(render(date, cur_name, cur_sha, cands, cur_q, results, sha256_of(a.proposal)))
+        fh.write(render(date, cur_name, cur_sha, cands, cur_q, results, hashlib.sha256(raw).hexdigest()))
     n_err = sum(1 for r in results if r["error"])
     print(f"{out}\t{len(results) - n_err}/{len(results)} answered" + (" INCOMPLETE" if n_err else ""))
     return EXIT_INCOMPLETE if n_err else 0

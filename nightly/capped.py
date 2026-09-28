@@ -2,9 +2,11 @@
 
     python3 -m nightly.capped SECONDS -- CMD [ARG ...]
 
-Exit: the command's own code; 124 when the cap fired (the child is terminated, then killed);
-2 on a usage error. stdin, stdout, stderr and the environment are inherited, so propose.sh's
-redirects still apply and the token is never printed or passed on argv.
+Exit: the command's own code, and 128 + N when a signal N killed it (as a shell reports it:
+subprocess gives -N, and sys.exit(-15) would exit 241, which reads as an ordinary code); 124
+when the cap fired (the child is terminated, then killed); 127 when the command cannot be
+started; 2 on a usage error. stdin, stdout, stderr and the environment are inherited, so
+propose.sh's redirects still apply and the token is never printed or passed on argv.
 
 Why a cap, and why this clock. launchd never starts a second instance of a job while one is
 running, so a `claude -p` that hangs while the machine is awake would silently block every
@@ -39,7 +41,8 @@ def main(argv=None):
         sys.stderr.write(f"capped: cannot start {cmd[0]!r}: {e.strerror}\n")
         return 127
     try:
-        return p.wait(timeout=cap)                          # subprocess counts time.monotonic() too
+        rc = p.wait(timeout=cap)                            # subprocess counts time.monotonic() too
+        return 128 - rc if rc < 0 else rc                   # killed by signal N: -N from subprocess, 128 + N out
     except subprocess.TimeoutExpired:
         p.terminate()
         try:
