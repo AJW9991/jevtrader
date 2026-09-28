@@ -1102,6 +1102,13 @@ class PerDay(unittest.TestCase):
         d02 = [d for d in h["days"] if d["day"] == "d02"][0]
         self.assertEqual((d02["open"], d02["pending"] > 0), (True, True))
         self.assertTrue([d for d in h["days"] if d["day"] == "d05"][0]["open"])                 # the stray row's own day
+        log = os.path.join(self.enterContext(tempfile.TemporaryDirectory()), "stray.jsonl")         # report.main passes its clock
+        _write(log, both, garbage=False)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(report.main(["--log", log, "--health", "--t0", "20260925T214000Z"], now=now), 0)
+        self.assertIn("BAD days 0", buf.getvalue())
+        self.assertNotIn("NO LIVE ROWS on", buf.getvalue())
         no_clock = report.health(both, outcomes.join(both), t0=t0)                                # what it did before
         self.assertIn("d02", no_clock["bad_days"] + no_clock["empty_days"])
 

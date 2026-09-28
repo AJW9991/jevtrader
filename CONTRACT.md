@@ -287,7 +287,7 @@ Print, plain text, in this order:
    `prompt_b` versions, the key that answered (and a SHARED KEY warning, PROTOCOL §3.6),
    the realised horizon and the isolated skipped minutes, HALT present or absent, and the
    per-day table of PREREG §8 stop rule 3 (T0-anchored `dNN` with `--t0`; every day from d01
-   to the log's last tick, a closed day with no live row flagged NO LIVE ROWS, never BAD by
+   to the log's last tick, capped at the clock so a row stamped in the future closes no day, a closed day with no live row flagged NO LIVE ROWS, never BAD by
    code: its fill is 0/0 and the exclusion is Alex's call).
 2. Adjective occupancy per dimension; flag any word > 95% (arms cannot disagree
    on a constant).

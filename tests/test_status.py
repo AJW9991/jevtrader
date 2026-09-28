@@ -153,6 +153,10 @@ class Status(unittest.TestCase):
         self.assertNotIn("BAD (", text)
         without = status._days_lines(rows, outcomes.join(rows), t0)                  # no clock: the stray row closes d01..d04
         self.assertIn("NO LIVE ROWS", "\n".join(without))
+        text = status.render(rows, outcomes.join(rows), t0, _now("2026-09-23T10:42"), None, self.halt, self.log,
+                             os.path.join(self.tmp, "no-proposals"), os.path.join(self.tmp, "no.log"), None)   # render passes its clock
+        self.assertNotIn("NO LIVE ROWS", text.split("per day", 1)[1].split("\n", 1)[1])
+        self.assertNotIn("BAD (", text)
 
     def test_the_screen_shows_the_exclusions_file_the_day_28_run_will_apply(self):
         # a line the parser refuses must be seen the morning after it is written, not on day 28

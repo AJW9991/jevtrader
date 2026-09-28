@@ -132,8 +132,28 @@ class Dash(unittest.TestCase):
         now = datetime.datetime(2026, 9, 25, 12, 0, tzinfo=datetime.timezone.utc)
         page = dash.render(rows, outcomes.join(rows), now=now)
         self.assertIn("2026-09-24 &middot; <b>0</b>/1440", page)
-        self.assertEqual(dash._calendar_run(["20260923", "20260925", "20270101"], now), ["20260923", "20260924", "20260925", "20270101"])
-        self.assertEqual(dash._calendar_run([], now), [])
+        self.assertEqual(dash._calendar_run(["20260923", "20260925", "20270101"], now), (["20260923", "20260924", "20260925", "20270101"], []))
+        self.assertEqual(dash._calendar_run([], now), ([], []))
+
+    def test_a_clock_stepped_back_or_a_stopped_loop_keeps_the_strip_bounded_and_current(self):
+        # 2026-09-28 (pre-merge verifier): one row stamped 1970 filled the strip from 1970 (40 MB); and
+        # the strip ended at the last logged day, so an outage still under way was not drawn
+        now = datetime.datetime(2026, 9, 30, 12, 0, tzinfo=datetime.timezone.utc)
+        run, older = dash._calendar_run(["19700101", "20260923", "20260925"], now)
+        self.assertEqual((len(run), run[-1], older), (8, "20260930", ["19700101"]))           # 09-23 .. 09-30, today included
+        logged = ["19700101"] + [f"202608{d:02d}" for d in range(1, 32)] + [f"202609{d:02d}" for d in range(1, 29)]
+        run, older = dash._calendar_run(logged, now)                    # the cap: 35 days ending today
+        self.assertEqual((len(run), run[0], run[-1]), (dash.STRIP_DAYS, "20260827", "20260930"))
+        self.assertEqual((len(older), older[0], older[-1]), (1 + 26, "19700101", "20260826"))
+        rows = []
+        for tick in ("19700101T000000Z", "20260929T100000Z", "20260929T100100Z"):
+            r = dict(_row(0))
+            r["tick_id"], r["ts_rx"] = tick, f"{tick[:4]}-{tick[4:6]}-{tick[6:8]}T{tick[9:11]}:{tick[11:13]}:00.100Z"
+            rows.append(r)
+        page = dash.render(rows, outcomes.join(rows), now=now)
+        self.assertLess(len(page), 200_000)
+        self.assertIn("1 earlier logged day(s), the last 1970-01-01: not drawn", page)
+        self.assertIn("2026-09-30 &middot; <b>0</b>/1440", page)                                 # today, the loop stopped
 
     def test_no_h1_h2_pair_or_confidence_number(self):
         page = dash.render(self.rows, self.outs, t0=report.tick_epoch("20260923T100000Z"))
@@ -191,7 +211,8 @@ class Dash(unittest.TestCase):
             e = t0 + 60 * m
             r["tick_id"], r["ts_rx"] = report._tick_of(e), f"{report._iso_minute(e)[:16]}:00.100Z"
             rows.append(r)
-        page = dash.render(rows, outcomes.join(rows), t0=t0, now=None)
+        now = datetime.datetime.fromtimestamp(t0 + 3 * 86400 + 125 * 60, datetime.timezone.utc)   # just after the log: d03 closed
+        page = dash.render(rows, outcomes.join(rows), t0=t0, now=now)
         self.assertIn("<span class='badge crit'>NO LIVE ROWS</span>", page)
         self.assertIn("title='d02: 0 ticks, fill n/a, jev-err n/a, NO LIVE ROWS'", page)
         self.assertIn("<div class='d empty'", page)
@@ -199,6 +220,24 @@ class Dash(unittest.TestCase):
         self.assertIn("<div class='d ok'", page)                       # d01 and d03 closed and fine
         self.assertIn(".map .c.b4 { background: var(--s5)", page)         # the map's bins outrank .map .c (they never showed before)
         self.assertIn("<div class='d open'", page)                     # d04
+
+    def test_a_row_stamped_after_the_clock_closes_no_day_on_the_page(self):
+        # dash.render passes its clock to report.health: one row from a forward clock step must not
+        # close today (BAD on its pending rows) or list the days before it NO LIVE ROWS
+        t0 = report.tick_epoch("20260925T214000Z")
+        rows = []
+        for m in range(1440 + 20):
+            r = dict(_row(7))
+            e = t0 + 60 * m
+            r["tick_id"], r["ts_rx"] = report._tick_of(e), f"{report._iso_minute(e)[:16]}:00.100Z"
+            rows.append(r)
+        stray = dict(rows[100], tick_id=report._tick_of(t0 + 4 * 86400), ts_rx="2026-09-29T21:40:00.100Z")
+        now = datetime.datetime.fromtimestamp(t0 + 60 * (1440 + 20) + 30, datetime.timezone.utc)
+        page = dash.render(rows + [stray], outcomes.join(rows + [stray]), t0=t0, now=now)
+        self.assertNotIn("<span class='badge crit'>NO LIVE ROWS</span>", page)
+        self.assertNotIn("<div class='d empty'", page)
+        self.assertNotIn("<div class='d bad'", page)
+        self.assertIn("<div class='d open'", page)                           # d02, still pending
 
     def test_badge_is_at_render_time_and_never_negative(self):
         import datetime
@@ -261,6 +300,7 @@ class Dash(unittest.TestCase):
             self.assertIn("42 rows, 1 skipped", buf.getvalue())
             with open(out, encoding="utf-8") as fh:
                 page = fh.read()
+            self.assertIn("skipped log lines 1", page)                     # main hands the log's skipped lines to the page
             self.assertIn("no T0: whole log", page)
             self.assertIn("prompt_b v1", page)                           # the pinned root, not the live CURRENT
             self.assertIn("heartbeat 2026-09-23T10:41:00.100Z", page)

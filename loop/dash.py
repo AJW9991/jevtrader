@@ -313,21 +313,28 @@ def _short(day):
     return day[1:] if day.startswith("d") else day[6:]
 
 
-def _calendar_run(days, now):
-    """The strip's days: every calendar day from the first logged day to the last one up to `now`,
-    so a day with no row at all is drawn as 24 empty cells rather than left out (a day the Mac was
-    off is the gap the strip exists to show), plus any logged day after `now` (a row stamped in the
-    future: shown, not filled up to)."""
+STRIP_DAYS = 35         # the strip's window: the 28-day sample and a week, ending today
+
+
+def _calendar_run(days, now, max_days=STRIP_DAYS):
+    """(the strip's days, the logged days older than its window). Every calendar day from the first
+    logged day to TODAY, at most `max_days` of them, so a day with no row at all (the Mac off, or the
+    loop stopped while the nightly still rebuilds this page) is drawn as 24 empty cells rather than
+    left out; a logged day before the window (a clock stepped back to 1970) is counted, not filled up
+    to; a logged day after `now` (a clock stepped forward) is drawn as a line of its own."""
     if not days:
-        return []
-    today = now.strftime("%Y%m%d")
-    past = [d for d in days if d <= today]
+        return [], []
+    today = now.date()
+    day = lambda d: datetime.date(int(d[:4]), int(d[4:6]), int(d[6:]))
+    past = [d for d in days if day(d) <= today]
+    floor = today - datetime.timedelta(days=max_days - 1)
+    recent = [d for d in past if day(d) >= floor]
+    older = [d for d in past if day(d) < floor]
     run = []
     if past:
-        a = datetime.date(int(past[0][:4]), int(past[0][4:6]), int(past[0][6:]))
-        b = datetime.date(int(past[-1][:4]), int(past[-1][4:6]), int(past[-1][6:]))
-        run = [(a + datetime.timedelta(days=i)).strftime("%Y%m%d") for i in range((b - a).days + 1)]
-    return run + [d for d in days if d > today]
+        a = day(recent[0]) if recent else today             # from the first logged day inside the window
+        run = [(a + datetime.timedelta(days=i)).strftime("%Y%m%d") for i in range((today - a).days + 1)]
+    return run + [d for d in days if day(d) > today], older
 
 
 def render(rows, outs, t0=None, now=None, hb=None, halt=False, props=(), current=None, log=None, bad=()):
@@ -350,7 +357,7 @@ def render(rows, outs, t0=None, now=None, hb=None, halt=False, props=(), current
     lat = latency_by_day(sample, t0)
     abs_day = absence_by_day(sample, t0)
     days_seen = sorted({d["day"] for d in h_all["days"]})
-    strip_days = _calendar_run(days_seen, now)
+    strip_days, strip_older = _calendar_run(days_seen, now)
     hourly_c, absent_c = hourly(rows), absent(rows)
     sc = state_counts(sample)
     top_state = max(sc.values()) if sc else 0
@@ -428,6 +435,9 @@ def render(rows, outs, t0=None, now=None, hb=None, halt=False, props=(), current
                  + ("T0 days start at " + report._iso_minute(t0)[11:] + ". " if t0 is not None else "")
                  + "Days before T0 are labelled.</p>")
     strip = ["<div class='wrap'><div class='strip'><div class='lab'>day &middot; <b>ticks</b></div>"] + [f"<div class='hr'>{hh:02d}</div>" for hh in range(HOURS)]
+    if strip_older:
+        strip.append(f"<div class='lab'>{len(strip_older)} earlier logged day(s), the last {strip_older[-1][:4]}-{strip_older[-1][4:6]}-{strip_older[-1][6:]}: not drawn</div>"
+                     + "".join("<div class='cell'></div>" for _ in range(HOURS)))
     for d in strip_days:
         pre = t0 is not None and report.tick_epoch(d + "T000000Z") + 86400 <= t0
         lab = f"{d[:4]}-{d[4:6]}-{d[6:]}" + (" (pre-T0)" if pre else "")
