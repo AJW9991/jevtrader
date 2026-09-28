@@ -71,13 +71,15 @@ cd ~/Projects/jev-paper-loop && launchctl print gui/$(id -u)/com.alexward.jevloo
 A red suite there is a `git reset --hard ORIG_HEAD` decision (safe on a clean tree). No plist
 needs reinstalling: the nightly plist's diff is comments only.
 
-## Day 28 (`make results`, after 2026-10-23 21:55Z)
+## Day 28 (`make results`, at 2026-10-23 21:56Z or later)
 `loop.inference --sample` now refuses while the last block's H2 unit still waits for its t + h
 row (~30 s after the sample ends normally, up to ~15.5 min when the last block's first live
 row is in its last minute), refuses `--now`, another `--t0` or `--resamples` on the
 live log, reads the log once and prints its sha/bytes/last tick, prints the stop rules and
 §9's reading on lines of their own (VOID-prefixed under 21 kept days), and lists per kept day
-the blocks with a live row. The draw is unchanged at 10,000 resamples (a verifier found old and new output
+the blocks with a live row, and recomputes stop rule 3 from the log beside the exclusions file
+(BAD, open, no live rows, judged fine: a listed day the rule would not exclude, or a BAD day not listed,
+is named; no number changes). d28 closes with the tick at 21:56Z; before it, d28 reads open. The draw is unchanged at 10,000 resamples (a verifier found old and new output
 byte-identical on a 28-day synthetic log; tests/test_inference_golden.py pins the resampled
 sequence against an independent transcription of PREREG §5, the lower bounds to 9-12 places).
 A full run on a 28-day synthetic log takes about a minute here.

@@ -197,12 +197,9 @@ def h2(rows, outs, anchor, excluded=(), resamples=RESAMPLES, n_blocks=BLOCKS_PER
                   key=lambda r: r["tick_id"])
     units, drop, firsts = report.h2_units(live, outs, anchor)
     units = [u for u in units if 0 <= u["k"] < n_blocks and day_of_block(u["k"]) not in excluded]   # a no-op now; kept as the rule
-    every, drop_every, seen = [], {}, set()
-    for r in live:                                          # one row per tick, the first written: a second decision
-        if r["tick_id"] in seen:                           # in the minute would be scored with the first's outcome
-            continue
-        seen.add(r["tick_id"])
-        p = report._h2_pair(r, outs)
+    every, drop_every = [], {}
+    for r in live:                                          # every kept live ROW: a second decision in a minute shares
+        p = report._h2_pair(r, outs)                        # its minute's outcome (the join is per tick), as in report §5
         if isinstance(p, dict):
             every.append(p)
         else:
@@ -259,7 +256,7 @@ def side_lines(h):
 
     de = h["dropped_every"]
     return [f"  descriptive (PREREG §5, never claimed): Spearman rho {_rv(su, 'rho')} over the {su['n']} units;"
-            f" every kept live tick (overlapping horizons): r {_rv(se)}, rho {_rv(se, 'rho')} over {se['n']} ticks"
+            f" every kept live row (overlapping horizons; a second decision in a minute shares its outcome): r {_rv(se)}, rho {_rv(se, 'rho')} over {se['n']} rows"
             f" (dropped: gap {de.get('gap', 0)}, missing noul {de.get('noul', 0)})",
             f"  descriptive: Brier on the units {brier(su)}; on every tick {brier(se)}",
             f"  descriptive: measured tails (>= {report.NOUL_HIGH:g} / < {report.NOUL_LOW:g}) on the units {tails(su)}; on every tick {tails(se)}",
@@ -336,20 +333,29 @@ def day_lines(per_day):
     return lines
 
 
-def rule3_lines(table, excluded):
+def rule3_lines(table, excluded, n_days=N_DAYS):
     """PREREG §8.3's stop rule 3 recomputed from the log (report.days_table over the sample) beside
     the exclusions file that decided: the file is Alex's act and is applied as written; this only
     says where the two differ, so a mistaken or missing line is visible in the one pre-registered
-    output. Descriptive: no number above changes."""
-    bad = [x["day"] for x in table["days"] if x["bad"]]
-    empty = [x["day"] for x in table["days"] if x["empty"]]
+    output. Every sample day d01..d28 is placed once: BAD (closed, and the rule says so), open (its
+    last rows' t + h not yet in the log: the rule cannot judge it yet), no live rows (0/0, undefined:
+    a closed day of absences only, or a day after the log's last row), or judged fine. Descriptive:
+    no number above changes."""
+    rows = {x["day"]: x for x in table["days"]}
+    sample = [f"d{d:02d}" for d in range(1, n_days + 1)]
+    bad = [d for d in sample if d in rows and rows[d]["bad"]]
+    open_ = [d for d in sample if d in rows and rows[d]["open"] and not rows[d]["bad"]]
+    none = [d for d in sample if d not in rows or (rows[d]["empty"] and not rows[d]["bad"])]
     listed = {f"d{d:02d}" for d in excluded}
+    fine = set(sample) - set(bad) - set(open_) - set(none)
     fmt = lambda xs: " ".join(sorted(xs)) if xs else "none"
     return [f"stop rule 3 cross-check (PREREG §8.3, descriptive; the exclusions file above decides, this changes no number):",
             f"  BAD by the rule, recomputed from the log: {fmt(bad)} ({len(bad)}; the rule pauses the run at 3)",
-            f"  listed and BAD: {fmt(listed & set(bad))}; listed but NOT bad by the rule: {fmt(listed - set(bad) - set(empty))};"
+            f"  listed and BAD: {fmt(listed & set(bad))}; listed but judged fine by the rule: {fmt(listed & fine)};"
             f" BAD but NOT listed: {fmt(set(bad) - listed)}",
-            f"  no live rows (0/0, the rule undefined; Alex's call): {fmt(empty)}" + (f", listed: {fmt(listed & set(empty))}" if listed & set(empty) else "")]
+            f"  open, not yet judged (a day's last t + h is not in the log): {fmt(open_)}" + (f", listed: {fmt(listed & set(open_))}" if listed & set(open_) else ""),
+            f"  no live rows (0/0, the rule undefined; Alex's call; includes any day after the log's last row): {fmt(none)}"
+            + (f", listed: {fmt(listed & set(none))}" if listed & set(none) else "")]
 
 
 def reading(h1s, h2s, void=False, pre_t0=False):
@@ -601,7 +607,7 @@ def main(argv=None, now=None):
     text = render(mode, t0, now, log, excluded, excl_lines, kept,
                   h1(scope, outs, anchor, excluded, args.resamples, n_blocks), h2(scope, outs, anchor, excluded, args.resamples, n_blocks),
                   args.resamples, pending, cut, excl_path,
-                  rule3_lines(report.days_table(scope, outs, t0, max(report.tick_epoch(r["tick_id"]) for r in rows), now.timestamp()), excluded)
+                  rule3_lines(report.days_table(scope, outs, t0, max(report.tick_epoch(r["tick_id"]) for r in rows)), excluded)
                   if mode == "sample" and rows else None)
     if args.now:
         text = text.replace("\n", f" (clock overridden with --now {args.now})\n", 1)
