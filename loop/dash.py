@@ -193,8 +193,9 @@ def _age(hb, now):
 def render(rows, outs, t0=None, now=None, hb=None, halt=False, props=(), current=None, log=None):
     now = now or datetime.datetime.now(datetime.timezone.utc)
     sample = report.in_sample(rows, t0) if t0 is not None else rows
+    last = max((report.tick_epoch(r["tick_id"]) for r in rows if isinstance(r.get("tick_id"), str)), default=None)
     h_all = report.health(rows, outs)
-    h = report.health(sample, outs, t0=t0)
+    h = report.health(sample, outs, t0=t0, last=last)                # last: the sample's last day closes on rows after the cut
     occ = report.occupancy(sample)
     rt = report.retest(sample)
     age = _age(hb, now)
@@ -240,7 +241,8 @@ def render(rows, outs, t0=None, now=None, hb=None, halt=False, props=(), current
              _tile("latency p95", f"{h['latency_p95']:.0f} ms" if h["latency_p95"] is not None else "-", f"mean {h['latency_mean']:.0f} ms" if h["latency_mean"] else ""),
              _tile("spend, whole log", f"${h_all['usd']:.4f}", f"${h_all['usd'] / max(1, len(days_seen)):.4f} per logged day"),
              _tile("drift", str(h["drift"]), ", ".join(f"{k} {v}" for k, v in sorted(h["models"].items())) or "no answers"),
-             _tile("BAD days", str(len(h["bad_days"])), f"of {len(h['days'])} in sample; 3 pause the run")]
+             _tile("BAD days", str(len(h["bad_days"])), f"of {len(h['days'])} in sample; 3 pause the run"
+                   + (f"; {len(h['empty_days'])} with no live rows" if h.get("empty_days") else ""))]
     parts.append("<div class='tiles'>" + "".join(tiles) + "</div>")
 
     # -- hourly strip: every gap is a light cell
@@ -270,6 +272,7 @@ def render(rows, outs, t0=None, now=None, hb=None, halt=False, props=(), current
     t = ["<div class='wrap'><table><tr><th>day</th><th>ticks</th><th>coverage</th><th>live</th><th>fill</th><th>pending</th><th>skipped min</th><th>jev-err</th><th>spend</th><th class='l'>flag</th></tr>"]
     for d in h["days"]:
         flag = (f"<span class='badge crit'>BAD ({', '.join(d['why'])})</span>" if d["bad"]
+                else "<span class='badge crit'>NO LIVE ROWS</span>" if d.get("empty")
                 else "<span class='badge warn'>open</span>" if d["open"] else "<span class='badge ok'>ok</span>")
         lab = (f"{d['day']} <span class='mono'>{d['span'][0][:13]}Z..{d['span'][1][:13]}Z</span>" if d["span"]
                else f"{d['day'][:4]}-{d['day'][4:6]}-{d['day'][6:]}")

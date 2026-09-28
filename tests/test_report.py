@@ -850,6 +850,81 @@ class PerDay(unittest.TestCase):
         self.assertEqual(d["why"], ["fill", "jev-err"])
         self.assertIn("BAD (fill, jev-err)", "\n".join(h["lines"]))
 
+    def test_the_last_sample_day_closes_on_rows_after_the_cut(self):
+        # 2026-09-28: with --t0 the rows are cut to the sample, so days_table saw no row after d28's end
+        # and d28 stayed "open" for ever, never judged, never BAD: exactly the day whose exclusions.tsv
+        # line is decided after the sample. `last` (the whole log's last tick) closes it.
+        from loop import outcomes
+        t0 = report.tick_epoch("20260925T214000Z")
+        end = t0 + report.SAMPLE_DAYS * 86400
+        rows = []
+        for m in range(27 * 1440, 28 * 1440 + 120):                  # d28 and two hours past the end
+            if m < 28 * 1440 and m % 10 == 0:
+                continue                                          # d28 loses every tenth minute: fill under 95%
+            r = dict(_row(7))
+            e = t0 + 60 * m
+            r["tick_id"] = report._tick_of(e)
+            r["ts_rx"] = datetime.datetime.fromtimestamp(e, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.100Z")
+            rows.append(r)
+        outs = outcomes.join(rows)
+        cut = report.in_sample(rows, t0)
+        self.assertTrue(all(report.tick_epoch(r["tick_id"]) < end for r in cut))
+        stale = report.health(cut, outs, t0=t0)["days"][-1]           # no `last`: what the cut alone can tell
+        self.assertEqual((stale["day"], stale["open"], stale["bad"]), ("d28", True, False))
+        last = max(report.tick_epoch(r["tick_id"]) for r in rows)
+        h = report.health(cut, outs, t0=t0, last=last)
+        d = h["days"][-1]
+        self.assertEqual((d["day"], d["open"], d["bad"], d["why"]), ("d28", False, True, ["fill"]))
+        self.assertLess(d["fill"], report.BAD_FILL)
+        self.assertEqual(h["bad_days"], ["d28"])
+        self.assertEqual(h["empty_days"], [f"d{j:02d}" for j in range(1, 28)])   # every day before d28 is listed, with no row
+        self.assertIn("BAD (fill)", [l for l in h["lines"] if l.startswith("    d28 ")][0])
+        # render() and main() hand the whole log's last tick through
+        text = report.render(cut, [], t0=t0, outs=outs, health_only=True, last=last)
+        self.assertIn("  d28 ", text)
+        self.assertIn("BAD days 1: d28", text)
+        log = os.path.join(tempfile.mkdtemp(), "past-end.jsonl")
+        _write(log, rows, garbage=False)
+        code, out = _main(["--log", log, "--health", "--t0", "20260925T214000Z"])
+        self.assertEqual(code, 0)
+        self.assertIn("BAD days 1: d28", out)
+        self.assertNotIn("d29", out)                                  # the two hours after the sample are not a sample day
+
+    def test_every_t0_day_is_listed_and_a_day_without_live_rows_is_flagged(self):
+        # 2026-09-28: a day the log has no row for (the Mac off) never appeared in the table, and a day
+        # of absences only (HALT all day) read "n/a": the worst health events were the ones the stop-rule
+        # table could not show. Fill is 0/0 there, which PREREG §8.3 does not define, so they are
+        # flagged NO LIVE ROWS and counted, never marked BAD by code: the exclusion is Alex's call.
+        from loop import outcomes
+        t0 = report.tick_epoch("20260925T214000Z")
+        rows = []
+        for m in range(5 * 1440):
+            day = m // 1440 + 1
+            if day == 2:
+                continue                                          # d02: no rows at all
+            r = dict(_row(7))
+            e = t0 + 60 * m
+            r["tick_id"], r["ts_rx"] = report._tick_of(e), datetime.datetime.fromtimestamp(e, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.100Z")
+            if day == 4:                                          # d04: every row a HALT absence
+                r["absence"], r["answers"], r["columns"] = "halt", None, {"a": None, "b": None}
+            rows.append(r)
+        h = report.health(rows, outcomes.join(rows), t0=t0)
+        self.assertEqual([d["day"] for d in h["days"]], ["d01", "d02", "d03", "d04", "d05"])
+        by = {d["day"]: d for d in h["days"]}
+        self.assertEqual((by["d02"]["ticks"], by["d02"]["live"], by["d02"]["fill"], by["d02"]["empty"], by["d02"]["bad"]), (0, 0, None, True, False))
+        self.assertEqual((by["d04"]["ticks"], by["d04"]["live"], by["d04"]["empty"], by["d04"]["bad"]), (1440, 0, True, False))
+        self.assertFalse(by["d01"]["empty"])
+        self.assertTrue(by["d05"]["open"] and not by["d05"]["empty"])   # an open day is not judged, empty or not
+        self.assertEqual(h["empty_days"], ["d02", "d04"])
+        text = "\n".join(h["lines"])
+        self.assertIn("    d02           0   0.0%     0    n/a     0     0      n/a  20260926T214000Z..20260927T214000Z  NO LIVE ROWS", text)
+        self.assertIn("  NO LIVE ROWS", [l for l in text.splitlines() if l.startswith("    d04 ")][0])
+        self.assertIn("NO LIVE ROWS on 2 closed days: d02, d04: fill is 0/0, which PREREG §8.3 does not define", text)
+        # without T0 the calendar table lists only days with rows, as before (six UTC days touched, d02's gone)
+        cal = report.health(rows, outcomes.join(rows))
+        self.assertEqual(len(cal["days"]), 6)
+        self.assertEqual(cal["empty_days"], [])                          # d04 straddles two calendar days, each with live rows
+
     def test_dry_rows_and_absences_are_not_live(self):
         from loop import outcomes
         rows = [dict(_row(m)) for m in range(0, 5)]                # all dry

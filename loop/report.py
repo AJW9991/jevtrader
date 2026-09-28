@@ -126,7 +126,9 @@ def answered(rows):
 
 
 # ---- §4.1 health ---------------------------------------------------------------------------
-def health(rows, outs, bad=(), t0=None):
+def health(rows, outs, bad=(), t0=None, last=None):
+    """`last`: the epoch of the whole log's last tick when `rows` were cut to a sample (--t0), so
+    the sample's last day can close; None reads it from `rows`."""
     live = [r for r in rows if r.get("mode") == "live" and r.get("absence") is None]
     dry = [r for r in rows if r.get("mode") == "dry"]
     absence = collections.Counter(r["absence"] for r in rows if r.get("absence") is not None)
@@ -144,7 +146,7 @@ def health(rows, outs, bad=(), t0=None):
     drift = sum(1 for r in rows if r.get("drift") is True)
     versions = collections.Counter(str(r.get("prompt_b")) for r in rows)
     span = f"{ticks[0]}..{ticks[-1]}" if ticks else "-"
-    per_day = days_table(rows, outs, t0)
+    per_day = days_table(rows, outs, t0, last)
     keys = collections.Counter(_jev(r, "key_path") for r in rows if isinstance(_jev(r, "key_path"), str))
     shared = sum(v for k, v in keys.items() if "loop" not in k.lower())      # PROTOCOL §3.6: the loop's own key, or it says so
     hz = realised_horizon(rows)
@@ -170,7 +172,7 @@ def health(rows, outs, bad=(), t0=None):
          " report go on; clearing it is a person's act, STEPS §7)") if halt else "  HALT: absent",
     ] + per_day["lines"]
     return {"lines": lines, "rows": len(rows), "ticks": len(ticks), "live": len(live), "dry": len(dry),
-            "days": per_day["days"], "bad_days": per_day["bad"], "keys": dict(keys), "shared_key_rows": shared,
+            "days": per_day["days"], "bad_days": per_day["bad"], "empty_days": per_day["empty"], "keys": dict(keys), "shared_key_rows": shared,
             "horizon": hz, "halt": halt,
             "absence": dict(absence), "priced": len(priced), "filled": len(priced) and filled,
             "fill": _rate(filled, len(priced)), "attempted": len(attempted), "errors": dict(errors),
@@ -250,15 +252,27 @@ def _tick_of(epoch):
     return datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
-def days_table(rows, outs, t0=None):
+def days_table(rows, outs, t0=None, last=None):
     """Per day (day_of: T0-anchored 'dNN' with T0, else the UTC calendar day): distinct ticks,
     coverage of a full day, live rows, the share of them with a non-gap outcome, the Jev error
     share over rows that reached the ask, and the BAD flag of PREREG §8 stop rule 3. `outs` is the
     join over the WHOLE log, so a day's last 15 minutes are filled by the next day's rows.
+    `last` is the epoch of the whole log's last tick: with --t0 the rows are cut to the sample,
+    and without it the sample's last day (d28) could never close, since its last row can fill
+    only from rows after the cut. None reads it from `rows`.
+    With T0, every day from d01 to the day of `last` (at most d28) is listed, rows or not: a day
+    the log has no row for is the worst health event and would otherwise be the one day the
+    table never shows (2026-09-28). Its fill is 0/0, which PREREG §8.3 does not define, so it is
+    flagged NO LIVE ROWS (so is a closed day of absences or dry rows only), counted in `empty`, and
+    never marked BAD here: the exclusion is Alex's call.
     Descriptive: the exclusion itself is a line a person appends to data/exclusions.tsv; nothing
     here removes a day from any section."""
     per = {}
-    last = max((tick_epoch(r["tick_id"]) for r in rows if isinstance(r.get("tick_id"), str)), default=None)
+    rows_last = max((tick_epoch(r["tick_id"]) for r in rows if isinstance(r.get("tick_id"), str)), default=None)
+    last = rows_last if last is None else max(last, rows_last or last)
+    if t0 is not None and last is not None:
+        for j in range(1, min(SAMPLE_DAYS, math.floor((last - t0) / 86400) + 1) + 1):
+            per.setdefault(f"d{j:02d}", {"ticks": set(), "live": 0, "filled": 0, "pending": 0, "attempted": 0, "errors": 0})
     all_ticks = sorted({r["tick_id"] for r in rows if isinstance(r.get("tick_id"), str)})
     skips = collections.Counter()
     for a, b in zip(all_ticks, all_ticks[1:]):
@@ -282,7 +296,7 @@ def days_table(rows, outs, t0=None):
                 x["pending"] += 1                     # the log has not reached t + h yet: not a gap, not decided
             else:
                 x["live"] += 1
-    days, bad = [], []
+    days, bad, empty = [], [], []
     for d in sorted(per):
         x = per[d]
         span = day_span(d, t0)
@@ -290,6 +304,8 @@ def days_table(rows, outs, t0=None):
         is_open = last is None or end + config.HORIZON_S + outcomes.JOIN_TOL_S > last   # its last row can still fill
         fill, err = _rate(x["filled"], x["live"]), _rate(x["errors"], x["attempted"])
         is_bad = not is_open and ((fill is not None and fill < BAD_FILL) or (err is not None and err > BAD_JEV_ERR))
+        is_empty = not is_open and x["live"] == 0 and x["pending"] == 0   # closed, and no live row reached its t + h: no
+                                                                    # row at all, or a day of absences (HALT, feed) or dry rows
         why = []
         if fill is not None and fill < BAD_FILL:
             why.append("fill")
@@ -297,9 +313,11 @@ def days_table(rows, outs, t0=None):
             why.append("jev-err")
         days.append({"day": d, "span": span, "ticks": len(x["ticks"]), "cov": _rate(len(x["ticks"]), DAY_TICKS), "live": x["live"],
                      "filled": x["filled"], "pending": x["pending"], "skips": skips.get(d, 0), "fill": fill, "attempted": x["attempted"],
-                     "errors": x["errors"], "jev_err": err, "open": is_open, "bad": is_bad, "why": why})
+                     "errors": x["errors"], "jev_err": err, "open": is_open, "bad": is_bad, "empty": is_empty, "why": why})
         if is_bad:
             bad.append(d)
+        if is_empty:
+            empty.append(d)
     what = (f"per day from T0 (dNN = [T0 + 86400(N-1), T0 + 86400 N), 96 blocks; d00 is before T0)" if t0 is not None
             else "per UTC calendar day (no --t0; the sample's days are counted from T0)")
     lines = [f"  {what} (stop rule 3: BAD when fill < {100 * BAD_FILL:.0f}% of live rows or jev errors"
@@ -308,13 +326,16 @@ def days_table(rows, outs, t0=None):
     for x in days:
         lines.append(f"    {x['day']:<9}{x['ticks']:>6}{_pc(x['cov']):>7}{x['live']:>6}{_pc(x['fill']):>7}{x['pending']:>6}{x['skips']:>6}{_pc(x['jev_err']):>9}"
                      + (f"  {x['span'][0]}..{x['span'][1]}" if x["span"] else "")
-                     + (f"  BAD ({', '.join(x['why'])})" if x["bad"] else "  open" if x["open"] else ""))
+                     + (f"  BAD ({', '.join(x['why'])})" if x["bad"] else "  NO LIVE ROWS" if x["empty"] else "  open" if x["open"] else ""))
     if not days:
         lines.append("    no rows")
     lines.append(f"  BAD days {len(bad)}" + (": " + ", ".join(bad) if bad else "")
                  + "; the exclusion is a line in data/exclusions.tsv, written by hand, never here."
                  " fill counts live rows whose t + h the log has reached (pend = not yet); skip = isolated missing minutes; an open day is not judged")
-    return {"lines": lines, "days": days, "bad": bad}
+    if empty:
+        lines.append(f"  NO LIVE ROWS on {len(empty)} closed day{'s' if len(empty) != 1 else ''}: {', '.join(empty)}: fill is 0/0, which PREREG"
+                     " §8.3 does not define, so the day is not marked BAD here; whether it is excluded is Alex's call, before day 28")
+    return {"lines": lines, "days": days, "bad": bad, "empty": empty}
 
 
 def _pc(x):
@@ -759,13 +780,14 @@ TITLES = ("1. health", "2. adjective occupancy", "3. test-retest (a_action vs b_
 HEALTH_N = 3                                        # --health: sections 1-3, PREREG §8.4's day-14 look
 
 
-def render(rows, bad=(), log=None, since=None, missing=False, t0=None, outs=None, health_only=False):
+def render(rows, bad=(), log=None, since=None, missing=False, t0=None, outs=None, health_only=False, last=None):
     """t0: T0 in epoch seconds when the rows were cut to the sample; outs: the join over the
-    WHOLE log (a sample row's t+h may sit after the sample), else the join over `rows`.
+    WHOLE log (a sample row's t+h may sit after the sample), else the join over `rows`; last:
+    the whole log's last tick (epoch) for the same reason, so the sample's last day can close.
     health_only: sections 1-3 only (PREREG §8.4); 4-7 are neither computed nor printed, so the
     blind look cannot show an H1 or H2 number by accident."""
     outs = outcomes.join(rows) if outs is None else outs
-    secs = (health(rows, outs, bad, t0), occupancy(rows), retest(rows))
+    secs = (health(rows, outs, bad, t0, last), occupancy(rows), retest(rows))
     if not health_only:
         secs += (agreement(rows), table(rows, outs, t0), h2(rows, outs, t0), calibration(rows, outs))
     lines = [f"jev-paper-loop report: {config.VENUE} {config.PRODUCT}, cadence {config.CADENCE_S} s, horizon {config.HORIZON_S} s"
@@ -838,11 +860,12 @@ def main(argv=None):
     if not missing:
         rows = outcomes.load(args.log, bad)
     outs = outcomes.join(rows)                                       # over the whole log: forward only, t+h may follow the cut
+    last = max((tick_epoch(r["tick_id"]) for r in rows), default=None)   # likewise: the sample's last day closes on rows after the cut
     if since:
         rows = [r for r in rows if r["tick_id"][:8] >= since]         # tick_id is YYYYMMDDTHHMM00Z; the first 8 chars are the day
     if t0 is not None:
         rows = in_sample(rows, t0)                                   # cut BEFORE any replay: every arm starts flat at T0
-    sys.stdout.write(render(rows, bad, args.log, args.since, missing, t0, outs, args.health))
+    sys.stdout.write(render(rows, bad, args.log, args.since, missing, t0, outs, args.health, last))
     return 0
 
 
