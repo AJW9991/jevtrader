@@ -1548,21 +1548,23 @@ class Capped(unittest.TestCase):
         self.assertEqual(sorted(os.listdir(os.path.join(real, "Projects", "crypto-trading-system"))), ["x"])   # nothing created
 
     def test_the_guard_never_imports_the_working_directory_and_refuses_when_it_cannot_answer(self):
-        # 2026-09-28 (second pre-merge pass): the guard's python had the cwd on sys.path, so started from
-        # inside another tree it ran that tree's loop/ (and wrote bytecode there) before refusing; and an
-        # interpreter that printed nothing and exited 0 read as "not forbidden"
+        # 2026-09-28 (second pre-merge pass): the guard's python had the cwd on sys.path, after the repo
+        # (so loop/ always came from the repo) but before the standard library: started from inside
+        # another tree, that tree's json.py, hashlib.py, ... shadowed the modules loop.cycle imports, ran,
+        # and left their bytecode there, before the guard answered. And an interpreter that printed
+        # nothing and exited 0 read as "not forbidden".
         env = _sh_env(self)
         elsewhere = os.path.join(env["HOME"], "elsewhere")
-        os.makedirs(os.path.join(elsewhere, "loop"))
+        os.makedirs(elsewhere)
         marker = os.path.join(elsewhere, "imported")
-        with open(os.path.join(elsewhere, "loop", "__init__.py"), "w", encoding="utf-8") as fh:
+        with open(os.path.join(elsewhere, "json.py"), "w", encoding="utf-8") as fh:   # loop.cycle imports json
             fh.write(f"open({marker!r}, 'w').close()\n")
         root = os.path.join(env["HOME"], "root")
         r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry", "--date", "2026-09-22", "--root", root],
                            capture_output=True, text=True, timeout=60, env=env, cwd=elsewhere)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertFalse(os.path.exists(marker), "the guard imported the working directory's loop/")
-        self.assertFalse(os.path.exists(os.path.join(elsewhere, "loop", "__pycache__")))
+        self.assertFalse(os.path.exists(marker), "the guard imported the working directory's json.py")
+        self.assertEqual(sorted(os.listdir(elsewhere)), ["json.py"])            # no __pycache__ written there
         silent = os.path.join(env["HOME"], "silent-python")
         with open(silent, "w", encoding="utf-8") as fh:
             fh.write("#!/bin/sh\nexit 0\n")                              # runs, answers nothing, exits 0
