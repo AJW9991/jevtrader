@@ -486,7 +486,9 @@ def render(rows, outs, t0=None, now=None, hb=None, halt=False, props=(), current
         items = [(_short(d), spend.get(d, 0.0), f"{d}: ${spend.get(d, 0.0):.4f} of the ${config.DAILY_SPEND_HALT_USD:g} tripwire", False) for d in days]
         mx = max(v for _, v, _, _ in items)
         parts.append(f"<h2>spend per day &middot; max ${mx:.4f}, tripwire ${config.DAILY_SPEND_HALT_USD:g}</h2>"
-                     "<p class='sub'>input tokens the rows logged, at the configured rate; a bar reaching the top of the chart is a day at the tripwire (data/HALT).</p>"
+                     "<p class='sub'>input tokens the rows logged, at the configured rate; the top of the chart is the tripwire's dollar amount. The guard"
+                     " itself counts per UTC day and charges a send with no logged count at 2,000 tokens, so it can trip on a day whose bar"
+                     " stays lower (make status shows its count).</p>"
                      + _vbars(items, config.DAILY_SPEND_HALT_USD, max(1, len(items) // 14)))
         items = []
         for d in days:
