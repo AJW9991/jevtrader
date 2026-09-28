@@ -8,7 +8,7 @@ Written 2026-09-28 by Claude (Fable 5.1) in a CLOUD session on branch `claude/co
 - The Mac's loop is untouched by this session (no `data/` here). Sample: `prereg-v1`, T0
   2026-09-25 21:40Z, ends 2026-10-23 21:40Z; day 3 of 28 on 2026-09-28. Arm B is v2 since
   2026-09-26 22:21Z. Spend ≈ $0.05 to date.
-- This branch (`git log origin/main..`): 52 commits, `make test` green (402 tests) under 3.11-3.13 here and 3.12-3.14 in CI
+- This branch (`git log origin/main..`): 57 commits, `make test` green (410 tests) under 3.11-3.13 here and 3.12-3.14 in CI
   (`.github/workflows/test.yml`, every push). Five Opus reviews (tick/send, book+outcomes+report, inference, nightly,
   dash+docs) found no defect on the normal path; every fix below is a guard, a report line, a
   test or tooling. Nothing frozen changed: SPEC, PREREG, PROTOCOL, prompts/, PROMPT.md, the
