@@ -101,7 +101,7 @@ jev-paper-loop/
 ```
 Raises `FeedError(str)` on any HTTP/parse failure, fewer than 300 closed candles, a
 window that is not contiguous, a window candle whose open/high/low/close is not finite
-and positive (or whose volume is not finite and non-negative), `feed_age_s` over
+and positive (or whose volume is not finite and non-negative), a candle start outside [0, 2^40), `feed_age_s` over
 `MAX_FEED_AGE_S` (120 s), an empty or crossed book, or a level that is not a finite
 positive price and size. A failed trades call is `trades_5m = -1`, not an error. No
 retries inside feed.

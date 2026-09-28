@@ -338,7 +338,12 @@ class TestSnapshot(unittest.TestCase):
         with mock.patch("urllib.request.urlopen", Fake(candles=json.dumps(inf).encode())), \
                 self.assertRaisesRegex(feed.FeedError, r"^parse candles\.start$"):
             feed.snapshot(config.PRODUCT, now=NOW)
-        for start in ("9" * 400, "-" + "9" * 400, str(1 << 40), "-60"):          # int() takes them; no clock gives them
+        self.assertEqual(feed.START_MAX, 1 << 40)
+        ok = json.loads(json.dumps(CANDLES))
+        ok["candles"][0]["start"] = str((1 << 40) - 1)                              # the last start accepted (an open minute)
+        with mock.patch("urllib.request.urlopen", Fake(candles=json.dumps(ok).encode())):
+            feed.snapshot(config.PRODUCT, now=NOW)
+        for start in ("9" * 400, "-" + "9" * 400, str(1 << 40), "-60", "-1"):    # int() takes them; no clock gives them
             odd = json.loads(json.dumps(CANDLES))
             odd["candles"][0]["start"] = start
             with mock.patch("urllib.request.urlopen", Fake(candles=json.dumps(odd).encode())), \

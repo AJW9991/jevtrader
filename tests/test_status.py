@@ -196,6 +196,16 @@ class Status(unittest.TestCase):
         self.assertTrue(out.startswith(f"LOG UNREADABLE: {log}: "), out[:120])
         self.assertIn("spend UNREADABLE", out)
 
+    def test_a_missing_log_is_zero_spend_and_no_unreadable_line(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), mock.patch.object(config, "HALT", self.halt), mock.patch.object(config, "DATA", self.tmp), \
+                mock.patch.object(dash, "heartbeat", return_value=None), mock.patch.object(dash, "current_version", return_value="v9"):
+            self.assertEqual(status.main(["--log", os.path.join(self.tmp, "never.jsonl"), "--t0", "2026-09-23T10:00",
+                                          "--now", "2026-09-23T10:42"]), 0)
+        out = buf.getvalue()
+        self.assertNotIn("UNREADABLE", out)
+        self.assertIn("spend $0.0000 of the $0.25 tripwire (as the guard counts it)", out)
+
     def test_an_unreadable_log_is_named_not_a_traceback(self):
         # a 0200 log (write_row still appends to it) or a directory: the spend guard trips on it, and
         # the morning screen says why instead of dying in outcomes.load
