@@ -2,7 +2,8 @@
 gap, a jittered t+15 row is never swapped for t+16), the window's edges, the
 dead band, and a log reader that survives one truncated line. Offline; temp
 files only."""
-import datetime, json, math, os, shutil, tempfile, unittest
+import contextlib, datetime, json, math, os, shutil, tempfile, unittest
+from unittest import mock
 
 from loop import config, outcomes
 
@@ -12,6 +13,20 @@ def _tmpdir(tc):
     d = tempfile.mkdtemp()
     tc.addCleanup(shutil.rmtree, d, ignore_errors=True)
     return d
+
+
+@contextlib.contextmanager
+def _counting_parses():
+    """outcomes' decoder, counting its raw_decode calls into the yielded [n]: the reader's work in
+    parses is the same under every interpreter, where its time is not."""
+    n = [0]
+
+    class Counting(json.JSONDecoder):
+        def raw_decode(self, s, idx=0):
+            n[0] += 1
+            return super().raw_decode(s, idx)
+    with mock.patch.object(outcomes, "_DECODER", Counting()):
+        yield n
 
 T0 = datetime.datetime(2026, 9, 23, 10, 0, 0, tzinfo=datetime.timezone.utc)
 H = config.HORIZON_S
@@ -319,18 +334,18 @@ class Load(unittest.TestCase):
     def test_a_torn_row_nesting_many_v_objects_costs_no_parse_per_level(self):
         # a torn row whose kept answer nests {"v":{"v":...}} thousands deep: every nested row start used
         # to be parsed (each through the rest of the nest), quadratic in the depth; only a candidate that
-        # begins like a row is parsed now
-        import time
+        # begins like a row is parsed now. Counted in parses, not seconds: the old reader's time sat at
+        # the old 0.5 s bound under 3.10/3.11 and passed about half the time; its count was 5972
         p = os.path.join(_tmpdir(self), "d.jsonl")
-        depth = 10000                                                   # the old reader: ~2 s here; this one: ~5 ms
+        depth = 10000
         nest = '{"v":' * depth + "1" + "}" * depth
         row = json.dumps(dict(_row(0, 100.0), answers={"a_action": {"choice": "X"}}), separators=(",", ":")).replace('"X"', nest)
         with open(p, "w", encoding="utf-8") as fh:
             fh.write(row[:len(row) // 2] + "\n")
-        t = time.perf_counter()
         bad = []
-        self.assertEqual(outcomes.load(p, bad), [])
-        self.assertLess(time.perf_counter() - t, 0.5)
+        with _counting_parses() as parses:
+            self.assertEqual(outcomes.load(p, bad), [])
+        self.assertLessEqual(parses[0], 2, parses)                      # the forward attempt, no parse per level
         self.assertEqual(len(bad), 1)
 
     def test_a_long_line_of_glued_rows_costs_no_recursion(self):
