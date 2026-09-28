@@ -6,7 +6,7 @@ config points into a temp dir; feed.snapshot is replaced by the fixture snapshot
 assembled through feed.assemble); time.time is pinned
 to the fixture's ts_rx so tick_id is known. main() installs and restores its own
 SIGTERM/SIGALRM handlers; the two signal tests raise the signal in-process."""
-import email.message, io, fcntl, hashlib, json, os, re, signal, tempfile, time, unittest, urllib.error
+import email.message, io, fcntl, hashlib, json, os, re, signal, sys, tempfile, time, unittest, urllib.error
 from unittest import mock
 from fixture_prompts import pin_v1
 from loop import book, config, cycle, feed, jev, outcomes, prompts, rules
@@ -272,6 +272,45 @@ class CycleTest(unittest.TestCase):
         self.assertAlmostEqual(cycle.spend_today(NOW), 20_000 * config.USD_PER_MTOK / 1e6)
         self.assertEqual(cycle.spend_today(NOW, os.path.join(self.tmp, "missing")), 0.0)
 
+    def _days(self, fh, day, n, tokens, pad):
+        """n rows of `day`, one a minute from 00:00, each padded to about a real row's size."""
+        for i in range(n):
+            r = _row("%sT%02d%02d00Z" % (day, i // 60 % 24, i % 60), tokens)
+            r["features"] = pad
+            fh.write(json.dumps(r) + "\n")
+
+    def test_spend_with_the_tail_cut_in_earlier_days_reads_the_tail_only(self):
+        # The production case: two full days of ~2.6 KB rows behind today's 10 hours, so the
+        # 8 MiB tail starts inside an earlier day, today fits in it, and nothing widens.
+        self.assertEqual(cycle.TAIL_BYTES, 8 << 20)
+        os.makedirs(self.data)
+        with open(config.DECISIONS, "w") as fh:
+            self._days(fh, "20260922", 1440, 50_000_000, "x" * 2500)
+            self._days(fh, "20260923", 1440, 50_000_000, "x" * 2500)
+            self._days(fh, DAY, 600, 1000, "x" * 2500)
+        self.assertGreater(os.path.getsize(config.DECISIONS), cycle.TAIL_BYTES)
+        buf, cut = cycle._tail(config.DECISIONS, cycle.TAIL_BYTES)
+        self.assertTrue(cut)
+        self.assertTrue(json.loads(buf.split(b"\n", 1)[0])["tick_id"].startswith("20260922"))   # the tail's first row
+        with mock.patch.object(cycle, "_tail", wraps=cycle._tail) as tail:
+            self.assertAlmostEqual(cycle.spend_today(NOW), 600 * 1000 * config.USD_PER_MTOK / 1e6)
+        self.assertEqual([c.args for c in tail.call_args_list], [(config.DECISIONS, cycle.TAIL_BYTES)])
+
+    def test_spend_with_today_overflowing_the_tail_widens_to_the_whole_file(self):
+        # Rows three times the usual size: today alone no longer fits in 8 MiB, the tail's first
+        # row is today's, and the guard reads the whole file rather than miss today's first hours.
+        os.makedirs(self.data)
+        with open(config.DECISIONS, "w") as fh:
+            self._days(fh, "20260923", 200, 50_000_000, "x" * 2500)
+            self._days(fh, DAY, 1440, 100, "x" * 6500)
+        buf, cut = cycle._tail(config.DECISIONS, cycle.TAIL_BYTES)
+        self.assertTrue(cut)
+        self.assertTrue(json.loads(buf.split(b"\n", 1)[0])["tick_id"].startswith(DAY))
+        with mock.patch.object(cycle, "_tail", wraps=cycle._tail) as tail:
+            self.assertAlmostEqual(cycle.spend_today(NOW), 1440 * 100 * config.USD_PER_MTOK / 1e6)
+        self.assertEqual([c.args for c in tail.call_args_list],
+                         [(config.DECISIONS, cycle.TAIL_BYTES), (config.DECISIONS, 0)])
+
     def test_spend_charges_a_send_with_unknown_tokens_at_the_ceiling(self):
         # jev.ask logs input_tokens 0 when the reply has no `usage` (null when the send failed);
         # read as free, the tripwire would never fire. A live row that reached the model with 0
@@ -375,6 +414,29 @@ class CycleTest(unittest.TestCase):
         self.assertIsNone(row["state"])
         self.assert_nothing_sent()
 
+    def test_a_garbage_candle_value_is_absence_feed_on_every_python(self):
+        # Through feed.assemble, as live: a NaN volume on the newest minute used to read flow
+        # `organic` with absence null; a zero close was ZeroDivisionError, logged `guard`; a NaN
+        # close was AttributeError on 3.11/3.12 (`guard`) and ValueError on 3.13+ (`feed`).
+        raw, book_j, trades_j = _load("candles.json"), _load("book.json"), _load("trades.json")
+        cases = (("volume", "nan", 1), ("volume", "inf", 1), ("close", "0", 1), ("close", "0", 150),
+                 ("close", "nan", 150), ("high", "inf", 1), ("low", "0", 2))
+        for i, (field, value, at) in enumerate(cases):
+            with self.subTest(field=field, value=value, at=at):
+                c = json.loads(json.dumps(raw))
+                c["candles"][at][field] = value
+                self.snapshot.side_effect = lambda c=c: feed.assemble(META["product"], NOW, book_j, c, trades_j,
+                                                                      {"calls": 3, "ms": 0})
+                with mock.patch("time.time", return_value=NOW + 60 * i):
+                    self.assertEqual(cycle.main(["--dry", "--once"]), 0)
+                row = self.rows()[-1]
+                self.assertEqual((row["absence"], row["mode"]), ("feed", "dry"))
+                self.assertEqual((row["state"], row["rule_c"], row["features"]), (None, None, None))
+                self.assertEqual(self.out.getvalue(), "")                   # no body: the tick stopped at the feed
+        self.assertEqual(len(self.rows()), len(cases))
+        self.assertNotIn("Traceback", self.err.getvalue())
+        self.assert_nothing_sent()
+
     def test_broken_prompts_is_absence_guard_after_the_state(self):
         with mock.patch.object(prompts, "current", side_effect=prompts.PromptError("CURRENT: two names")):
             self.assertEqual(cycle.main(["--once"]), 0)
@@ -476,6 +538,24 @@ class CycleTest(unittest.TestCase):
         self.assertGreaterEqual(clock[0], 1020.0)
         self.assertEqual(int(clock[0]) // config.CADENCE_S, 17)
 
+    def test_once_fired_a_hair_before_the_minute_waits_for_it(self):
+        # Production runs --once from launchd's StartCalendarInterval; a fire at :59.x would
+        # take the minute just done (a duplicate) and leave the next one unrecorded. More than
+        # CADENCE_S - 2 s into a minute, --once first sleeps to the boundary.
+        base = NOW - 49                                        # 02:28:00
+        for at, sleeps, tick in ((59.5, [0.5], "20260924T022900Z"), (57.5, [], "20260924T022800Z")):
+            with self.subTest(at=at):
+                clock, self.sleeps[:] = [base + at], []
+                def sleep(s):
+                    self.sleeps.append(s)
+                    clock[0] += s
+                self.snapshot.side_effect = lambda: dict(SNAP, ts_rx=cycle.iso_ms(clock[0]))   # feed's own clock
+                with mock.patch("time.time", side_effect=lambda: clock[0]), \
+                        mock.patch("time.sleep", side_effect=sleep):
+                    self.assertEqual(cycle.main(["--dry", "--once"]), 0)
+                self.assertEqual(self.sleeps, sleeps)
+                self.assertEqual(self.rows()[-1]["tick_id"], tick)
+
     def test_unsigned_protocol_observes_but_never_sends_or_bills(self):
         # The repo as committed: PROTOCOL.md unsigned. A live tick still records the feed,
         # the state and arm C -- observation is free and outlives sending -- but jev.ask
@@ -501,6 +581,35 @@ class CycleTest(unittest.TestCase):
         self.assertEqual(row["answers"]["b_action"]["choice"], "maybe")   # paid for: kept
         self.assertEqual(row["columns"], {"a": None, "b": None})
         self.assertEqual(row["jev"]["input_tokens"], 480)
+
+    def test_a_wrong_typed_bool_or_non_finite_answer_field_is_parse_with_the_answer_logged(self):
+        # jev._parse checks only that the fields exist; the rules refuse what no cut can read.
+        # SPEC §2 keeps answers only on a `parse` row, so none of these may log "unexpected"
+        # (answers kept on a row that says the rules never saw them) or reach the columns.
+        cases = {"confidence null": ("a_action", "confidence", None),
+                 "skip.noul null": ("skip", "noul", None),
+                 "probabilities x": ("b_action", "probabilities", "x"),
+                 "confidence true": ("a_action", "confidence", True),     # float(True) = 1.0 would pass c99
+                 "confidence NaN": ("b_action", "confidence", float("nan")),
+                 "up15.noul Infinity": ("up15", "noul", float("inf")),
+                 "probabilities.buy true": ("a_action", "probabilities", {"buy": True, "sell": 0.0, "hold": 0.0})}
+        self.urlopen.side_effect = None
+        for i, (name, (qid, field, value)) in enumerate(cases.items()):
+            with self.subTest(name):
+                bad = json.loads(json.dumps(GOOD))
+                bad["answers"][qid][field] = value
+                self.urlopen.return_value = _Resp(bad)
+                with mock.patch("time.time", return_value=NOW + 60 * i):
+                    self.assertEqual(cycle.main(["--once"]), 0)
+                row = self.rows()[-1]
+                self.assertEqual((row["absence"], row["jev"]["error"]), ("jev", "parse"))
+                self.assertEqual(row["answers"]["a_action"]["choice"], "buy")     # paid for: kept
+                got = row["answers"][qid][field]
+                self.assertTrue(got == value or (got != got and value != value), (got, value))
+                self.assertEqual(row["columns"], {"a": None, "b": None})
+                self.assertEqual(row["jev"]["input_tokens"], 480)
+                self.assertNotIn("Traceback", self.err.getvalue())
+        self.assertEqual(len(self.rows()), len(cases))
 
     def test_an_unexpected_failure_after_the_send_began_is_billed(self):
         # "guard" rows are charged $0 by the spend guard; an exception once the request may
@@ -561,6 +670,50 @@ class CycleTest(unittest.TestCase):
         self.assertEqual([r["tick_id"] for r in rows], [TICK, "20260924T022900Z"])
         self.assertEqual(outcomes.join(rows)[TICK]["absence"], "gap")   # one minute apart: no t+h yet
 
+    def test_a_torn_last_line_costs_itself_only(self):
+        # A short write (disk full) or a crash mid-write leaves the log without its final
+        # newline. The next row must start on a fresh line: glued onto the torn one, both fail
+        # to parse. Nothing is truncated: the torn bytes stay where they are.
+        cycle.main(["--dry", "--once"])
+        with open(config.DECISIONS, "rb") as fh:
+            whole = fh.read()
+        torn = whole[:len(whole) // 2]
+        with open(config.DECISIONS, "ab") as fh:
+            fh.write(torn)                                     # half a row, no newline
+        self.snapshot.side_effect = lambda: dict(SNAP, ts_rx=cycle.iso_ms(NOW + 60))
+        cycle.main(["--dry", "--once"])
+        bad = []
+        rows = outcomes.load(config.DECISIONS, bad)
+        self.assertEqual([r["tick_id"] for r in rows], [TICK, "20260924T022900Z"])   # both whole rows
+        self.assertEqual([n for n, _ in bad], [2])                                    # exactly one bad line
+        with open(config.DECISIONS, "rb") as fh:
+            raw = fh.read()
+        self.assertTrue(raw.startswith(whole + torn + b"\n{"))
+        self.assertTrue(raw.endswith(b"\n"))
+        self.assertEqual(raw.count(b"\n"), 3)
+        cycle.main(["--dry", "--once"])                          # an intact end gets no blank line
+        with open(config.DECISIONS, "rb") as fh:
+            self.assertEqual(fh.read().count(b"\n"), 4)
+
+    def test_an_unwritable_heartbeat_still_leaves_the_row_and_exit_0(self):
+        # The heartbeat is written after the row: its failure used to print "row NOT written;
+        # the tick is lost" about a row that was in the log.
+        os.makedirs(config.HEARTBEAT)                          # a directory where the file goes
+        with mock.patch("os.replace", wraps=os.replace) as rep:
+            self.assertEqual(cycle.main(["--dry", "--once"]), 0)
+        self.assertEqual((self.only_row()["absence"], self.only_row()["state"]), (None, STATE))
+        err = self.err.getvalue()
+        self.assertIn("heartbeat NOT written", err)
+        self.assertIn("the row is", err)
+        self.assertNotIn("row NOT written", err)
+        self.assertEqual(rep.call_args.args, (config.HEARTBEAT + ".tmp." + str(os.getpid()), config.HEARTBEAT))
+        self.assertEqual(sorted(os.listdir(self.data)), ["decisions.jsonl", "heartbeat", "loop.lock"])  # no temp left
+        os.rmdir(config.HEARTBEAT)
+        self.snapshot.side_effect = lambda: dict(SNAP, ts_rx=cycle.iso_ms(NOW + 60))
+        self.assertEqual(cycle.main(["--dry", "--once"]), 0)                   # and the next one lands again
+        self.assertEqual(self.heartbeat(), cycle.iso_ms(NOW + 60))
+        self.assertEqual(len(self.rows()), 2)
+
     def test_tick_id_floors_ts_rx_to_the_minute(self):
         self.assertEqual(cycle.tick_id("2026-09-24T02:28:49.000Z"), "20260924T022800Z")
         self.assertEqual(cycle.tick_id("2026-12-31T23:59:59.999Z"), "20261231T235900Z")
@@ -590,14 +743,134 @@ class CycleTest(unittest.TestCase):
         self.assertEqual(len(self.sends()), 2)                 # the ledger row preceded the hung send
         self.assertEqual(signal.alarm(0), 0)
 
+    # A real SIGALRM, raised in-process at the moment a mock is reached: main()'s handler runs
+    # before signal.raise_signal returns, exactly as when the 50 s alarm lands there.
+    def test_watchdog_while_the_answer_becomes_columns_is_jev_watchdog_and_billed(self):
+        self.urlopen.side_effect = None
+        self.urlopen.return_value = _Resp(GOOD)
+        def for_arm(answers, arm):
+            signal.raise_signal(signal.SIGALRM)
+            return rules.null_columns()
+        with mock.patch.object(rules, "for_arm", side_effect=for_arm):
+            self.assertEqual(cycle.main(["--once"]), 0)
+        row = self.only_row()
+        self.assertEqual((row["absence"], row["jev"]["error"]), ("jev", "watchdog"))   # was "guard", billed 0
+        self.assertEqual(cycle.billed_tokens(row), 480)
+        self.assertIsNone(row["answers"])                      # SPEC §2: answers on a parse row only
+        self.assertEqual(row["columns"], {"a": None, "b": None})
+        self.assertEqual(self.heartbeat(), TS_RX)
+        self.assertEqual(signal.alarm(0), 0)
+
+    def test_watchdog_inside_a_handler_still_writes_the_row_and_the_halt(self):
+        # The alarm lands in the 401 handler's _halt, before HALT is written: the row was lost
+        # ("in the guards; no row") and so was the HALT, until the next tick's 401.
+        self.urlopen.side_effect = _http(401)
+        real, calls = cycle._halt, []
+        def halt(reason):
+            calls.append(reason)
+            if len(calls) == 1:
+                signal.raise_signal(signal.SIGALRM)
+            real(reason)
+        with mock.patch.object(cycle, "_halt", side_effect=halt):
+            self.assertEqual(cycle.main(["--once"]), 0)
+        row = self.only_row()
+        self.assertEqual((row["absence"], row["jev"]["error"]), ("jev", "http-4xx"))    # the first failure stays
+        self.assertEqual(cycle.billed_tokens(row), config.JEV_TOKENS_IF_UNKNOWN)
+        self.assertEqual(len(calls), 2)
+        with open(config.HALT) as fh:
+            self.assertIn(cycle.HALT_KEY_REJECTED + ": http-4xx 401", fh.read())
+        self.assertNotIn("no row", self.err.getvalue())
+        self.assertIn("watchdog", self.err.getvalue())
+        self.assertEqual(self.heartbeat(), TS_RX)
+        self.assertEqual(signal.alarm(0), 0)
+
+    def test_watchdog_escaping_run_marks_the_row_by_the_stage_it_reached(self):
+        cases = (("feed", ("feed", None)), ("state", ("guard", None)), ("prompts", ("guard", None)),
+                 ("ask", ("jev", "watchdog")), ("columns", ("jev", "watchdog")))
+        for i, (stage, want) in enumerate(cases):
+            def run(row, dry, halt, where, stage=stage):
+                where["stage"] = stage
+                if stage == "columns":
+                    row["answers"] = ANSWERS
+                signal.raise_signal(signal.SIGALRM)
+            with self.subTest(stage=stage), mock.patch.object(cycle, "_run", side_effect=run), \
+                    mock.patch("time.time", return_value=NOW + 60 * i):
+                self.assertEqual(cycle.main(["--once"]), 0)
+                row = self.rows()[-1]
+                self.assertEqual((row["absence"], row["jev"]["error"]), want)
+                self.assertIsNone(row["answers"])
+        self.assertEqual(len(self.rows()), len(cases))
+        self.assertNotIn("no row", self.err.getvalue())
+        self.assertEqual(signal.alarm(0), 0)
+
+    def test_watchdog_while_the_row_is_serialised_still_writes_it(self):
+        real, fired = json.dumps, []
+        def dumps(obj, *a, **k):
+            if isinstance(obj, dict) and "tick_id" in obj and not fired:   # write_row's, not the body's or a sha's
+                fired.append(1)
+                signal.raise_signal(signal.SIGALRM)
+            return real(obj, *a, **k)
+        with mock.patch("json.dumps", side_effect=dumps):
+            self.assertEqual(cycle.main(["--dry", "--once"]), 0)
+        self.assertEqual(fired, [1])
+        self.assertEqual((self.only_row()["absence"], self.only_row()["state"]), (None, STATE))
+        self.assertNotIn("no row", self.err.getvalue())
+
+    def test_write_row_serialises_in_its_critical_section_and_disarms_the_alarm(self):
+        os.makedirs(self.data)
+        old = signal.signal(signal.SIGALRM, cycle._on_alarm)
+        self.addCleanup(signal.signal, signal.SIGALRM, old)
+        self.addCleanup(signal.alarm, 0)
+        real = json.dumps
+        def dumps(obj, *a, **k):
+            signal.raise_signal(signal.SIGALRM)                        # ignored: the write has begun
+            return real(obj, *a, **k)
+        with mock.patch("json.dumps", side_effect=dumps):
+            cycle.write_row(cycle.new_row(TS_RX, "dry"))
+        signal.alarm(30)
+        cycle.write_row(cycle.new_row(TS_RX, "dry"))
+        self.assertEqual(signal.alarm(0), 0)                            # the write disarmed it
+        self.assertEqual(len(self.rows()), 2)
+        self.assertFalse(cycle._SIG["critical"])
+
+    def test_watchdog_after_the_tick_ended_never_escapes_main(self):
+        # A SIGALRM pending as the tick ends runs its handler at the next call: the disarm in
+        # _guarded_tick's finally. It used to leave main() with exit 1 and a traceback.
+        real = signal.alarm
+        def alarm(n):
+            left = real(n)
+            if n == 0 and sys._getframe(1).f_code.co_name == "_guarded_tick":
+                signal.raise_signal(signal.SIGALRM)
+            return left
+        with mock.patch.object(signal, "alarm", new=alarm):
+            self.assertEqual(cycle.main(["--dry", "--once"]), 0)
+        self.assertEqual(self.only_row()["absence"], None)
+        self.assertNotIn("Traceback", self.err.getvalue())
+        self.assertEqual(signal.alarm(0), 0)
+
+    def test_watchdog_in_the_guards_costs_the_row_never_the_exit_code(self):
+        def spend(now):
+            signal.raise_signal(signal.SIGALRM)
+        with mock.patch.object(cycle, "spend_today", side_effect=spend):
+            self.assertEqual(cycle.main(["--once"]), 0)
+        self.assertEqual(self.rows(), [])
+        self.assertIn("in the guards; no row", self.err.getvalue())
+        self.snapshot.assert_not_called()
+        self.assertEqual(signal.alarm(0), 0)
+
     # ---- SIGTERM -----------------------------------------------------------------------------------
     def test_sigterm_during_the_write_finishes_the_row_and_exits_0(self):
-        real = os.fsync
+        real, real_term, got = os.fsync, cycle._on_term, []
         def fsync(fd):
             signal.raise_signal(signal.SIGTERM)                # arrives inside the critical section
             real(fd)
-        with mock.patch("os.fsync", side_effect=fsync):
+        def on_term(signum, frame):                            # main() installs this one
+            got.append((signum, cycle._SIG["critical"]))
+            return real_term(signum, frame)
+        with mock.patch("os.fsync", side_effect=fsync), mock.patch.object(cycle, "_on_term", on_term):
             self.assertEqual(cycle.main(["--dry", "--once"]), 0)
+        self.assertEqual(got, [(signal.SIGTERM, True)])        # it did fire, and mid-write
+        self.assertTrue(cycle._SIG["term"])
         row = self.only_row()                                  # complete, parseable, single line
         self.assertEqual((row["absence"], row["state"]), (None, STATE))
         self.assertEqual(self.heartbeat(), TS_RX)

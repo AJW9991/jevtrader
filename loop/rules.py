@@ -11,8 +11,13 @@ Null answers (dry mode, a feed or Jev absence) → every column None, keys intac
 row always carries the same shape and the report joins on keys, never on presence.
 Missing optional fields read as no signal: confidence → 0.0 (every c* holds),
 probabilities → {} (pbuy holds), noul → 0.0 (no veto, no tail). A choice outside
-buy/sell/hold is refused: an intent the book cannot map must not reach the log.
+buy/sell/hold is refused: an intent the book cannot map must not reach the log. So is a
+field present with a value no cut can read (ValueError, or TypeError/AttributeError for a
+wrong type): a bool (float(True) is 1.0, which passes c99), NaN (fails every cut, a silent
+hold) or an infinity. cycle.py logs every refusal as jev/parse with the answer kept.
 """
+import math
+
 from loop import config
 
 BUY, SELL, HOLD = "buy", "sell", "hold"
@@ -34,6 +39,20 @@ def null_columns():
     return {c: None for c in COLUMNS}
 
 
+def _real(v, what):
+    """float(v) for a cut to compare, or ValueError: a bool or a non-finite number is not
+    a reading. A missing field arrives here as the caller's default, 0.0."""
+    if isinstance(v, bool):
+        raise ValueError("%s is a bool (%r)" % (what, v))
+    try:
+        x = float(v)                                       # None, a list: TypeError; "x": ValueError
+    except OverflowError:                                  # an integer past float range: not finite either
+        raise ValueError("%s is past float range" % what) from None
+    if not math.isfinite(x):
+        raise ValueError("%s is not finite (%r)" % (what, v))
+    return x
+
+
 def columns(action_answer, skip_answer, up15, down15):
     """CONTRACT §2 Rule columns, in its key order. Every comparison is `>=`: a confidence
     exactly on a cut passes it, a skip exactly at VETO_NOUL vetoes, a noul exactly at
@@ -43,16 +62,16 @@ def columns(action_answer, skip_answer, up15, down15):
     choice = action_answer["choice"]
     if choice not in CHOICES:
         raise ValueError("choice %r not in %s" % (choice, CHOICES))
-    conf = float(action_answer.get("confidence", 0.0))
+    conf = _real(action_answer.get("confidence", 0.0), "confidence")
     probs = action_answer.get("probabilities") or {}
-    veto = float(skip_answer.get("noul", 0.0)) >= config.VETO_NOUL
-    up, down = float(up15.get("noul", 0.0)), float(down15.get("noul", 0.0))
+    veto = _real(skip_answer.get("noul", 0.0), "skip.noul") >= config.VETO_NOUL
+    up, down = _real(up15.get("noul", 0.0), "up15.noul"), _real(down15.get("noul", 0.0), "down15.noul")
     out = {"argmax": choice}
     for k, name in zip(config.CONF_THRESHOLDS, CONF_COLUMNS):
         gated = choice if conf >= k else HOLD
         out[name] = gated
         out[name + "v"] = HOLD if veto else gated          # the veto is a hold, never a sell
-    p_buy, p_sell = float(probs.get(BUY, 0.0)), float(probs.get(SELL, 0.0))
+    p_buy, p_sell = _real(probs.get(BUY, 0.0), "probabilities.buy"), _real(probs.get(SELL, 0.0), "probabilities.sell")
     out[PBUY_COLUMN] = BUY if p_buy >= config.PBUY else SELL if p_sell >= config.PBUY else HOLD
     # up15 is tested first, as CONTRACT §2 lists it; both ≥ 0.99 at once is a contradiction
     # the model should not produce, and the contract's order settles it rather than a coin.

@@ -127,7 +127,12 @@ def parse_book(j, product):
 def parse_candles(j, now):
     """Rows CLOSED as of `now` (start + 60 <= now), oldest first, floats. The venue
     sends newest-first with the open minute on top (fixture: top start == now//60*60),
-    and the order is not trusted: rows are sorted here."""
+    and the order is not trusted: rows are sorted here. A closed row whose open, high,
+    low or close is not finite and > 0, or whose volume is not finite and >= 0, refuses
+    the set, as a garbage level refuses the book: float() takes "nan" and "inf", and a
+    NaN volume on the newest minute fell in neither flow cut (flow read `organic`, and
+    the tick sent on it), a zero close divided by zero in state.py, and a NaN close
+    raised a different exception class per Python version (guard on one, feed on another)."""
     raw = j.get("candles") if isinstance(j, dict) else None
     if not isinstance(raw, list):
         raise FeedError("parse candles: no list")
@@ -138,9 +143,15 @@ def parse_candles(j, now):
         except (KeyError, TypeError, ValueError):
             raise FeedError("parse candles.start") from None
         if s + 60 <= now:
-            rows.append({"start": s, "open": _num(c, "open", "candle"), "high": _num(c, "high", "candle"),
-                         "low": _num(c, "low", "candle"), "close": _num(c, "close", "candle"),
-                         "volume": _num(c, "volume", "candle")})
+            r = {"start": s, "open": _num(c, "open", "candle"), "high": _num(c, "high", "candle"),
+                 "low": _num(c, "low", "candle"), "close": _num(c, "close", "candle"),
+                 "volume": _num(c, "volume", "candle")}
+            px = (r["open"], r["high"], r["low"], r["close"])
+            if not (all(math.isfinite(p) and p > 0 for p in px)
+                    and math.isfinite(r["volume"]) and r["volume"] >= 0):
+                raise FeedError(f"candle {s} not finite and positive: o/h/l/c "
+                                f"{'/'.join(map(str, px))} volume {r['volume']}")
+            rows.append(r)
     rows.sort(key=lambda r: r["start"])
     if len(rows) < config.WINDOW_MIN:
         raise FeedError(f"candles: {len(rows)} closed rows < {config.WINDOW_MIN}")

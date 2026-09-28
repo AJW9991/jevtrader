@@ -40,6 +40,26 @@ class JevError(Exception):
         self.kind, self.detail, self.status, self.key_path = kind, detail, status, key_path
 
 
+class _NoAuthRedirect(urllib.request.HTTPRedirectHandler):
+    """The stock handler answers a 301/302/303 by re-sending the request as a GET to ANY
+    Location -- another host, plain http -- with every header copied, Authorization
+    included: one bad redirect would carry the key off to that host, in cleartext, on
+    every tick. A request that carries Authorization is therefore never redirected:
+    returning None makes urllib raise the 3xx itself as an HTTPError, which ask() reports
+    as http-4xx with its status, without a retry. A request without it (the feed's public
+    GETs) keeps the stock behaviour."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if req.has_header("Authorization"):
+            return None
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+# Installed at import, as the process-wide opener: urllib.request.urlopen() goes through it,
+# so the send refuses redirects while the tests' mock of urlopen still stands in front of it.
+urllib.request.install_opener(urllib.request.build_opener(_NoAuthRedirect))
+
+
 def _name(kind, path):
     return f"{kind}:{path.replace(_HOME, '~', 1)}"
 
@@ -57,16 +77,22 @@ def key():
     """(value, path_name); first hit in config.KEY_PATHS wins, so a loop-triggered rate
     limit lands on the loop's own key before the brain's. The name is safe to log; the
     value goes into one Authorization header and nowhere else. A first hit that is not
-    usable raises no-key naming its PATH; it does not fall through to a shared key."""
+    usable raises no-key naming its PATH; it does not fall through to a shared key. A file
+    that is not UTF-8 text is such a hit: no-key, never an exception the tick would log as
+    a billed `unexpected`."""
     for kind, path in config.KEY_PATHS:
         if kind == "env":
             v = os.environ.get(path, "").strip()
         else:
             try:
-                with open(path) as fh:
+                with open(path, encoding="utf-8") as fh:     # explicit: not the locale's codec
                     text = fh.read()
             except OSError:
                 continue
+            except UnicodeDecodeError:       # raised below, unchained: its .object is the raw file, the key
+                text = None
+            if text is None:
+                raise JevError("no-key", f"{_name(kind, path)} is not UTF-8 text")
             v = next((l.strip() for l in text.splitlines() if l.strip()), "")
             if _ENVLINE.match(v):
                 v = v.split("=", 1)[1].strip().strip("\"'")
@@ -145,7 +171,10 @@ def _parse(raw, questions, ms, kpath):
             for f in need:
                 if f not in a:
                     raise KeyError(f"{qid}.{f}")
-        tokens = int((d.get("usage") or {}).get("input_tokens", 0))   # output is free (config): input is the spend
+        # output is free (config): input is the spend. Absent OR null is 0 (SPEC §12): a
+        # complete, paid answer must not be thrown away over a null count; the spend guard
+        # charges a 0 at JEV_TOKENS_IF_UNKNOWN anyway. A string or Infinity is still `parse`.
+        tokens = int((d.get("usage") or {}).get("input_tokens") or 0)
     except (ValueError, TypeError, KeyError, AttributeError, ArithmeticError, RecursionError) as e:
         # ArithmeticError: "input_tokens": Infinity parses to inf and int(inf) is OverflowError;
         # RecursionError: a pathologically nested body. Either would otherwise escape as an
@@ -159,7 +188,8 @@ _SIG = re.compile(r"^In force from: `([^`]*)`\s+Signed: `([^`]*)`", re.M)
 
 
 def signed():
-    """True only when PROTOCOL.md's last line carries both fields. PROTOCOL.md says
+    """True only when PROTOCOL.md's `In force from: ... Signed: ...` line, found by
+    search wherever it sits in the file, carries both fields. PROTOCOL.md says
     nothing here sends before Alex signs it; until 2026-09-24 that rested on nobody
     running a non-dry tick while a key file existed -- and the shared key does exist.
     The check sits in ask(), which every send in cycle and policy_table goes through,
@@ -188,8 +218,12 @@ def ask(state, questions):
     err = None
     for attempt in (1, 2):
         if ledger(state, questions) is None:
+            if err is not None:                          # the retry's row: attempt 1 already left, so its
+                                                         # billed kind stands, never "ledger" (billed 0)
+                raise JevError(err.kind, f"{err.detail}; retry not sent: cannot append to {config.SENDS}",
+                               err.status, kpath)
             raise JevError("ledger", f"cannot append to {config.SENDS}; nothing sent", key_path=kpath)
-        t0 = time.monotonic()
+        t0, refused = time.monotonic(), False
         try:
             with urllib.request.urlopen(req, timeout=config.JEV_TIMEOUT_S) as r:
                 raw = r.read()
@@ -198,17 +232,21 @@ def ask(state, questions):
                 err, wait = JevError("http-429", f"429 {e.reason}", 429, kpath), _retry_after(e)
             elif e.code >= 500:
                 err, wait = JevError("http-5xx", f"{e.code} {e.reason}", e.code, kpath), RETRY_S
-            else:
+            else:                                        # also a 3xx: _NoAuthRedirect refused to follow it
                 raise JevError("http-4xx", f"{e.code} {e.reason}", e.code, kpath) from None
         except TRANSIENT as e:
             err, wait = JevError("timeout", _why(e), None, kpath), RETRY_S
         except ValueError:
             # Raised locally before a byte leaves (http.client refusing a header or URL). Its
-            # message can quote the Authorization header, so it is dropped, never chained.
-            raise JevError("parse", "request refused locally (ValueError; message withheld)",
-                           key_path=kpath) from None
+            # message can quote the Authorization header, so it is dropped, never chained: the
+            # JevError is raised below, outside this clause, so it is not even kept as
+            # __context__ (`from None` only hides a context from display).
+            refused = True
         else:
             return _parse(raw, questions, int((time.monotonic() - t0) * 1000), kpath)
+        if refused:
+            raise JevError("parse", "request refused locally (ValueError; message withheld)",
+                           key_path=kpath) from None
         if attempt == 1:
             time.sleep(wait)
     raise err
