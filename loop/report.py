@@ -521,7 +521,10 @@ def by_version(rows, d, dis, kof):
     an empty one inside counted as S_k = 0 as PREREG §3 keeps it; the block a promotion splits
     counts under both versions, each with its own ticks' d_t; excluded days are not removed; the
     replay runs straight through a promotion (a position opened under one version is closed under
-    the next). Returns [(version, first tick, last tick, ticks, blocks)] and the lines."""
+    the next). Each contiguous stretch of one version is a row of its own: a version that comes back
+    after another (a rollback: CURRENT set back by hand, bin/promote's docstring) is '<version> #2',
+    so no stretch's span covers another version's blocks. Returns [(label, first tick, last tick,
+    ticks, blocks)] and the lines."""
     named = {}
     for r in rows:
         v = r.get("prompt_b")
@@ -532,16 +535,20 @@ def by_version(rows, d, dis, kof):
     first = next((named[t][1] for t in sorted(named)), None)
     if first is None or not d:
         return [], ["  by arm B's prompt version: no answered live row names one"]
-    per, cur = {}, first
-    for t, v in d:
-        cur = named[t][1] if t in named else cur
-        per.setdefault(cur, []).append((t, v))
+    stretches, cur, prev = [], first, None                             # contiguous: a version that comes back after
+    for t, v in d:                                                     # another (a rollback) is a stretch of its own,
+        cur = named[t][1] if t in named else cur                       # labelled '<version> #2', '#3', ...
+        if cur != prev:
+            n = sum(1 for name, _, _ in stretches if name == cur)
+            stretches.append((cur, f"{cur} #{n + 1}" if n else cur, []))
+            prev = cur
+        stretches[-1][2].append((t, v))
     out, lines = [], [
         "  H1 cell by arm B's prompt version (the rewrite's iterations), descriptive and NOT in PREREG: a version's",
         "  blocks run from its first tick's to its last tick's (the block a promotion splits counts under both, each",
         "  with its own ticks), excluded days are not removed, and the replay runs straight through a promotion",
         f"    {'version':<9}{'first tick':<18}{'last tick':<18}{'ticks':>7}{'blocks':>7}{'mean_S':>9}{'dis':>6}{'dis%':>7}{'mean_S|dis':>12}"]
-    for v, dv in per.items():                                          # in order of first tick: dicts keep insertion order
+    for _, v, dv in stretches:                                         # in order of first tick
         S, hot = collections.defaultdict(float), set()
         for t, x in dv:
             k = kof[t]

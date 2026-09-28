@@ -977,6 +977,18 @@ class ByVersion(unittest.TestCase):
         got, _ = report.by_version(rows, d, set(), kof)
         self.assertEqual([(v, n) for v, _, _, n, _ in got], [("v1", 1), ("v2", 2)])
 
+    def test_a_version_that_comes_back_is_a_stretch_of_its_own(self):
+        # v1, then v2, then v1 again (a rollback): grouping by name would give v1 one span across v2's
+        # blocks, counting each of them as v1's S_k = 0
+        rows = self._rows([(0, "v1", 100), (1, "v1", 100), (2, "v2", 100), (3, "v2", 100), (4, "v1", 100), (5, "v1", 100)])
+        d = [(r["tick_id"], x) for r, x in zip(rows, (1.0, 1.0, 5.0, 5.0, 3.0, 3.0))]
+        kof = {r["tick_id"]: k for r, k in zip(rows, (0, 0, 1, 1, 2, 2))}
+        got, lines = report.by_version(rows, d, set(), kof)
+        self.assertEqual([(v, n, b) for v, _, _, n, b in got], [("v1", 2, 1), ("v2", 2, 1), ("v1 #2", 2, 1)])
+        self.assertTrue(lines[4].startswith("    v1       2026-09-26T00:00Z 2026-09-26T00:01Z       2      1    2.000"), lines[4])
+        self.assertTrue(lines[5].startswith("    v2       2026-09-26T00:02Z 2026-09-26T00:03Z       2      1   10.000"), lines[5])
+        self.assertTrue(lines[6].startswith("    v1 #2    2026-09-26T00:04Z 2026-09-26T00:05Z       2      1    6.000"), lines[6])
+
     def test_no_answered_live_row_says_so(self):
         got, lines = report.by_version(self._rows([(0, None, 100)]), [("20260926T000000Z", 0.0)], set(), {"20260926T000000Z": 0})
         self.assertEqual(got, [])
