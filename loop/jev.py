@@ -40,6 +40,26 @@ class JevError(Exception):
         self.kind, self.detail, self.status, self.key_path = kind, detail, status, key_path
 
 
+class _NoAuthRedirect(urllib.request.HTTPRedirectHandler):
+    """The stock handler answers a 301/302/303 by re-sending the request as a GET to ANY
+    Location -- another host, plain http -- with every header copied, Authorization
+    included: one bad redirect would carry the key off to that host, in cleartext, on
+    every tick. A request that carries Authorization is therefore never redirected:
+    returning None makes urllib raise the 3xx itself as an HTTPError, which ask() reports
+    as http-4xx with its status, without a retry. A request without it (the feed's public
+    GETs) keeps the stock behaviour."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if req.has_header("Authorization"):
+            return None
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+# Installed at import, as the process-wide opener: urllib.request.urlopen() goes through it,
+# so the send refuses redirects while the tests' mock of urlopen still stands in front of it.
+urllib.request.install_opener(urllib.request.build_opener(_NoAuthRedirect))
+
+
 def _name(kind, path):
     return f"{kind}:{path.replace(_HOME, '~', 1)}"
 
@@ -201,7 +221,7 @@ def ask(state, questions):
                 err, wait = JevError("http-429", f"429 {e.reason}", 429, kpath), _retry_after(e)
             elif e.code >= 500:
                 err, wait = JevError("http-5xx", f"{e.code} {e.reason}", e.code, kpath), RETRY_S
-            else:
+            else:                                        # also a 3xx: _NoAuthRedirect refused to follow it
                 raise JevError("http-4xx", f"{e.code} {e.reason}", e.code, kpath) from None
         except TRANSIENT as e:
             err, wait = JevError("timeout", _why(e), None, kpath), RETRY_S

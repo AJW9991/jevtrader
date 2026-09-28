@@ -3,7 +3,7 @@ and config.JEV_URL is pointed at 127.0.0.1:9 (discard) for the whole class, so a
 mock that slipped would be refused by the local kernel, never seen by api.typesafe.ai.
 The key is a made-up string in the environment; no real key file is ever read,
 because the env entry is first in config.KEY_PATHS and first hit wins."""
-import email.message, hashlib, io, json, os, tempfile, unittest, urllib.error
+import email.message, hashlib, io, json, os, tempfile, unittest, urllib.error, urllib.request, urllib.response
 from unittest import mock
 from loop import config, jev
 
@@ -325,6 +325,47 @@ class JevTest(unittest.TestCase):
         self.assertEqual(self.urlopen.call_count, 1)                   # no retry
         self.assertEqual(len(self.rows()), 2)                          # header + the attempt's ledger row
 
+    # --- a redirect never carries the key anywhere -----------------------------------------
+    def test_a_302_is_http_4xx_with_its_status_and_no_second_request(self):
+        self.urlopen.side_effect = _http(302)
+        with self.assertRaises(jev.JevError) as cm:
+            jev.ask(STATE, Q)
+        self.assertEqual((cm.exception.kind, cm.exception.status), ("http-4xx", 302))
+        self.assertEqual(self.urlopen.call_count, 1)
+        self.assertEqual(self.sleeps, [])
+        self.assertEqual(len(self.rows()), 1 + 1)                          # header + the one attempt
+
+    def test_a_redirect_through_the_real_handler_chain_is_refused_not_followed(self):
+        # No socket: a stand-in HTTPHandler answers with a 302 to another host (and a 200
+        # there), and urlopen is routed through an opener built as jev builds its own. The
+        # authorised POST is seen once and never re-sent; an unauthenticated GET (the
+        # feed's kind) is still followed.
+        seen = []
+
+        class Fake(urllib.request.HTTPHandler):
+            def http_open(self, req):
+                seen.append((req.full_url, req.get_header("Authorization")))
+                there = "elsewhere" in req.full_url
+                h = email.message.Message()
+                if not there:
+                    h["Location"] = RedirectHandlerTest.LOC
+                r = urllib.response.addinfourl(io.BytesIO(b"{}"), h, req.full_url, code=200 if there else 302)
+                r.msg = "OK" if there else "Found"
+                return r
+        opener = urllib.request.build_opener(jev._NoAuthRedirect, Fake)
+        self.urlopen.side_effect = lambda req, timeout=None: opener.open(req, timeout=timeout)
+        with self.assertRaises(jev.JevError) as cm:
+            jev.ask(STATE, Q)
+        self.assertEqual((cm.exception.kind, cm.exception.status), ("http-4xx", 302))
+        if isinstance(cm.exception.__context__, urllib.error.HTTPError):
+            _OPEN.append(cm.exception.__context__)
+        self.assertEqual(seen, [(URL, "Bearer " + KEY)])                   # once, to the patched URL only
+        self.assertEqual(len(self.rows()), 1 + 1)
+        seen.clear()
+        with opener.open(urllib.request.Request("http://127.0.0.1:9/feed"), timeout=1) as r:
+            self.assertEqual(r.geturl(), RedirectHandlerTest.LOC)
+        self.assertEqual(seen, [("http://127.0.0.1:9/feed", None), (RedirectHandlerTest.LOC, None)])
+
     def test_nothing_on_disk_or_in_errors_carries_the_key(self):
         self.urlopen.side_effect = [_http(401)]
         with self.assertRaises(jev.JevError) as cm:
@@ -332,6 +373,49 @@ class JevTest(unittest.TestCase):
         self.assertNotIn(KEY, str(cm.exception) + repr(vars(cm.exception)))
         with open(self.sends) as fh:
             self.assertNotIn(KEY, fh.read())
+
+
+class RedirectHandlerTest(unittest.TestCase):
+    """urllib's stock redirect handler re-sends a 301/302/303 to any Location with every
+    header copied, the bearer key included. jev installs its own at import."""
+    LOC = "http://elsewhere.example/steal"
+
+    def _req(self, auth, data=b"{}"):
+        h = {"Content-Type": "application/json"}
+        if auth:
+            h["Authorization"] = "Bearer " + KEY
+        return urllib.request.Request(URL, data=data, headers=h)
+
+    def _hdrs(self):
+        h = email.message.Message()
+        h["Location"] = self.LOC
+        return h
+
+    def test_refuses_a_request_carrying_authorization(self):
+        h = jev._NoAuthRedirect()
+        for code in (301, 302, 303, 307, 308):
+            for data in (b"{}", None):                                     # the POST, and a GET as well
+                with self.subTest(code=code, post=data is not None):
+                    self.assertIsNone(h.redirect_request(self._req(True, data), None, code, "Found",
+                                                         self._hdrs(), self.LOC))
+
+    def test_delegates_to_the_stock_handler_without_authorization(self):
+        h = jev._NoAuthRedirect()
+        req = self._req(False)
+        with mock.patch.object(urllib.request.HTTPRedirectHandler, "redirect_request",
+                               return_value="followed") as parent:
+            self.assertEqual(h.redirect_request(req, None, 302, "Found", self._hdrs(), self.LOC), "followed")
+        parent.assert_called_once_with(req, None, 302, "Found", mock.ANY, self.LOC)
+        new = h.redirect_request(urllib.request.Request("https://api.coinbase.com/a"), None, 302, "Found",
+                                 self._hdrs(), "https://api.coinbase.com/b")
+        self.assertEqual(new.full_url, "https://api.coinbase.com/b")      # the real parent: a plain GET follows
+
+    def test_the_process_wide_opener_carries_it_after_import(self):
+        import loop.jev                                                    # imported above: its install stands
+        op = urllib.request._opener
+        self.assertIsInstance(op, urllib.request.OpenerDirector)
+        redirects = [x for x in op.handlers if isinstance(x, urllib.request.HTTPRedirectHandler)]
+        self.assertEqual([type(x) for x in redirects], [loop.jev._NoAuthRedirect])
 
 
 class SignatureGateTest(unittest.TestCase):
