@@ -4,7 +4,7 @@ loop's health from the heartbeat, data/HALT, the log, proposals/ and logs/propos
     python3 -m loop.status [--log FILE] [--t0 YYYY-MM-DDTHH:MM|tick_id] [--prereg FILE] [--now YYYY-MM-DDTHH:MM]
 
 Health only, by construction (PREREG §8.4): it reads report.days_table (report §1's per-day
-stop-rule-3 table) and cycle.spend_today, plus the heartbeat, HALT, the last row (its DRIFT
+stop-rule-3 table), cycle.spend_today and data/exclusions.tsv (loop.exclusions), plus the heartbeat, HALT, the last row (its DRIFT
 flag), proposals/ and logs/propose.log, and nothing that replays a book, joins a return to an answer, or prints a confidence, so no H1, H2,
 pair, calibration or confidence number can appear here by accident; tests/test_status.py holds
 it to that, as test_dash.py holds the dash. It writes nothing. What HANDOFF.md's "Watch" list

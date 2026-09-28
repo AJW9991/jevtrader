@@ -154,6 +154,25 @@ class Status(unittest.TestCase):
         without = status._days_lines(rows, outcomes.join(rows), t0)                  # no clock: the stray row closes d01..d04
         self.assertIn("NO LIVE ROWS", "\n".join(without))
 
+    def test_the_screen_shows_the_exclusions_file_the_day_28_run_will_apply(self):
+        # a line the parser refuses must be seen the morning after it is written, not on day 28
+        data = os.path.join(self.tmp, "excl-data")
+        os.makedirs(data, exist_ok=True)
+        ex = os.path.join(data, "exclusions.tsv")
+        for body, want in (("day\tfill%\tjev-err%\treason\nd03\t90.0%\t0.0%\tasleep\n", f"exclusions: 1 day(s) excluded: d03 ({ex})"),
+                           ("day\tfill%\tjev-err%\treason\nd1 6\t90.0%\t0.0%\ttypo\n", "exclusions: REFUSED, fix before day 28: " + ex + ":2: day "),
+                           (None, f"exclusions: none ({ex} absent)")):
+            if body is None:
+                os.remove(ex)
+            else:
+                with open(ex, "w", encoding="utf-8") as fh:
+                    fh.write(body)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), mock.patch.object(config, "HALT", self.halt), mock.patch.object(config, "DATA", data), \
+                    mock.patch.object(dash, "heartbeat", return_value=None), mock.patch.object(dash, "current_version", return_value="v9"):
+                self.assertEqual(status.main(["--log", self.log, "--t0", "2026-09-23T10:00", "--now", "2026-09-23T10:42"]), 0)
+            self.assertIn(want, buf.getvalue())
+
     def test_an_unreadable_log_is_named_not_a_traceback(self):
         # a 0200 log (write_row still appends to it) or a directory: the spend guard trips on it, and
         # the morning screen says why instead of dying in outcomes.load

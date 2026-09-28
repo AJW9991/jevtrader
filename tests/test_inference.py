@@ -1,6 +1,6 @@
 """loop/inference.py: the pre-registered draw, the guard that refuses the sample before day 28,
 exclusions by T0-anchored day, and an end-to-end run on a synthetic log and on --pre-t0."""
-import contextlib, datetime, hashlib, io, json, math, os, random, shutil, sys, tempfile, unittest
+import contextlib, datetime, hashlib, io, json, math, os, random, re, shutil, sys, tempfile, unittest
 from unittest import mock
 
 from fixture_prereg import pin_prereg
@@ -152,14 +152,25 @@ class DaysAndExclusions(unittest.TestCase):
         self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
         p = os.path.join(tmp, "exclusions.tsv")
         with open(p, "w", encoding="utf-8") as fh:
-            fh.write("day  fill%  jev-err%  reason\nd06  91.0  0.1  Mac asleep\n12 80.0 0.0 one space\n")
+            fh.write("day  fill%  jev-err%  reason\nd06  91.0  0.1  Mac asleep\n12\t80.0\t0.0\ta tab\n")
         days, lines = inference.read_exclusions(p)
         self.assertEqual(days, {6, 12})
-        self.assertEqual(lines, ["d06  91.0  0.1  Mac asleep", "12 80.0 0.0 one space"])       # verbatim
+        self.assertEqual(lines, ["d06  91.0  0.1  Mac asleep", "12\t80.0\t0.0\ta tab"])       # verbatim
         self.assertEqual(exclusions.status_line(p), f"exclusions: 2 day(s) excluded: d06 d12 ({p})")
         with open(p, "w", encoding="utf-8") as fh:
             fh.write("day  fill%  jev-err%  reason\nd6x  91.0  0.1  typo\n")
         self.assertTrue(exclusions.status_line(p).startswith("exclusions: REFUSED, fix before day 28: "))
+        # a typo must never become a different day, or part of one (2026-09-28, pre-merge verifier):
+        # the day is taken by the line's own separator, and anything left over is refused with path:line
+        for bad in ("d1 6\t80.0\t0.0\tMac asleep", "\t20\t0.0\tday field left empty", "d06 d07\t80.0\t0.0\ttwo nights",
+                    "d1 6 80.0 0.0 one-space typo", "d٣\t80.0\t0.0\ta non-ASCII digit"):
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write("day\tfill%\tjev-err%\treason\n" + bad + "\n")
+            with self.assertRaisesRegex(ValueError, rf"^{re.escape(p)}:2: day "):
+                exclusions.read_exclusions(p)
+        with open(p, "wb") as fh:
+            fh.write(b"day\tfill%\tjev-err%\treason\nd03\t90\t0\t\xff\n")
+        self.assertEqual(exclusions.status_line(p)[:60], f"exclusions: REFUSED, fix before day 28: {p}"[:60])
         self.assertTrue(exclusions.status_line(os.path.join(tmp, "none.tsv")).startswith("exclusions: none ("))
 
 

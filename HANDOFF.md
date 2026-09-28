@@ -84,8 +84,8 @@ A full run on a 28-day synthetic log takes about a minute here.
 
 ## Tooling (all in the Makefile)
 `make test` · `make status` (the morning check: heartbeat age, HALT, last row, today's spend vs
-the tripwire, sample day, last days of the stop-rule table, newest proposal + MISSING flag, tail
-of propose.log) · `make health` (report §1-§3 on the sample; `make report --health` never worked)
+the tripwire, sample day, last days of the stop-rule table, the exclusions file as day 28 will
+read it, newest proposal + MISSING flag, tail of propose.log) · `make health` (report §1-§3 on the sample; `make report --health` never worked)
 · `make report` (withholds §4-§7 on sample rows until 2026-10-23 21:40Z; `--unblind` is a look
 and says so) · `make dash` · `make inference-smoke` · `make results` (day 28; refuses before).
 
