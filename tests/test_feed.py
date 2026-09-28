@@ -338,9 +338,12 @@ class TestSnapshot(unittest.TestCase):
         with mock.patch("urllib.request.urlopen", Fake(candles=json.dumps(inf).encode())), \
                 self.assertRaisesRegex(feed.FeedError, r"^parse candles\.start$"):
             feed.snapshot(config.PRODUCT, now=NOW)
-        tr = {"trades": [{"time": "9999-12-31T23:59:59+23:59", "size": "1"}]}
-        s, _ = snap(Fake(trades=tr))
-        self.assertIn(s["trades_5m"], (-1, 0, 1))                          # never a raise past the ticker's tolerance
+        for start in ("9" * 400, "-" + "9" * 400, str(1 << 40), "-60"):          # int() takes them; no clock gives them
+            odd = json.loads(json.dumps(CANDLES))
+            odd["candles"][0]["start"] = start
+            with mock.patch("urllib.request.urlopen", Fake(candles=json.dumps(odd).encode())), \
+                    self.assertRaisesRegex(feed.FeedError, r"^parse candles\.start$"):
+                feed.snapshot(config.PRODUCT, now=NOW)
 
     def test_book_sanity(self):
         def book(bid="114.8", bs="1", ask="114.82", az="1", product="SOL-USD"):

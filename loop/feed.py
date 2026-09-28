@@ -34,6 +34,7 @@ TRADES_WINDOW_S = 300   # CONTRACT: trades with time >= ts_rx - 300
 TRADES_LIMIT = 1000     # the ticker caps at 100 rows WITHOUT start/end and at `limit` WITH them;
                         # a quiet 5 min held 532 trades, so 1000 censors only a bot war, and a
                         # censored window keeps the NEWEST rows (verified 2026-09-24): 1000 = ">= 1000"
+START_MAX = 1 << 40        # a candle start (epoch s) at or past this, or below 0, is garbage (year ~36800)
 MAX_FEED_AGE_S = 120    # feed_age_s is 0-60 when the venue is current and 60-120 with the ONE omitted
                         # quiet newest minute SPEC §3 allows. Past that the window describes
                         # [t-k-15, t-k] while the fill and the mid are at t: a candle set lagging
@@ -140,6 +141,8 @@ def parse_candles(j, now):
     for c in raw:
         try:
             s = int(c["start"])
+            if not 0 <= s < START_MAX:          # "-9...9" or "9...9" as a string: int() takes it, a clock cannot
+                raise ValueError(s)
         except (KeyError, TypeError, ValueError, OverflowError):   # int(inf) from a JSON Infinity
             raise FeedError("parse candles.start") from None
         if s + 60 <= now:
@@ -182,7 +185,7 @@ def parse_trades(j, now):
     for t in raw:
         try:
             ts = _ep(t["time"])                 # "2026-09-24T02:28:45.725274Z"
-        except (KeyError, TypeError, ValueError, OverflowError):
+        except (KeyError, TypeError, ValueError):
             raise FeedError("parse trades.time") from None
         n += ts >= cut
     return n
