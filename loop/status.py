@@ -90,12 +90,15 @@ def _sample_line(t0, now):
 
 def _days_lines(rows, outs, t0, now=None):
     """The sample's per-day table (rows cut to [T0, T0 + 28 d) with the whole log's last tick, as the
-    dash and `make health` do), so a pre-T0 or post-sample day never counts as BAD here."""
+    dash and `make health` do), so a pre-T0 or post-sample day never counts as BAD here. With the
+    clock, that last tick is the last row stamped at or before it (report.last_reached): a row from a
+    forward clock step closes no open day and turns no pending row into a gap."""
     if not rows:
         return ["per day: no rows"]
-    last = max((report.tick_epoch(r["tick_id"]) for r in rows if isinstance(r.get("tick_id"), str)), default=None)
+    clock = now.timestamp() if now is not None else None
+    last = report.last_reached(rows, clock)
     scope = report.in_sample(rows, t0) if t0 is not None else rows
-    d = report.days_table(scope, outs, t0, last, now.timestamp() if now is not None else None)
+    d = report.days_table(scope, outs, t0, last, clock)
     shown = d["days"][-DAYS_SHOWN:]
     out = [f"per day (last {len(shown)} of {len(d['days'])}; BAD days so far {len(d['bad'])}" + (": " + ", ".join(d["bad"]) if d["bad"] else "")
            + (f"; NO LIVE ROWS {len(d['empty'])}: " + ", ".join(d["empty"]) + " (fill 0/0; the exclusion is Alex's call)" if d["empty"] else "") + "):"]

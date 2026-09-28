@@ -139,7 +139,8 @@ def answered(rows):
 # ---- §4.1 health ---------------------------------------------------------------------------
 def health(rows, outs, bad=(), t0=None, last=None, now=None, since=None):
     """`last`: the epoch of the whole log's last tick when `rows` were cut to a sample (--t0), so
-    the sample's last day can close; None reads it from `rows`. `now`, `since` (epoch): see days_table."""
+    the sample's last day can close; None reads it from `rows`; with `now`, the last one reached
+    (last_reached over the whole log). `now`, `since` (epoch): see days_table."""
     live = [r for r in rows if r.get("mode") == "live" and r.get("absence") is None]
     dry = [r for r in rows if r.get("mode") == "dry"]
     absence = collections.Counter(r["absence"] for r in rows if r.get("absence") is not None)
@@ -283,6 +284,28 @@ def _tick_of(epoch):
     return datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
+def last_reached(rows, now=None):
+    """The epoch of the last tick the log has reached on the clock `now` (epoch): the latest tick_id among
+    the rows stamped (ts_rx) at or before it, as loop.inference.reached reads the log; every row's when
+    `now` is None; None when no row is reached. A row stamped after the clock (a clock that stepped
+    forward) has not happened, and the clock itself is never the log's last tick: a row stamped before
+    it can still be on its way. A ts_rx that does not parse (outcomes.load skips such a row) is read as
+    its tick_id's minute."""
+    out = None
+    for r in rows:
+        t = r.get("tick_id")
+        if not isinstance(t, str):
+            continue
+        e = tick_epoch(t)
+        if now is not None:
+            s = outcomes.ts_epoch(r.get("ts_rx"))
+            if (e if s is None else s) > now:
+                continue
+        if out is None or e > out:
+            out = e
+    return out
+
+
 def days_table(rows, outs, t0=None, last=None, now=None, since=None):
     """Per day (day_of: T0-anchored 'dNN' with T0, else the UTC calendar day): distinct ticks,
     coverage of a full day, live rows, the share of them with a non-gap outcome, the Jev error
@@ -290,9 +313,13 @@ def days_table(rows, outs, t0=None, last=None, now=None, since=None):
     join over the WHOLE log, so a day's last 15 minutes are filled by the next day's rows.
     `last` is the epoch of the whole log's last tick: with --t0 the rows are cut to the sample,
     and without it the sample's last day (d28) could never close, since its last row can fill
-    only from rows after the cut. None reads it from `rows`. `now` (epoch), when given, caps it:
-    a row stamped after the clock (a forward clock step) closes no day that has not happened, turns
-    no pending row into a gap, and lists no future day as NO LIVE ROWS; it shows as an open day.
+    only from rows after the cut. None reads it from `rows`. `now` (epoch), when given, is the clock,
+    and the log's last tick is then the last one it has reached (last_reached): the latest row stamped
+    at or before the clock, never the clock itself (until 2026-09-28 min(last, now), which made the
+    clock the last tick whenever one row was stamped after it) and never a row stamped after it (a
+    forward clock step). Such a row closes no day that has not happened, turns no pending row into a
+    gap, and lists no future day as NO LIVE ROWS; it shows as an open day. A `last` after the clock
+    has not been reached and is not used: pass last_reached over the whole log.
     `since` (epoch), report's --since: a display cut, not a sample cut. No day that ends before it is
     listed (it would read 0 ticks, NO LIVE ROWS, on a full day), and the day it falls inside is
     marked partial and not judged: its coverage and fill are of a subset of its rows.
@@ -304,10 +331,10 @@ def days_table(rows, outs, t0=None, last=None, now=None, since=None):
     Descriptive: the exclusion itself is a line a person appends to data/exclusions.tsv; nothing
     here removes a day from any section."""
     per = {}
-    rows_last = max((tick_epoch(r["tick_id"]) for r in rows if isinstance(r.get("tick_id"), str)), default=None)
-    last = rows_last if last is None else max(last, rows_last or last)
-    if now is not None and last is not None:
-        last = min(last, now)
+    rows_last = last_reached(rows, now)
+    if now is not None and last is not None and last > now:
+        last = None                                   # not reached yet (a forward clock step): the rows' own reach stands
+    last = rows_last if last is None else max(last, rows_last if rows_last is not None else last)
     if t0 is not None and last is not None:
         for j in range(1, min(SAMPLE_DAYS, math.floor((last - t0) / 86400) + 1) + 1):
             if since is not None and t0 + 86400 * j <= since:
@@ -332,8 +359,9 @@ def days_table(rows, outs, t0=None, last=None, now=None, since=None):
             if (outs.get(r["tick_id"]) or {}).get("absence") is None:
                 x["live"] += 1
                 x["filled"] += 1
-            elif tick_epoch(r["tick_id"]) + config.HORIZON_S + outcomes.JOIN_TOL_S > last:
-                x["pending"] += 1                     # the log has not reached t + h yet: not a gap, not decided
+            elif last is None or tick_epoch(r["tick_id"]) + config.HORIZON_S + outcomes.JOIN_TOL_S > last:
+                x["pending"] += 1                     # the log has not reached t + h yet (or no row at all, every row
+                                                      # stamped after the clock): not a gap, not decided
             else:
                 x["live"] += 1
     days, bad, empty = [], [], []
@@ -923,16 +951,20 @@ def withheld_until(rows, t0, now=None):
     return end if any(t0 <= tick_epoch(r["tick_id"]) < end for r in rows) else None
 
 
-def render(rows, bad=(), log=None, since=None, missing=False, t0=None, outs=None, health_only=False, last=None, withheld=None, now=None):
+def render(rows, bad=(), log=None, since=None, missing=False, t0=None, outs=None, health_only=False, last=None, withheld=None, now=None,
+           reached=None):
     """t0: T0 in epoch seconds when the rows were cut to the sample; outs: the join over the
     WHOLE log (a sample row's t+h may sit after the sample), else the join over `rows`; last:
-    the whole log's last tick (epoch) for the same reason, so the sample's last day can close.
+    the whole log's last tick (epoch) for the same reason, so the sample's last day can close;
+    reached: the whole log's last tick reached on the clock `now` (last_reached), which §1's
+    per-day table closes days on in place of `last` (a row stamped after the clock has not
+    happened); None: `last`, which the table then drops if it is after `now`.
     health_only: sections 1-3 only (PREREG §8.4); 4-7 are neither computed nor printed, so the
     blind look cannot show an H1 or H2 number by accident."""
     outs = outcomes.join(rows) if outs is None else outs
     since_ep = tick_epoch(_since(since) + "T000000Z") if since else None   # the day main() validated: fromisoformat
                                                                           # also takes a week date (2026-W40-1) from 3.11 on
-    secs = (health(rows, outs, bad, t0, last, now, since_ep), occupancy(rows), retest(rows))
+    secs = (health(rows, outs, bad, t0, last if reached is None else reached, now, since_ep), occupancy(rows), retest(rows))
     if not health_only:
         secs += (agreement(rows), table(rows, outs, t0, last), h2(rows, outs, t0), calibration(rows, outs))
     lines = [f"jev-paper-loop report: {config.VENUE} {config.PRODUCT}, cadence {config.CADENCE_S} s, horizon {config.HORIZON_S} s"
@@ -1027,6 +1059,8 @@ def main(argv=None, now=None):
         rows = outcomes.load(args.log, bad)
     outs = outcomes.join(rows)                                       # over the whole log: forward only, t+h may follow the cut
     last = max((tick_epoch(r["tick_id"]) for r in rows), default=None)   # likewise: the sample's last day closes on rows after the cut
+    clock = datetime.datetime.now(datetime.timezone.utc).timestamp() if now is None else now
+    reached = last_reached(rows, clock)                              # §1's days close on the last row stamped at or before the clock
     if since:
         rows = [r for r in rows if r["tick_id"][:8] >= since]         # tick_id is YYYYMMDDTHHMM00Z; the first 8 chars are the day
     if t0 is not None:
@@ -1040,8 +1074,7 @@ def main(argv=None, now=None):
             withheld = None
         elif withheld is not None:
             health_only = True
-    clock = datetime.datetime.now(datetime.timezone.utc).timestamp() if now is None else now
-    sys.stdout.write(render(rows, bad, args.log, args.since, missing, t0, outs, health_only, last, withheld, clock))
+    sys.stdout.write(render(rows, bad, args.log, args.since, missing, t0, outs, health_only, last, withheld, clock, reached))
     return 0
 
 

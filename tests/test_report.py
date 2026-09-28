@@ -103,6 +103,21 @@ def _write(path, rows, garbage=True):
             fh.write('{"v": 1, "tick_id": "20260923T104200Z", "ts_rx": "2026-09-23T10:4')   # a crash mid-write
 
 
+def _stopped_with_a_stray():
+    """(t0, rows, stray, now): a log with T0 2026-09-25 21:40Z that stopped nine minutes into d02 (d01's last
+    30 minutes and d02's first 10, a live answered row a minute), read 17 minutes into d02, and one row stamped
+    after that clock (a forward clock step, 2026-09-29). The log has reached 21:49, so d01's last five rows
+    still wait for their t + h: d01 is open, 25 filled and 5 pending. Read with the clock as the log's last
+    tick, d01 closes at 21:55:30, the five turn into gaps and fill 25/30 reads BAD."""
+    t0 = report.tick_epoch("20260925T214000Z")
+    end = t0 + 86400
+    rows = [dict(_row(7), tick_id=report._tick_of(e),
+                 ts_rx=datetime.datetime.fromtimestamp(e, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.100Z"))
+            for e in (end + 60 * k for k in range(-30, 10))]
+    stray = dict(rows[0], tick_id=report._tick_of(t0 + 4 * 86400), ts_rx="2026-09-29T21:40:00.100Z")
+    return t0, rows, stray, end + 17 * 60
+
+
 def no_live_halt(cls, tmp):
     """config.HALT -> a path under `tmp` that never exists, for the class `cls` (from setUpClass).
     report.health reads HALT and its mtime, and on the Mac the live loop writes, touches or clears
@@ -1455,6 +1470,41 @@ class PerDay(unittest.TestCase):
         self.assertNotIn("NO LIVE ROWS on", buf.getvalue())
         no_clock = report.health(both, outcomes.join(both), t0=t0)                                # what it did before
         self.assertIn("d02", no_clock["bad_days"] + no_clock["empty_days"])
+
+    def test_a_row_stamped_after_the_clock_leaves_a_stopped_logs_open_day_open(self):
+        # days_table capped the log's last tick with min(last, now), so one row stamped after the clock made the
+        # clock itself the last tick (the test above reads 30 s after the log, where that hardly differs). On a
+        # log that stopped at 21:49, read at 21:57, d01 closed, its five rows whose t + h the log had not reached
+        # became gaps, and d01 read BAD (fill 25/30) in report --health and the dash; without the stray row it is
+        # open. The last tick is now the last row stamped at or before the clock, as inference.pending_units reads it.
+        from loop import dash
+        t0, rows, stray, now = _stopped_with_a_stray()
+        both = rows + [stray]
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        self.enterContext(mock.patch.object(config, "HALT", os.path.join(tmp, "no-HALT")))
+        self.assertEqual(report.last_reached(both, now), report.tick_epoch(rows[-1]["tick_id"]))   # 21:49, not the clock
+        self.assertEqual(report.last_reached(both), report.tick_epoch(stray["tick_id"]))             # no clock: every row
+        self.assertIsNone(report.last_reached([stray], now))                                         # nothing reached yet
+        clean = report.health(rows, outcomes.join(rows), t0=t0, now=now)
+        h = report.health(both, outcomes.join(both), t0=t0, now=now)
+        for got in (clean, h):
+            d = got["days"][0]
+            self.assertEqual((d["day"], d["open"], d["bad"], d["live"], d["filled"], d["pending"]), ("d01", True, False, 25, 25, 5))
+            self.assertEqual((got["bad_days"], got["empty_days"]), ([], []))
+        self.assertEqual([d for d in h["days"] if d["day"] != "d05"], clean["days"])            # d05 is the stray row's own day
+        text = report.render(both, [], t0=t0, health_only=True, last=report.tick_epoch(stray["tick_id"]), now=now)
+        self.assertIn("  BAD days 0;", text)                                     # a `last` after the clock is not reached
+        log = os.path.join(tmp, "stopped.jsonl")
+        _write(log, both, garbage=False)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(report.main(["--log", log, "--health", "--t0", "20260925T214000Z"], now=now), 0)
+        out = buf.getvalue()
+        self.assertIn("  BAD days 0;", out)
+        self.assertRegex(out, r"\n    d01 +30 .*  open\n")
+        page = dash.render(both, outcomes.join(both), t0=t0, now=datetime.datetime.fromtimestamp(now, datetime.timezone.utc))
+        self.assertNotIn("<div class='d bad'", page)
+        self.assertIn("<div class='d open'", page)
 
     def test_every_t0_day_is_listed_and_a_day_without_live_rows_is_flagged(self):
         # 2026-09-28: a day the log has no row for (the Mac off) never appeared in the table, and a day

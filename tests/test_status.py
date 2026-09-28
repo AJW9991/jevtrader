@@ -6,7 +6,7 @@ from unittest import mock
 
 from loop import config, dash, outcomes, report, status
 from test_dash import ALLOWED_IMPORTS, ALLOWED_REPORT, assert_health_only, runtime_health_only
-from test_report import _row, _write
+from test_report import _row, _stopped_with_a_stray, _write
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UTC = datetime.timezone.utc
@@ -158,6 +158,25 @@ class Status(unittest.TestCase):
         self.assertNotIn("NO LIVE ROWS", text.split("per day", 1)[1].split("\n", 1)[1])
         self.assertNotIn("BAD (", text)
 
+    def test_a_row_stamped_after_the_clock_leaves_a_stopped_logs_open_day_open(self):
+        # _days_lines passed the whole log's last tick and days_table capped it with min(last, now): one row stamped
+        # after the clock made the clock the log's last tick, so on a log that stopped at 21:49, read at 21:57, d01
+        # closed on rows the log has not reached and read BAD (fill 25/30). The screen reads the same with or without
+        # the stray row: d01 open, 5 pending, no BAD day.
+        t0, rows, stray, now = _stopped_with_a_stray()
+        at = datetime.datetime.fromtimestamp(now, UTC)
+        got = []
+        for rs in (rows, rows + [stray]):
+            text = status.render(rs, outcomes.join(rs), t0, at, None, self.halt, os.path.join(self.tmp, "no-such.jsonl"),
+                                 os.path.join(self.tmp, "no-proposals"), os.path.join(self.tmp, "no.log"), None)
+            self.assertIn("; BAD days so far 0", text)
+            d01 = [l for l in text.splitlines() if l.startswith("  d01 ")]
+            self.assertEqual(len(d01), 1, text)
+            self.assertIn("live    25  fill 100.0%  pend    5", d01[0])
+            self.assertTrue(d01[0].endswith("  open"), d01[0])
+            got.append(d01[0])
+        self.assertEqual(got[1], got[0])
+
     def test_the_screen_shows_the_exclusions_file_the_day_28_run_will_apply(self):
         # a line the parser refuses must be seen the morning after it is written, not on day 28
         data = os.path.join(self.tmp, "excl-data")
@@ -257,7 +276,7 @@ class Status(unittest.TestCase):
             self.assertNotIn(banned, text)
         # the same static guard as the dash (plus cycle for the spend guard and dash for its readers),
         # and the screen renders on an answered log with every measurement function tripwired
-        assert_health_only(self, os.path.join(REPO, "loop", "status.py"), ALLOWED_REPORT | {"days_table", "_pc", "SAMPLE_DAYS"},
+        assert_health_only(self, os.path.join(REPO, "loop", "status.py"), ALLOWED_REPORT | {"days_table", "_pc", "SAMPLE_DAYS", "last_reached"},
                            ALLOWED_IMPORTS | {"cycle", "dash", "exclusions"})
         text2 = runtime_health_only(self, lambda: self._render("2026-09-23T10:42"))
         self.assertEqual(text2, text)
