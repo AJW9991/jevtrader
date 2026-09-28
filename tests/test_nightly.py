@@ -1638,6 +1638,18 @@ class Capped(unittest.TestCase):
         self.assertIn("forbidden prefix (root)", r.stderr)
         self.assertEqual(os.listdir(forbidden), ["x"])                                # nothing written under the tree
 
+    def test_the_header_claims_what_the_identity_check_covers_and_no_more(self):
+        # The header said a second name realpath keeps, "a bind mount" first, could not hide the tree.
+        # cycle.forbidden compares each prefix with the path's ancestors: a bind mount of <tree>/sub
+        # ran the whole dry night inside the tree (round-4 checker). The header now names the gap;
+        # tests/test_cycle.py holds the docstring to the same claim and the behaviour to both.
+        with open(os.path.join(REPO, "nightly", "propose.sh"), encoding="utf-8") as fh:
+            words = " ".join(l.strip().lstrip("#").strip() for l in fh.read().splitlines() if l.lstrip().startswith("#"))
+        for claim, said in (("a second name realpath keeps (a bind mount;", False),
+                            ("a second name realpath keeps for the tree itself or one of its ancestors", True),
+                            ("A second name for a directory inside the tree (a bind mount of a subdirectory) is not known", True)):
+            self.assertEqual(claim in words, said, claim)                           # the claim, not the whole header, on a failure
+
     def test_every_write_goes_under_the_root_the_guard_checked(self):
         # the guard checked the --root's realpath and every write went to the --root as typed: realpath
         # pops a '..' after a directory that does not exist, so the guard saw a path beside the tree,

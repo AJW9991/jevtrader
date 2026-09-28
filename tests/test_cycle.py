@@ -208,6 +208,29 @@ class CycleTest(unittest.TestCase):
                 self.assertIsNone(cycle.forbidden(deep))
                 self.assertEqual(calls, [missing])                                           # no prefix exists: no ancestor is statted
 
+    def test_path_guard_by_identity_knows_the_tree_and_above_it_not_a_directory_inside_it(self):
+        # The identity half compares each prefix with the path's ancestors, so it knows the tree by a
+        # second name for the tree or for a directory above it, and not by a second name for a
+        # directory inside it (a bind mount of a subdirectory: the path's ancestors are then that
+        # directory's, never the tree's). The docstring said a bind mount could not hide the tree
+        # (round-4 checker, with a real bind mount of <tree>/sub); it now says what is checked, and this
+        # holds the two together: if the guard ever learns the inside case, both change at once.
+        # Symlinks stand in for the second names, with realpath made lexical so it keeps them.
+        top = os.path.join(self.tmp, "P")
+        tree = os.path.join(top, "tree")                       # a stand-in prefix: the real tree is never statted
+        os.makedirs(os.path.join(tree, "sub"))
+        above = os.path.join(self.tmp, "above")                 # a second name for the directory above the tree
+        inside = os.path.join(self.tmp, "inside")               # a second name for a directory inside the tree
+        os.symlink(top, above)
+        os.symlink(os.path.join(tree, "sub"), inside)
+        with mock.patch.object(config, "FORBIDDEN_PREFIXES", (tree,)), mock.patch("os.path.realpath", os.path.abspath):
+            self.assertEqual(cycle.forbidden(os.path.join(above, "tree", "night")), tree)
+            self.assertEqual(cycle.forbidden(os.path.join(tree, "sub", "night")), tree)     # by its own name: the string match
+            self.assertIsNone(cycle.forbidden(os.path.join(inside, "night")))               # the documented gap
+        doc = " ".join(cycle.forbidden.__doc__.split())
+        self.assertIn("a second name for the tree itself or for one of its ancestors", doc)
+        self.assertIn("It does not know a second name for a directory inside the tree", doc)
+
     def test_usage_error_exits_2(self):
         for argv in ([], ["--dry"], ["--once", "--forever"], ["--bogus"]):
             with self.assertRaises(SystemExit) as cm:
