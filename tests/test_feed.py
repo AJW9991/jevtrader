@@ -176,13 +176,17 @@ class TestSnapshot(unittest.TestCase):
         for k, v in (("volume", "nan"), ("volume", "inf"), ("volume", "-1"), ("close", "0"),
                      ("close", "nan"), ("close", "-inf"), ("open", "0"), ("high", "inf"),
                      ("low", "nan"), ("low", "-114.9")):
-            for i in (1, 150, len(raw) - 1):                              # newest, mid-window, oldest spare
+            for i in (1, 150, 300):                                       # newest, mid-window, the window's oldest
                 with self.subTest(field=k, value=v, row=i):
                     bad = [dict(c) for c in raw]
                     bad[i][k] = v
                     with self.assertRaises(feed.FeedError) as cm:
                         feed.assemble("SOL-USD", NOW, BOOK, {"candles": bad}, TRADES, {"calls": 3, "ms": 0})
                     self.assertIn("not finite and positive", str(cm.exception))
+            # a spare candle before the window (raw[301..349]) is never read: garbage there costs nothing
+            bad = [dict(c) for c in raw]
+            bad[len(raw) - 1][k] = v
+            feed.assemble("SOL-USD", NOW, BOOK, {"candles": bad}, TRADES, {"calls": 3, "ms": 0})
         # the open minute is dropped unread, and a zero volume is a quiet minute, kept
         bad = [dict(c) for c in raw]
         bad[0]["close"], bad[1]["volume"] = "nan", "0"

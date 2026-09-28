@@ -143,18 +143,17 @@ def parse_candles(j, now):
         except (KeyError, TypeError, ValueError):
             raise FeedError("parse candles.start") from None
         if s + 60 <= now:
-            r = {"start": s, "open": _num(c, "open", "candle"), "high": _num(c, "high", "candle"),
-                 "low": _num(c, "low", "candle"), "close": _num(c, "close", "candle"),
-                 "volume": _num(c, "volume", "candle")}
-            px = (r["open"], r["high"], r["low"], r["close"])
-            if not (all(math.isfinite(p) and p > 0 for p in px)
-                    and math.isfinite(r["volume"]) and r["volume"] >= 0):
-                raise FeedError(f"candle {s} not finite and positive: o/h/l/c "
-                                f"{'/'.join(map(str, px))} volume {r['volume']}")
-            rows.append(r)
+            rows.append({"start": s, "open": _num(c, "open", "candle"), "high": _num(c, "high", "candle"),
+                         "low": _num(c, "low", "candle"), "close": _num(c, "close", "candle"),
+                         "volume": _num(c, "volume", "candle")})
     rows.sort(key=lambda r: r["start"])
     if len(rows) < config.WINDOW_MIN:
         raise FeedError(f"candles: {len(rows)} closed rows < {config.WINDOW_MIN}")
+    for r in rows[-config.WINDOW_MIN:]:      # the window state.py reads; a garbage spare candle before it is never read
+        px = (r["open"], r["high"], r["low"], r["close"])
+        if not (all(math.isfinite(p) and p > 0 for p in px) and math.isfinite(r["volume"]) and r["volume"] >= 0):
+            raise FeedError(f"candle {r['start']} not finite and positive: o/h/l/c "
+                            f"{'/'.join(map(str, px))} volume {r['volume']}")
     return rows
 
 

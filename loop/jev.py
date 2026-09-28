@@ -57,7 +57,10 @@ class _NoAuthRedirect(urllib.request.HTTPRedirectHandler):
 
 # Installed at import, as the process-wide opener: urllib.request.urlopen() goes through it,
 # so the send refuses redirects while the tests' mock of urlopen still stands in front of it.
-urllib.request.install_opener(urllib.request.build_opener(_NoAuthRedirect))
+# Kept, and re-installed by ask() before every send: urllib.request.urlcleanup() or any later
+# install_opener() would otherwise silently restore the stock handler (2026-09-28, verifier).
+_OPENER = urllib.request.build_opener(_NoAuthRedirect)
+urllib.request.install_opener(_OPENER)
 
 
 def _name(kind, path):
@@ -171,9 +174,10 @@ def _parse(raw, questions, ms, kpath):
             for f in need:
                 if f not in a:
                     raise KeyError(f"{qid}.{f}")
-        # output is free (config): input is the spend. Absent OR null is 0 (SPEC §12): a
-        # complete, paid answer must not be thrown away over a null count; the spend guard
-        # charges a 0 at JEV_TOKENS_IF_UNKNOWN anyway. A string or Infinity is still `parse`.
+        # output is free (config): input is the spend. Absent, null or any other falsy value
+        # ("", [], false) is 0 (SPEC §12: "0 when absent"): a complete, paid answer must not be
+        # thrown away over a missing count, and the spend guard charges a 0 at
+        # JEV_TOKENS_IF_UNKNOWN anyway. A non-empty string or Infinity is still `parse`.
         tokens = int((d.get("usage") or {}).get("input_tokens") or 0)
     except (ValueError, TypeError, KeyError, AttributeError, ArithmeticError, RecursionError) as e:
         # ArithmeticError: "input_tokens": Infinity parses to inf and int(inf) is OverflowError;
@@ -224,6 +228,8 @@ def ask(state, questions):
                                err.status, kpath)
             raise JevError("ledger", f"cannot append to {config.SENDS}; nothing sent", key_path=kpath)
         t0, refused = time.monotonic(), False
+        if urllib.request._opener is not _OPENER:            # someone cleaned up or replaced the opener since import
+            urllib.request.install_opener(_OPENER)
         try:
             with urllib.request.urlopen(req, timeout=config.JEV_TIMEOUT_S) as r:
                 raw = r.read()

@@ -418,6 +418,24 @@ class JevTest(unittest.TestCase):
             self.assertEqual(r.geturl(), RedirectHandlerTest.LOC)
         self.assertEqual(seen, [("http://127.0.0.1:9/feed", None), (RedirectHandlerTest.LOC, None)])
 
+    def test_the_opener_is_reinstalled_before_a_send_after_urlcleanup(self):
+        # urllib.request.urlcleanup() (or any later install_opener) restores the stock redirect
+        # handler; ask() puts jev's own back before every send (2026-09-28, verifier)
+        import loop.jev
+        urllib.request.urlcleanup()
+        self.assertIsNone(urllib.request._opener)
+        self.urlopen.side_effect = [_http(401)]
+        with self.assertRaises(jev.JevError):
+            jev.ask(STATE, Q)
+        self.assertIs(urllib.request._opener, loop.jev._OPENER)
+        urllib.request.install_opener(urllib.request.build_opener())      # a foreign opener, then a send
+        self.urlopen.side_effect = [_http(401)]
+        with self.assertRaises(jev.JevError):
+            jev.ask(STATE, Q)
+        self.assertIs(urllib.request._opener, loop.jev._OPENER)
+        redirects = [x for x in urllib.request._opener.handlers if isinstance(x, urllib.request.HTTPRedirectHandler)]
+        self.assertEqual([type(x) for x in redirects], [loop.jev._NoAuthRedirect])
+
     def test_nothing_on_disk_or_in_errors_carries_the_key(self):
         self.urlopen.side_effect = [_http(401)]
         with self.assertRaises(jev.JevError) as cm:

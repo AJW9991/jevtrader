@@ -271,11 +271,17 @@ def write_row(row):
     try:
         signal.alarm(0)
         line = (json.dumps(row, separators=(",", ":")) + "\n").encode()
-        fd = os.open(config.DECISIONS, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o644)   # RDWR: pread below
         try:
-            size = os.fstat(fd).st_size
-            if size and os.pread(fd, 1, size - 1) != b"\n":
-                line = b"\n" + line          # close the torn line; the bytes before it stay as they are
+            fd = os.open(config.DECISIONS, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o644)   # RDWR: pread below
+            readable = True
+        except PermissionError:              # writable but not readable (a 0200 log, an ACL): append as before,
+            fd = os.open(config.DECISIONS, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)   # without the torn-line check
+            readable = False
+        try:
+            if readable:
+                size = os.fstat(fd).st_size
+                if size and os.pread(fd, 1, size - 1) != b"\n":
+                    line = b"\n" + line      # close the torn line; the bytes before it stay as they are
             n = os.write(fd, line)
             while n < len(line):             # never on a regular file; the loop is the contract
                 n += os.write(fd, line[n:])
@@ -461,6 +467,20 @@ def _guarded_tick(dry):
     return code
 
 
+def _this_minute_has_its_row(now):
+    """True when data/heartbeat names a row in the minute `now` is in: a --once fire in that
+    minute's last seconds is then launchd being EARLY for the next minute (the pre-sleep case),
+    not late for this one. A heartbeat from another minute, or none, means this minute is
+    still owed its row and the tick runs at once (a RunAtLoad or a wake can land at any
+    second of a minute; sleeping there would tick the next minute instead)."""
+    try:
+        with open(config.HEARTBEAT) as fh:
+            hb = fh.read().strip()
+    except OSError:
+        return False
+    return len(hb) >= 16 and tick_id(hb) == tick_id(iso_ms(now))
+
+
 def _sleep_to_boundary():
     """Sleep to the next multiple of CADENCE_S on the wall clock, recomputed from
     time.time() every round: no accumulated drift, and a 1.3 s tick still fires the
@@ -493,9 +513,10 @@ def main(argv=None):
     _SIG["term"] = _SIG["critical"] = False
     old = signal.signal(signal.SIGTERM, _on_term), signal.signal(signal.SIGALRM, _on_alarm)
     try:
-        if a.once:                           # launchd's StartCalendarInterval can fire a hair before
-            if time.time() % config.CADENCE_S > config.CADENCE_S - 2:   # :00; started there, the tick
-                _sleep_to_boundary()         # would floor to the minute just done (see below)
+        if a.once:                           # launchd's StartCalendarInterval can fire a hair before :00;
+            now = time.time()                # started there, the tick would floor to the minute just done
+            if now % config.CADENCE_S > config.CADENCE_S - 2 and _this_minute_has_its_row(now):
+                _sleep_to_boundary()         # (only when this minute already has its row: a late fire keeps its minute)
             return _guarded_tick(a.dry)
         while True:                          # aligned first: a tick at :37 would be one odd row
             _sleep_to_boundary()

@@ -542,9 +542,21 @@ class CycleTest(unittest.TestCase):
         # Production runs --once from launchd's StartCalendarInterval; a fire at :59.x would
         # take the minute just done (a duplicate) and leave the next one unrecorded. More than
         # CADENCE_S - 2 s into a minute, --once first sleeps to the boundary.
+        # Only when this minute already has its row (data/heartbeat in it): a RunAtLoad or a wake
+        # can land at :59 of a minute that has NO row yet, and that fire is late for this minute,
+        # not early for the next (2026-09-28, verifier).
         base = NOW - 49                                        # 02:28:00
-        for at, sleeps, tick in ((59.5, [0.5], "20260924T022900Z"), (57.5, [], "20260924T022800Z")):
-            with self.subTest(at=at):
+        for at, hb, sleeps, tick in ((59.5, "2026-09-24T02:28:00.100Z", [0.5], "20260924T022900Z"),
+                                     (59.5, "2026-09-24T02:27:00.100Z", [], "20260924T022800Z"),
+                                     (59.5, None, [], "20260924T022800Z"),
+                                     (57.5, "2026-09-24T02:28:00.100Z", [], "20260924T022800Z")):
+            with self.subTest(at=at, hb=hb):
+                if hb:
+                    os.makedirs(self.data, exist_ok=True)
+                    with open(config.HEARTBEAT, "w") as fh:
+                        fh.write(hb + "\n")
+                elif os.path.exists(config.HEARTBEAT):
+                    os.remove(config.HEARTBEAT)
                 clock, self.sleeps[:] = [base + at], []
                 def sleep(s):
                     self.sleeps.append(s)
@@ -669,6 +681,29 @@ class CycleTest(unittest.TestCase):
         self.assertEqual([r["mode"] for r in rows], ["dry", "live"])
         self.assertEqual([r["tick_id"] for r in rows], [TICK, "20260924T022900Z"])
         self.assertEqual(outcomes.join(rows)[TICK]["absence"], "gap")   # one minute apart: no t+h yet
+
+    def test_a_log_that_is_writable_but_not_readable_still_gets_its_row(self):
+        # the torn-line check opens the log O_RDWR; a log writable but not readable (mode 0200,
+        # an ACL) refused that where the old O_WRONLY append worked, and every row was lost.
+        # It now falls back to a plain append (no torn-line check) on PermissionError.
+        real_open = os.open
+        calls = []
+
+        def fake_open(path, flags, *a):
+            calls.append(flags)
+            if flags & os.O_RDWR:
+                raise PermissionError(13, "Permission denied", path)
+            return real_open(path, flags, *a)
+        os.makedirs(self.data, exist_ok=True)
+        with open(config.DECISIONS, "wb") as fh:
+            fh.write(b'{"v":1,"tick_id":"20260924T022700Z","ts_rx":"2026-09-24T02:27:00.100Z"')   # torn, no newline
+        with mock.patch("os.open", side_effect=fake_open):
+            cycle.write_row(cycle.new_row(TS_RX, "dry"))
+        self.assertTrue(any(f & os.O_RDWR for f in calls) and any(not (f & os.O_RDWR) and f & os.O_WRONLY for f in calls))
+        with open(config.DECISIONS, "rb") as fh:
+            data = fh.read()
+        self.assertEqual(data.count(b"\n"), 1)                              # appended without the fix-up: as before
+        self.assertTrue(data.endswith(b"\n"))
 
     def test_a_torn_last_line_costs_itself_only(self):
         # A short write (disk full) or a crash mid-write leaves the log without its final
