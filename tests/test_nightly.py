@@ -1343,11 +1343,23 @@ class Capped(unittest.TestCase):
         self.assertEqual(r.returncode, 3, r.stderr)                     # the command's own code, unchanged
         self.assertEqual(_gone(_pids(pids, 1)), [], "a process the command left behind outlived capped")
 
+    def test_a_leftover_that_ignores_sigterm_is_killed_after_the_grace(self):
+        # _end_group's SIGKILL fallback: a process the command left behind that ignores SIGTERM
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        pids = os.path.join(tmp, "pids")
+        t = time.monotonic()
+        r = self._run("30", "--", "sh", "-c", f'(trap "" TERM; exec sleep 30) >/dev/null 2>&1 & echo $! >"{pids}"; exit 0')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertLess(time.monotonic() - t, 10)
+        self.assertEqual(_gone(_pids(pids, 1)), [], "a leftover that ignores SIGTERM outlived capped")
+
     def test_sigquit_is_passed_on_too(self):
         tmp = self.enterContext(tempfile.TemporaryDirectory())
         pids = os.path.join(tmp, "pids")
+        import resource
         p = subprocess.Popen([self.PY, "-m", "nightly.capped", "30", "--", "sh", "-c", f'sleep 30 & echo $! >"{pids}"; wait'],
-                             cwd=REPO, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=_sh_env(self))
+                             cwd=REPO, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=_sh_env(self),
+                             preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_CORE, (0, 0)))   # SIGQUIT dumps core: not in the checkout
         self.addCleanup(p.stderr.close)
         grandchild = _pids(pids, 1)
         p.send_signal(signal.SIGQUIT)

@@ -244,6 +244,12 @@ class PolicyTableHeld(unittest.TestCase):
 class CappedHeld(unittest.TestCase):
     """nightly/capped.py in-process where nothing can hang; in a child process where a mutant could."""
 
+    def setUp(self):
+        # capped.main installs its forwarding handler on SIGTERM, SIGINT, SIGHUP and SIGQUIT in THIS
+        # process; put the runner's own back after each test
+        for s in capped.FORWARDED:
+            self.addCleanup(signal.signal, s, signal.getsignal(s))
+
     def _main(self, *argv):
         with mock.patch("sys.stderr", io.StringIO()) as err:
             return capped.main(list(argv)), err.getvalue()
