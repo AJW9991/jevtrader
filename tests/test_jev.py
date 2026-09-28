@@ -402,7 +402,9 @@ class JevTest(unittest.TestCase):
                 r = urllib.response.addinfourl(io.BytesIO(b"{}"), h, req.full_url, code=200 if there else 302)
                 r.msg = "OK" if there else "Found"
                 return r
-        opener = urllib.request.build_opener(jev._NoAuthRedirect, Fake)
+        # ProxyHandler({}): an http_proxy in the environment naming an https proxy would
+        # otherwise route the request to a real HTTPSHandler, past the stand-in
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), jev._NoAuthRedirect, Fake)
         self.urlopen.side_effect = lambda req, timeout=None: opener.open(req, timeout=timeout)
         with self.assertRaises(jev.JevError) as cm:
             jev.ask(STATE, Q)
