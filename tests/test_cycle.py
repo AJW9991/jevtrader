@@ -56,6 +56,11 @@ class _Resp:
 _OPEN = []                                            # HTTPErrors to close (3.14 warns at GC otherwise)
 
 
+class Reached(BaseException):
+    """urlopen was reached with no reply handed to it. A BaseException: cycle._run's `except Exception`
+    would turn an AssertionError into a jev/unexpected row and the tick would end 0, the test green."""
+
+
 def _http(code):
     e = urllib.error.HTTPError(URL, code, "status text", email.message.Message(), io.BytesIO(b""))
     _OPEN.append(e)
@@ -89,7 +94,7 @@ class CycleTest(unittest.TestCase):
         # that calls write_row directly would then raise _Stop. Each test starts clear and leaves it so.
         self.enterContext(mock.patch.dict(cycle._SIG, critical=False, term=False))
         self.urlopen = self.enterContext(mock.patch("urllib.request.urlopen",
-                                                    side_effect=AssertionError("urlopen was reached")))
+                                                    side_effect=Reached("urlopen was reached")))
         self.snapshot = self.enterContext(mock.patch.object(feed, "snapshot", return_value=SNAP))
         self.enterContext(mock.patch("time.time", return_value=NOW))
         self.sleeps = []
@@ -142,6 +147,13 @@ class CycleTest(unittest.TestCase):
         self.assertEqual(row["model_requested"], config.MODEL)
 
     # ---- CONTRACT §6: the path guard -----------------------------------------------------
+    def test_a_tick_that_reaches_the_urlopen_wall_fails_the_test(self):
+        # a live tick with no reply handed to urlopen: the wall's exception escapes main, not a row
+        with self.assertRaises(Reached):
+            cycle.main(["--once"])
+        self.assertEqual(self.urlopen.call_count, 1)
+        self.assertEqual(self.rows(), [])
+
     def test_path_guard_exits_3_under_either_prefix_and_touches_nothing(self):
         for prefix in config.FORBIDDEN_PREFIXES:
             for repo in (prefix, os.path.join(prefix, "sub", "jev-paper-loop")):

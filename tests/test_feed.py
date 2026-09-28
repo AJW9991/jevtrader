@@ -37,6 +37,11 @@ def http_error(code):
     return urllib.error.HTTPError("https://api.coinbase.com/x", code, "boom", {}, io.BytesIO(b""))
 
 
+class Reached(BaseException):
+    """A URL no endpoint answers. A BaseException: feed._get turns any Exception into a FeedError,
+    which the tests below expect, so an AssertionError here would pass as the feed failing."""
+
+
 class Fake:
     """urlopen stand-in: one payload per endpoint (dict -> JSON, bytes raw, Exception
     raised), and every URL asked, in order."""
@@ -53,7 +58,7 @@ class Fake:
                 if isinstance(v, Exception):
                     raise v
                 return io.BytesIO(v if isinstance(v, bytes) else json.dumps(v).encode())
-        raise AssertionError("unexpected URL " + url)
+        raise Reached("unexpected URL " + url)
 
 
 def snap(fake=None, now=NOW):
@@ -164,8 +169,9 @@ class TestSnapshot(unittest.TestCase):
         # and through snapshot() it is the same FeedError, which cycle.py logs as absence "feed"
         f = Fake(candles={"candles": raw[:150] + raw[151:]})
         with mock.patch("urllib.request.urlopen", f):
-            with self.assertRaises(feed.FeedError):
+            with self.assertRaises(feed.FeedError) as cm:
                 feed.snapshot(config.PRODUCT, now=NOW)
+        self.assertIn("not contiguous", str(cm.exception))
 
     def test_a_non_finite_or_non_positive_candle_value_is_a_feed_error(self):
         # float() takes "nan" and "inf". A NaN volume on the newest minute made vol5_usd NaN,
@@ -196,8 +202,9 @@ class TestSnapshot(unittest.TestCase):
         bad = [dict(c) for c in raw]
         bad[1]["volume"] = "NaN"
         with mock.patch("urllib.request.urlopen", Fake(candles={"candles": bad})):
-            with self.assertRaises(feed.FeedError):
+            with self.assertRaises(feed.FeedError) as cm:
                 feed.snapshot(config.PRODUCT, now=NOW)
+        self.assertIn("not finite and positive", str(cm.exception))
 
     def test_trades_5m_matches_hand_count(self):
         s, _ = snap()
@@ -242,6 +249,11 @@ class TestSnapshot(unittest.TestCase):
                 feed.assemble("SOL-USD", NOW, BOOK, {"candles": raw[:1] + raw[1 + k:]}, TRADES, {"calls": 3, "ms": 0})
             self.assertIn("MAX_FEED_AGE_S", str(cm.exception))
         self.assertEqual(feed.MAX_FEED_AGE_S, 120)
+
+    def test_an_unexpected_url_is_never_a_feed_error(self):
+        # feed._get's `except Exception` makes a FeedError of anything a urlopen raises
+        with mock.patch("urllib.request.urlopen", Fake()), self.assertRaises(Reached):
+            feed._get(feed.BASE + "/somewhere/else")
 
     def test_urls_three_calls_no_retry(self):
         _, f = snap()

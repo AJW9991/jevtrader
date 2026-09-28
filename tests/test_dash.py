@@ -140,7 +140,9 @@ class Dash(unittest.TestCase):
         pin_prereg(self)                                                 # prereg-v1's §11, not the repository's (to be re-sealed for v2)
         self.assertEqual(dash.read_t0(), report.tick_epoch("20260925T214000Z"))
         self.assertIsNone(dash.read_t0(os.path.join(self.tmp, "nope.md")))
-        page = dash.render(self.rows, self.outs, t0=report.tick_epoch("20260923T102000Z"))
+        import datetime
+        now = datetime.datetime(2026, 9, 23, 10, 42, tzinfo=datetime.timezone.utc)   # never the calendar: the day tile reads it
+        page = dash.render(self.rows, self.outs, t0=report.tick_epoch("20260923T102000Z"), now=now)
         self.assertIn("T0 2026-09-23T10:20Z", page)
         self.assertIn('<div class="v">22</div><div class="n">42 in the whole log</div>', page)   # the cut: 10:20 .. 10:41
         self.assertNotIn("(pre-T0)", page)                        # the one UTC day holds T0 itself: not before it
@@ -148,10 +150,12 @@ class Dash(unittest.TestCase):
         self.assertEqual(page.count("<div class='d "), 28)
         self.assertIn("title='d01: 22 ticks", page)
         self.assertIn("title='d02: not yet'", page)
-        page = dash.render(self.rows, self.outs, t0=report.tick_epoch("20260924T000000Z"))
+        self.assertIn('<div class="v">1 of 28</div>', page)
+        page = dash.render(self.rows, self.outs, t0=report.tick_epoch("20260924T000000Z"), now=now)
         self.assertIn("(pre-T0)", page)
-        self.assertIn("not started", dash.render(self.rows, self.outs, t0=report.tick_epoch("20991231T000000Z")))
-        self.assertIn("28 of 28 (ended)", dash.render(self.rows, self.outs, t0=report.tick_epoch("20200101T000000Z")))
+        self.assertIn('<div class="v">not started</div>', page)                     # T0 is 13 h after the clock
+        self.assertIn('<div class="v">not started</div>', dash.render(self.rows, self.outs, t0=report.tick_epoch("20991231T000000Z"), now=now))
+        self.assertIn('<div class="v">28 of 28 (ended)</div>', dash.render(self.rows, self.outs, t0=report.tick_epoch("20200101T000000Z"), now=now))
 
     def test_the_last_day_closes_and_a_day_without_live_rows_is_flagged(self):
         t0 = report.tick_epoch("20260925T214000Z")

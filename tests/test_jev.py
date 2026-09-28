@@ -3,7 +3,7 @@ and config.JEV_URL is pointed at 127.0.0.1:9 (discard) for the whole class, so a
 mock that slipped would be refused by the local kernel, never seen by api.typesafe.ai.
 The key is a made-up string in the environment; no real key file is ever read,
 because the env entry is first in config.KEY_PATHS and first hit wins."""
-import email.message, hashlib, io, json, os, tempfile, unittest, urllib.error, urllib.request, urllib.response
+import email.message, hashlib, io, json, os, subprocess, sys, tempfile, unittest, urllib.error, urllib.request, urllib.response
 from unittest import mock
 from loop import config, jev
 
@@ -481,11 +481,14 @@ class RedirectHandlerTest(unittest.TestCase):
         self.assertEqual(new.full_url, "https://api.coinbase.com/b")      # the real parent: a plain GET follows
 
     def test_the_process_wide_opener_carries_it_after_import(self):
-        import loop.jev                                                    # imported above: its install stands
-        op = urllib.request._opener
-        self.assertIsInstance(op, urllib.request.OpenerDirector)
-        redirects = [x for x in op.handlers if isinstance(x, urllib.request.HTTPRedirectHandler)]
-        self.assertEqual([type(x) for x in redirects], [loop.jev._NoAuthRedirect])
+        # in a fresh interpreter: in this one every earlier ask() re-installs the opener, so an import
+        # that stopped installing it would still pass here
+        code = ("import urllib.request, loop.jev as j\n"
+                "assert urllib.request._opener is j._OPENER, urllib.request._opener\n"
+                "r = [type(x) for x in j._OPENER.handlers if isinstance(x, urllib.request.HTTPRedirectHandler)]\n"
+                "assert r == [j._NoAuthRedirect], r\n")
+        r = subprocess.run([sys.executable, "-c", code], cwd=config.REPO, capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
 
 
 class SignatureGateTest(unittest.TestCase):
