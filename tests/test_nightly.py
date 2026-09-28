@@ -122,6 +122,29 @@ def _tree_copy(tc):
     return copy
 
 
+def _second_name(tc, path, env):
+    """(argv prefix, alias): a second name for the existing directory `path` that os.path.realpath does
+    not unify with it, and what a command must be started under to see it by that name. On the Mac:
+    the last component with its case flipped (case-insensitive APFS, the default) or the path under
+    the /System/Volumes/Data firmlink. On Linux: a bind mount in a private mount namespace (unshare
+    -rm), which lasts as long as the command; `env` is the one the command runs with (_sh_env). Skips the
+    test `tc` where there is none."""
+    real = os.path.realpath(path)
+    head, tail = os.path.split(real)
+    for alias in (os.path.join(head, tail.swapcase()), "/System/Volumes/Data" + real):
+        if os.path.exists(alias) and os.path.samefile(alias, real) and os.path.realpath(alias) != real:
+            return [], alias
+    if shutil.which("unshare") and shutil.which("mount"):
+        alias = os.path.join(tc.enterContext(tempfile.TemporaryDirectory()), "alias")
+        os.mkdir(alias)
+        wrap = ["unshare", "-rm", "/bin/sh", "-c", 'mount --bind "$1" "$2" || exit 97; shift 2; exec "$@"', "sh", real, alias]
+        probe = subprocess.run(wrap + [sys.executable, "-c", "import os, sys; sys.exit(not os.path.samefile(*sys.argv[1:]))",
+                                       real, alias], capture_output=True, timeout=30, env=env)
+        if probe.returncode == 0:
+            return wrap, alias
+    tc.skipTest("no second name for one directory here: case-sensitive, no firmlink, no unshare -rm")
+
+
 def _alive(pid):
     """True while `pid` is a live process: gone, or a zombie waiting for its reaper (Linux /proc), is not."""
     try:
@@ -1546,6 +1569,21 @@ class Capped(unittest.TestCase):
             self.assertEqual(r.returncode, 3, (root, r.stderr))
             self.assertIn("forbidden prefix (root)", r.stderr)
         self.assertEqual(sorted(os.listdir(os.path.join(real, "Projects", "crypto-trading-system"))), ["x"])   # nothing created
+
+    def test_the_guard_knows_the_forbidden_tree_by_a_second_name(self):
+        # realpath does not unify every second name for one directory (a bind mount; on the Mac a
+        # case-only difference on case-insensitive APFS, or the /System/Volumes/Data firmlink), and
+        # cycle.forbidden matched strings only: --root under the tree by such a name ran the whole dry
+        # night there. It now knows the tree by (st_dev, st_ino) as well.
+        env = _sh_env(self)
+        forbidden = os.path.join(env["HOME"], "Projects", "crypto-trading-system")   # the forbidden tree, under the run's HOME
+        os.makedirs(os.path.join(forbidden, "x"))
+        wrap, alias = _second_name(self, forbidden, env)
+        r = subprocess.run(wrap + ["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry", "--date", "2026-09-22",
+                                   "--root", os.path.join(alias, "night")], capture_output=True, text=True, timeout=60, env=env)
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertIn("forbidden prefix (root)", r.stderr)
+        self.assertEqual(os.listdir(forbidden), ["x"])                                # nothing written under the tree
 
     def test_the_guard_never_imports_the_working_directory_and_refuses_when_it_cannot_answer(self):
         # 2026-09-28 (second pre-merge pass): the guard's python had the cwd on sys.path, after the repo

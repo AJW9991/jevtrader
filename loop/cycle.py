@@ -103,12 +103,39 @@ def tick_id(ts_rx):
 def forbidden(repo=None):
     """The forbidden prefix the resolved repo path sits under, or None. Both the literal
     prefix and its realpath are tried: ~/Projects could itself be a symlink one day and
-    the guard must not depend on which spelling the shell used."""
+    the guard must not depend on which spelling the shell used. Then by identity, since
+    realpath does not unify every second name for one directory (a bind mount; on the Mac
+    a case-only difference on case-insensitive APFS, or the /System/Volumes/Data
+    firmlink): each existing ancestor of the resolved path, the path itself included, is
+    compared with each existing prefix by (st_dev, st_ino). That is a stat per prefix and
+    per ancestor, never a walk of a tree; a prefix or an ancestor that does not exist or
+    cannot be stat-ed is skipped by it (the string match above still applies)."""
     rp = os.path.realpath(repo or config.REPO)
     for p in config.FORBIDDEN_PREFIXES:
         for q in {p.rstrip(os.sep), os.path.realpath(p).rstrip(os.sep)}:
             if rp == q or rp.startswith(q + os.sep):
                 return p
+    ids = []
+    for p in config.FORBIDDEN_PREFIXES:
+        try:
+            st = os.stat(p)
+        except (OSError, ValueError):
+            continue
+        ids.append(((st.st_dev, st.st_ino), p))
+    a = rp
+    while ids:
+        try:
+            st = os.stat(a)
+        except (OSError, ValueError):
+            pass
+        else:
+            for key, p in ids:
+                if key == (st.st_dev, st.st_ino):
+                    return p
+        up = os.path.dirname(a)
+        if up == a:
+            break
+        a = up
     return None
 
 

@@ -172,6 +172,42 @@ class CycleTest(unittest.TestCase):
         self.assertIsNone(cycle.forbidden(config.REPO))
         self.assertEqual(cycle.forbidden(config.FORBIDDEN_PREFIXES[1] + "/x"), config.FORBIDDEN_PREFIXES[1])
 
+    def test_path_guard_knows_the_tree_by_a_name_realpath_keeps(self):
+        # realpath does not unify every second name for one directory (a bind mount; on the Mac a
+        # case-only difference on case-insensitive APFS, or the /System/Volumes/Data firmlink), and the
+        # guard matched strings only: the tree by such a name passed. Here a symlink stands in for such
+        # a name, with realpath made lexical so it keeps it as typed; the guard knows the tree by the
+        # (st_dev, st_ino) of the path's existing ancestors. tests/test_nightly.py runs a real one.
+        tree = os.path.join(self.tmp, "tree")                  # a stand-in prefix: the real tree is never statted
+        os.makedirs(os.path.join(tree, "sub"))
+        os.makedirs(os.path.join(self.tmp, "other", "sub"))
+        alias = os.path.join(self.tmp, "alias")
+        os.symlink(tree, alias)
+        missing = os.path.join(self.tmp, "no-such-prefix")      # a prefix that does not exist is skipped
+        real_stat, calls = os.stat, []
+
+        def stat(p, *a, **k):
+            calls.append(p)
+            if p == os.path.join(alias, "sub"):
+                raise PermissionError(p)                        # an ancestor that cannot be stat-ed is skipped
+            return real_stat(p, *a, **k)
+        with mock.patch.object(config, "FORBIDDEN_PREFIXES", (missing, tree)), \
+                mock.patch("os.path.realpath", os.path.abspath), mock.patch("os.stat", stat):
+            self.assertIsNone(cycle.forbidden(os.path.join(self.tmp, "other", "sub")))       # not the tree
+            self.assertIsNone(cycle.forbidden(self.tmp))                                      # above the tree
+            self.assertIsNone(cycle.forbidden(tree + "-notes"))                               # a sibling that does not exist
+            for p in (alias, os.path.join(alias, "sub"), os.path.join(alias, "new", "deeper")):
+                self.assertEqual(cycle.forbidden(p), tree, p)
+            # cheap, the tick runs it every minute: a stat per prefix and per ancestor, no more
+            del calls[:]
+            deep = os.path.join(alias, "new", "deeper")
+            self.assertEqual(cycle.forbidden(deep), tree)
+            self.assertEqual(calls, [missing, tree, deep, os.path.dirname(deep), os.path.dirname(os.path.dirname(deep))])
+            with mock.patch.object(config, "FORBIDDEN_PREFIXES", (missing,)):
+                del calls[:]
+                self.assertIsNone(cycle.forbidden(deep))
+                self.assertEqual(calls, [missing])                                           # no prefix exists: no ancestor is statted
+
     def test_usage_error_exits_2(self):
         for argv in ([], ["--dry"], ["--once", "--forever"], ["--bogus"]):
             with self.assertRaises(SystemExit) as cm:

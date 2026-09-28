@@ -59,7 +59,9 @@ done
 # The check IS cycle.forbidden (one guard, not two that can disagree): it realpaths the path, so a
 # symlinked HOME or ~/Projects, a '..', '//' or '.' in it, or a --root that does not exist yet (its
 # existing part resolved, the rest normalized) cannot hide the tree, and it matches each prefix and
-# its realpath on a '/' boundary. Its python runs isolated (-I: no working directory on the path, so
+# its realpath on a '/' boundary, then each existing prefix by (st_dev, st_ino) against the path's
+# existing ancestors, so a second name realpath keeps (a bind mount; on the Mac a case-only
+# difference on APFS, or the /System/Volumes/Data firmlink) cannot either. Its python runs isolated (-I: no working directory on the path, so
 # a cwd inside another tree is never imported) and writes no bytecode (-B), and must answer "ok" or
 # "forbidden ...": anything else, an empty answer included, is a guard that did not run (exit 3).
 [ -x "$PY" ] || { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) propose FAIL no python at $PY (the path guard needs it; nothing written)" >&2; exit 0; }
