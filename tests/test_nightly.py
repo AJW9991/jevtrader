@@ -4,7 +4,7 @@ in --dry; promote refuses on a dirty tree and carries v1's three nouls byte for 
 propose.sh --dry turns the fixture reply into a proposals json. Offline: loop.jev.ask
 is mocked wherever the table is run, subprocess.run is mocked for git, and every
 write lands in a temp dir. Nothing here opens a socket."""
-import datetime, hashlib, importlib.util, io, json, os, shutil, subprocess, sys, tempfile, time, unittest
+import ast, datetime, hashlib, importlib.util, io, json, os, shutil, subprocess, sys, tempfile, time, unittest, urllib.request
 from contextlib import redirect_stdout
 from unittest import mock
 
@@ -71,6 +71,13 @@ def _write_log(path, rows):
             fh.write(json.dumps(r) + "\n")
 
 
+PROXY_VARS = ("http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY")
+
+
+class Reached(BaseException):
+    """A wall a test put up was reached. BaseException: no `except Exception` on the way can swallow it."""
+
+
 def _sh_env(tc, tmp=None, **extra):
     """propose.sh's (or a nightly script's) environment for the test `tc`. JEVLOOP_PY is the
     interpreter running the suite (under `make test` on the Mac that is /opt/homebrew/bin/python3,
@@ -81,11 +88,14 @@ def _sh_env(tc, tmp=None, **extra):
     blank TYPESAFE_API_KEY* variables alone do not stop jev.py finding a key FILE (config.KEY_PATHS
     looks under ~/.secondbrain-secrets), and propose.sh's default token path is under HOME too.
     TYPESAFE_BASE_URL is a closed local port, so a send that got that far still could not leave the
-    machine. JEVLOOP_PROMPTS is a pinned v1 root (fixture_prompts.pin_v1), so the digest and the
-    table never quote the live CURRENT. `extra` overrides any of it."""
-    env = {**os.environ, "TYPESAFE_API_KEY_LOOP": "", "TYPESAFE_API_KEY": "",
+    machine, and every proxy variable is blank with NO_PROXY "*", so that port is never handed to a
+    proxy off the machine either (none of these scripts needs the network). CLAUDE_CODE_OAUTH_TOKEN
+    is blank: the only token a stub claude can see is the one propose.sh read from its token file,
+    whatever the runner exports. JEVLOOP_PROMPTS is a pinned v1 root (fixture_prompts.pin_v1), so the
+    digest and the table never quote the live CURRENT. `extra` overrides any of it."""
+    env = {**os.environ, "TYPESAFE_API_KEY_LOOP": "", "TYPESAFE_API_KEY": "", "CLAUDE_CODE_OAUTH_TOKEN": "",
            "HOME": tc.enterContext(tempfile.TemporaryDirectory()), "TYPESAFE_BASE_URL": "http://127.0.0.1:9",
-           "JEVLOOP_PY": sys.executable}
+           "JEVLOOP_PY": sys.executable, **{v: "" for v in PROXY_VARS}, "NO_PROXY": "*", "no_proxy": "*"}
     if "JEVLOOP_PROMPTS" not in extra:
         env["JEVLOOP_PROMPTS"] = pin_v1(tc)
     env.update(extra)
@@ -246,13 +256,21 @@ class PolicyTableTest(unittest.TestCase):
     def setUp(self):
         self.tmp = self.enterContext(tempfile.TemporaryDirectory())
         self.ask = self.enterContext(mock.patch("loop.jev.ask"))
-        self.urlopen = self.enterContext(mock.patch("urllib.request.urlopen"))
+        self.urlopen = self.enterContext(mock.patch("urllib.request.urlopen", side_effect=Reached("urlopen was reached")))
+        self.enterContext(mock.patch.object(config, "JEV_URL", "http://127.0.0.1:9/v1/systemone"))   # a second wall: discard
         self.halt = os.path.join(self.tmp, "HALT")                  # never the repo's data/HALT
         self.enterContext(mock.patch.object(config, "HALT", self.halt))
         pin_v1(self)                                                 # current_action() reads CURRENT: pin it to v1
         self.prop = os.path.join(self.tmp, "2026-09-22.json")
         with open(self.prop, "w") as fh:
             json.dump({"candidates": [CAND]}, fh)
+
+    def test_a_send_past_the_mocked_ask_meets_two_walls(self):
+        # jev.ask is mocked, but a path that reached urllib would meet a raising urlopen, and behind it
+        # a closed local port instead of api.typesafe.ai
+        self.assertTrue(config.JEV_URL.startswith("http://127.0.0.1:9/"), config.JEV_URL)
+        with self.assertRaises(Reached):
+            urllib.request.urlopen(config.JEV_URL)
 
     def test_81_distinct_digit_free_states(self):
         st = policy_table.states()
@@ -857,7 +875,7 @@ class ProposeDryTest(unittest.TestCase):
 
     def test_usage_error_is_2_and_dry_needs_no_claude(self):
         r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--bogus"],
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True, timeout=30, env=_sh_env(self))
         self.assertEqual(r.returncode, 2)
         with open(os.path.join(REPO, "nightly", "propose.sh")) as fh:
             src = fh.read()
@@ -928,6 +946,31 @@ class ProposeDryTest(unittest.TestCase):
         with open(os.path.join(tmp, "logs", "propose.log")) as fh:
             self.assertNotIn("note: no proposal exists", fh.read())
 
+
+
+class ShEnv(unittest.TestCase):
+    """_sh_env, the environment every script in this module is started with."""
+
+    def test_proxies_and_the_token_are_blank_whatever_the_runner_exports(self):
+        runner = {v: "http://proxy.example:3128" for v in PROXY_VARS}
+        runner.update(NO_PROXY="localhost", no_proxy="localhost", CLAUDE_CODE_OAUTH_TOKEN="runner-token",
+                      TYPESAFE_API_KEY_LOOP="runner-key", TYPESAFE_API_KEY="runner-key")
+        with mock.patch.dict(os.environ, runner):
+            env = _sh_env(self)
+        self.assertEqual({v: env[v] for v in PROXY_VARS}, dict.fromkeys(PROXY_VARS, ""))
+        self.assertEqual((env["NO_PROXY"], env["no_proxy"]), ("*", "*"))
+        self.assertEqual((env["CLAUDE_CODE_OAUTH_TOKEN"], env["TYPESAFE_API_KEY_LOOP"], env["TYPESAFE_API_KEY"]), ("", "", ""))
+        self.assertEqual(env["TYPESAFE_BASE_URL"], "http://127.0.0.1:9")
+        self.assertNotIn("runner-", "".join(env.values()))
+
+    def test_every_script_this_module_starts_gets_it(self):
+        # a subprocess.run without env= inherits the runner's proxies, token and HOME
+        with open(__file__, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        runs = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                and n.func.attr == "run" and isinstance(n.func.value, ast.Name) and n.func.value.id == "subprocess"]
+        self.assertGreater(len(runs), 15)
+        self.assertEqual([n.lineno for n in runs if not any(k.arg == "env" for k in n.keywords)], [])
 
 
 class LiveBranch(unittest.TestCase):
@@ -1115,7 +1158,8 @@ class Capped(unittest.TestCase):
     PY = sys.executable                       # /opt/homebrew/bin/python3 under `make test` on the Mac; whatever runs the suite elsewhere
 
     def _run(self, *args):
-        return subprocess.run([self.PY, "-m", "nightly.capped", *args], cwd=REPO, capture_output=True, text=True, timeout=30)
+        return subprocess.run([self.PY, "-m", "nightly.capped", *args], cwd=REPO, capture_output=True, text=True, timeout=30,
+                              env=_sh_env(self))
 
     def test_exit_is_the_commands_own(self):
         self.assertEqual(self._run("5", "--", "true").returncode, 0)
@@ -1138,7 +1182,7 @@ class Capped(unittest.TestCase):
         # subprocess reports -15 for SIGTERM; sys.exit(-15) would exit 241, which reads as the
         # command's own code. A shell says 143, and so does capped.
         r = subprocess.run([sys.executable, "-m", "nightly.capped", "5", "--", "sh", "-c", "kill -TERM $$"],
-                           cwd=REPO, capture_output=True, text=True, timeout=30)
+                           cwd=REPO, capture_output=True, text=True, timeout=30, env=_sh_env(self))
         self.assertEqual(r.returncode, 128 + 15)
 
     def test_propose_sh_rebuilds_the_dash_at_the_end_of_every_night_non_fatally(self):
@@ -1181,9 +1225,10 @@ class Capped(unittest.TestCase):
         self.assertEqual([l for l in code if l.startswith("guard_path ")],
                          ['guard_path "$REPO" repo', 'guard_path "$ROOT_REAL" root', 'guard_path "$(pwd -P)" cwd'])
         self.assertLess(code.index('ROOT_REAL="$(cd "$ROOT" 2>/dev/null && pwd -P || echo "$ROOT")"'), code.index('guard_path "$ROOT_REAL" root'))
-        forbidden = os.path.expanduser("~/Projects/crypto-trading-system")
+        env = _sh_env(self)                                      # the guard reads $HOME: the forbidden prefix is under the run's HOME
+        forbidden = os.path.join(env["HOME"], "Projects", "crypto-trading-system")
         r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry", "--root", os.path.join(forbidden, "x")],
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True, timeout=30, env=env)
         self.assertEqual(r.returncode, 3)
         self.assertIn("forbidden prefix (root)", r.stderr)
 

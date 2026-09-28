@@ -3,6 +3,7 @@ Nothing here writes under prompts/ -- bin/promote is the only writer."""
 import json, os, subprocess, sys, tempfile, unittest
 from fixture_prompts import pin_v1
 from loop import config, prompts
+from test_nightly import _sh_env
 
 ORDER = ["a_action", "b_action", "skip", "up15", "down15"]
 
@@ -70,8 +71,8 @@ class PromptsTest(unittest.TestCase):
         self.assertEqual(want[1], prompts.sha_of(doc))
         code = ("import locale, sys\nfrom loop import prompts\nprint(locale.getpreferredencoding(False))\n"
                 "print(prompts.current(sys.argv[1]))\nprint(prompts.sha('v9', sys.argv[1]))\n")
-        env = {**os.environ, "LC_ALL": "C", "LANG": "C", "PYTHONUTF8": "0", "PYTHONCOERCECLOCALE": "0",
-               "PYTHONIOENCODING": "utf-8"}
+        env = _sh_env(self, JEVLOOP_PROMPTS=self.tmp, LC_ALL="C", LANG="C", PYTHONUTF8="0", PYTHONCOERCECLOCALE="0",
+                      PYTHONIOENCODING="utf-8")                   # no key, no proxy, no token, a temp HOME: as the nightly's
         r = subprocess.run([sys.executable, "-c", code, self.tmp], cwd=config.REPO, env=env,
                            capture_output=True, text=True, timeout=60)
         enc = (r.stdout.splitlines() or [""])[0].lower().replace("-", "").replace("_", "")
