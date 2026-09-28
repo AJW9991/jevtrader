@@ -20,7 +20,7 @@ FIX = os.path.join(config.REPO, "fixtures")
 
 
 def load(name):
-    with open(os.path.join(FIX, name)) as fh:
+    with open(os.path.join(FIX, name), encoding="utf-8") as fh:
         return json.load(fh)
 
 
@@ -32,9 +32,15 @@ KEYS = {"ts_rx", "product", "bid", "bid_size", "ask", "ask_size", "bids", "asks"
         "candles", "trades_5m", "feed_age_s", "http"}                    # CONTRACT §2, exactly
 
 
+_OPEN = []                                                              # HTTPErrors to close (3.14 warns at GC otherwise)
+
+
 def http_error(code):
-    # an explicit empty body: fp=None makes 3.14 allocate a tempfile and warn on cleanup
-    return urllib.error.HTTPError("https://api.coinbase.com/x", code, "boom", {}, io.BytesIO(b""))
+    # an explicit empty body: fp=None makes 3.14 allocate a tempfile and warn on cleanup; closed in
+    # tearDown all the same, or 3.14 reports "Implicitly cleaning up" the one it wraps
+    e = urllib.error.HTTPError("https://api.coinbase.com/x", code, "boom", {}, io.BytesIO(b""))
+    _OPEN.append(e)
+    return e
 
 
 class Reached(BaseException):
@@ -68,6 +74,9 @@ def snap(fake=None, now=NOW):
 
 
 class TestSnapshot(unittest.TestCase):
+    def tearDown(self):
+        while _OPEN:
+            _OPEN.pop().close()
 
     def test_exact_keys_and_types(self):
         s, _ = snap()
@@ -415,7 +424,7 @@ class TestSnapshot(unittest.TestCase):
         self.assertIsInstance(BOOK["pricebook"]["bids"][0]["price"], str)
 
     def test_feed_never_sleeps_retries_or_sees_jev(self):
-        with open(feed.__file__) as fh:
+        with open(feed.__file__, encoding="utf-8") as fh:
             src = fh.read()
         self.assertNotIn("sleep(", src)
         self.assertIsNone(re.search(r"^\s*(from|import)\s+[\w.]*jev", src, re.M))

@@ -2,8 +2,9 @@
 empty directory, leaves that directory empty. A run used to leave ~22 temp dirs (6 MB) behind:
 tempfile.mkdtemp() in a setUpClass or a test with nothing to remove it. Checked here on two fast
 modules end to end (every class and test cleanup has to run for the directory to come back empty),
-in a subprocess, so this module's own temp files cannot be mistaken for theirs."""
-import os, subprocess, sys, tempfile, unittest
+in a subprocess, so this module's own temp files cannot be mistaken for theirs. And the suite runs
+under any locale: every text-mode open() on the test side names its encoding."""
+import ast, glob, os, subprocess, sys, tempfile, unittest
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(TESTS)
@@ -18,6 +19,30 @@ class TempDirs(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr[-2000:])
         self.assertRegex(r.stderr, r"Ran \d+ tests")
         self.assertEqual(os.listdir(tmpdir), [])
+
+
+class Encodings(unittest.TestCase):
+    # test_outcomes.py is being edited in another session (2026-09-28): its four text opens write
+    # ASCII JSON. Drop it from here once that work has landed and they name their encoding too.
+    ELSEWHERE = {"test_outcomes.py"}
+
+    def test_every_text_open_on_the_test_side_names_its_encoding(self):
+        # under LC_ALL=C with PYTHONUTF8=0 an open() without one reads and writes ASCII, and 14 tests
+        # errored on the section signs, em dashes and accents the repository's files hold
+        missing = []
+        for path in sorted(glob.glob(os.path.join(TESTS, "*.py"))):
+            if os.path.basename(path) in self.ELSEWHERE:
+                continue
+            with open(path, encoding="utf-8") as fh:
+                tree = ast.parse(fh.read())
+            for n in ast.walk(tree):
+                if not (isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "open"):
+                    continue
+                mode = n.args[1] if len(n.args) > 1 else next((k.value for k in n.keywords if k.arg == "mode"), None)
+                binary = isinstance(mode, ast.Constant) and "b" in str(mode.value)
+                if not binary and not any(k.arg == "encoding" for k in n.keywords):
+                    missing.append(f"{os.path.basename(path)}:{n.lineno}")
+        self.assertEqual(missing, [])
 
 
 if __name__ == "__main__":

@@ -23,7 +23,7 @@ class ReadersDiff(unittest.TestCase):
         dry_first.update(bid=100.49, ask=100.51, mid=100.5)  # a different mid, so which row speaks changes the return
         rows.insert(7, dry_first)                              # a priced dry row before the live one, same tick_id
         cls.log = os.path.join(cls.tmp, "decisions.jsonl")
-        with open(cls.log, "w") as fh:
+        with open(cls.log, "w", encoding="utf-8") as fh:
             for r in rows[:30]:
                 fh.write(json.dumps(r) + "\n")
             fh.write('{"v": 1, "tick_id": "20260923T103000Z", "ts_rx": "2026-09-23T10:3')   # torn, then a whole row glued on
@@ -32,7 +32,7 @@ class ReadersDiff(unittest.TestCase):
         cls.old = os.path.join(cls.tmp, "old")                  # this tree, with the join's first-wins rule of main
         os.makedirs(cls.old)
         shutil.copytree(os.path.join(REPO, "loop"), os.path.join(cls.old, "loop"), ignore=shutil.ignore_patterns("__pycache__"))
-        with open(os.path.join(cls.old, "loop", "outcomes.py"), "a") as fh:
+        with open(os.path.join(cls.old, "loop", "outcomes.py"), "a", encoding="utf-8") as fh:
             fh.write("\n\ndef rank(r):\n    return 0\n")      # every row ranks alike: the first row with a tick_id speaks for it
 
     @classmethod

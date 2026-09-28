@@ -72,7 +72,7 @@ def _same(tc, got, want):
 
 
 def _exclusions(path, days=()):
-    with open(path, "w") as fh:
+    with open(path, "w", encoding="utf-8") as fh:
         fh.write("day\tfill%\tjev-err%\treason\n" + "".join(f"d{d:02d}\t50.0%\t0.0%\tx\n" for d in days))
     return path
 
@@ -130,17 +130,17 @@ class DaysAndExclusions(unittest.TestCase):
         tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
         p = os.path.join(tmp, "exclusions.tsv")
-        with open(p, "w") as fh:
+        with open(p, "w", encoding="utf-8") as fh:
             fh.write("day\tfill%\tjev-err%\treason\nd03\t90.0%\t0.0%\tasleep\n\n7\t80.0%\t0.0%\tfeed down\n")
         days, lines = inference.read_exclusions(p)
         self.assertEqual(days, {3, 7})
         self.assertEqual(len(lines), 2)
         self.assertEqual(inference.read_exclusions(os.path.join(tmp, "none.tsv")), (set(), []))
-        with open(p, "w") as fh:
+        with open(p, "w", encoding="utf-8") as fh:
             fh.write("day\tfill%\tjev-err%\treason\n20260926\t90.0%\t0.0%\ta calendar day is not a T0 day\n")
         with self.assertRaises(ValueError):
             inference.read_exclusions(p)
-        with open(p, "w") as fh:
+        with open(p, "w", encoding="utf-8") as fh:
             fh.write("d29\t90.0%\t0.0%\tout of range\n")
         with self.assertRaises(ValueError):
             inference.read_exclusions(p)
@@ -182,14 +182,14 @@ class Guard(unittest.TestCase):
 
     def test_exclusions_drop_96_blocks_per_day_and_void_under_21(self):
         p = os.path.join(self.tmp, "ex.tsv")
-        with open(p, "w") as fh:
+        with open(p, "w", encoding="utf-8") as fh:
             fh.write("day\tfill%\tjev-err%\treason\n" + "".join(f"d{d:02d}\t50%\t0%\tx\n" for d in range(1, 9)))
         code, out, _ = _main(["--sample", "--log", self.log, "--t0", self.t0, "--now", "2026-10-21T10:00", "--resamples", "50", "--exclusions", p])
         self.assertEqual(code, 0)
         self.assertIn("n blocks 1920", out)                           # 20 days x 96
         self.assertIn("VOID (PREREG §8.3)", out)
         self.assertIn("  d01\t50%\t0%\tx", out)                        # reproduced verbatim
-        with open(p, "w") as fh:
+        with open(p, "w", encoding="utf-8") as fh:
             fh.write("d99\t50%\t0%\tx\n")
         code, out, err = _main(["--sample", "--log", self.log, "--t0", self.t0, "--now", "2026-10-21T10:00", "--exclusions", p])
         self.assertEqual(code, 2)
@@ -239,7 +239,7 @@ class LiveLog(unittest.TestCase):
         cls.log = os.path.join(cls.tmp, "decisions.jsonl")
         _write(cls.log, [_row(m) for m in range(42)])                # 2026-09-23, before PREREG's T0: no sample row
         cls.ex = os.path.join(cls.tmp, "exclusions.tsv")
-        with open(cls.ex, "w") as fh:
+        with open(cls.ex, "w", encoding="utf-8") as fh:
             fh.write("day\tfill%\tjev-err%\treason\n")
 
     def _run(self, argv, now=AFTER_SEALED_END):
@@ -303,7 +303,7 @@ class LiveLog(unittest.TestCase):
 
     def test_another_prereg_is_refused_on_the_live_log(self):
         p = os.path.join(self.tmp, "PREREG.md")
-        with open(p, "w") as fh:
+        with open(p, "w", encoding="utf-8") as fh:
             fh.write("T0 (first tick_id of day 1): `20260901T000000Z`\n")
         code, out, err = self._run(["--pre-t0", "--prereg", p])
         self.assertEqual((code, out), (3, ""))
@@ -327,7 +327,7 @@ class PreT0Cut(unittest.TestCase):
         sealed = report._t0("2026-09-25T21:40")
         _write(cls.log, _minutes(sealed - 10 * 60, sealed + 10 * 60), garbage=False)   # 21:30 .. 21:49, ten each side
         cls.ex = os.path.join(cls.tmp, "exclusions.tsv")
-        with open(cls.ex, "w") as fh:
+        with open(cls.ex, "w", encoding="utf-8") as fh:
             fh.write("day\tfill%\tjev-err%\treason\n")
 
     def test_a_later_t0_still_cuts_at_the_sealed_t0(self):
@@ -359,7 +359,7 @@ class SealedCopy(unittest.TestCase):
         _write(cls.log, _minutes(cls.SEALED - 600, cls.SEALED + 42 * 60, mid=lambda e: 100.0 + (e % 3600) / 600.0), garbage=False)
         cls.none = _exclusions(os.path.join(cls.tmp, "none.tsv"))     # 10 rows before the seal, 42 inside the sample
         cls.unsealed = os.path.join(cls.tmp, "PREREG.md")
-        with open(cls.unsealed, "w") as fh:
+        with open(cls.unsealed, "w", encoding="utf-8") as fh:
             fh.write("# a PREREG with no T0 line\n")
 
     def test_sample_with_now_is_refused_before_the_real_end(self):
@@ -600,7 +600,7 @@ class Pending(unittest.TestCase):
         cls.tmp = tempfile.mkdtemp()
         cls.addClassCleanup(shutil.rmtree, cls.tmp, ignore_errors=True)
         cls.ex = os.path.join(cls.tmp, "exclusions.tsv")
-        with open(cls.ex, "w") as fh:
+        with open(cls.ex, "w", encoding="utf-8") as fh:
             fh.write("day\tfill%\tjev-err%\treason\n")
         cls.rows = _end_rows()
         cls.stopped = os.path.join(cls.tmp, "stopped.jsonl")              # the log as it stands at 10:00:00: last row 09:59
@@ -820,7 +820,7 @@ class Robustness(unittest.TestCase):
         real = outcomes.load
 
         def appending(p, bad=None):                                  # launchd writes a row between the read and the parse
-            with open(path, "a") as fh:
+            with open(path, "a", encoding="utf-8") as fh:
                 fh.write("\n" + json.dumps(_at(T0 + 3 * 86400)) + "\n")
             return real(p, bad)
 
@@ -850,22 +850,22 @@ class Robustness(unittest.TestCase):
         new = os.path.join(self.tmp, "RESULTS-new.md")
         code, out, err = self._run("--out", new, ex=self.ex)
         self.assertEqual(code, 0, err)
-        with open(new) as fh:
+        with open(new, encoding="utf-8") as fh:
             self.assertEqual(fh.read(), out)
         old = os.path.join(self.tmp, "RESULTS-old.md")
-        with open(old, "w") as fh:
+        with open(old, "w", encoding="utf-8") as fh:
             fh.write("the committed result\n")
         with mock.patch.object(inference, "h1", side_effect=AssertionError("computed before refusing")):
             code, out, err = self._run("--out", old, ex=self.ex)
         self.assertEqual((code, out), (2, ""))
         self.assertIn(f"--out {old} exists; refusing to overwrite it", err)
-        with open(old) as fh:
+        with open(old, encoding="utf-8") as fh:
             self.assertEqual(fh.read(), "the committed result\n")
         late = os.path.join(self.tmp, "RESULTS-late.md")               # a file that appears while the bootstrap runs
         real = inference.render
 
         def render_then_appear(*a, **k):
-            with open(late, "w") as fh:
+            with open(late, "w", encoding="utf-8") as fh:
                 fh.write("written meanwhile\n")
             return real(*a, **k)
 
@@ -873,7 +873,7 @@ class Robustness(unittest.TestCase):
             code, out, err = self._run("--out", late, ex=self.ex)
         self.assertEqual(code, 2)
         self.assertIn(f"--out {late} appeared during the run; refusing to overwrite it", err)
-        with open(late) as fh:
+        with open(late, encoding="utf-8") as fh:
             self.assertEqual(fh.read(), "written meanwhile\n")
 
     def test_a_missing_log_is_said_so_not_a_traceback(self):

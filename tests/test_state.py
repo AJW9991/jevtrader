@@ -387,7 +387,7 @@ class ThresholdsComeFromConfig(unittest.TestCase):
         # operand (arithmetic like `/ 2.0` is fine; `x < 0.5` would not be). The two
         # legitimate literal compares are the guards `sd > 0.0` and `rv_med > 0.0`.
         import ast, os
-        with open(os.path.join(config.REPO, "loop", "state.py")) as fh:
+        with open(os.path.join(config.REPO, "loop", "state.py"), encoding="utf-8") as fh:
             tree = ast.parse(fh.read())
         literal_compares = []
         for node in ast.walk(tree):

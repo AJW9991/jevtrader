@@ -660,7 +660,7 @@ class Inference(unittest.TestCase):
                                                                     # reads the repo's own: the log holds no row of either sample)
         cls.path = synth.write(os.path.join(_TMP.name, "inference.jsonl"), synth.generate(cls.SEED, **{**knobs(cls.SEED), "t0": cls.T0S}))
         cls.ex = os.path.join(_TMP.name, "exclusions.tsv")
-        with open(cls.ex, "w") as fh:
+        with open(cls.ex, "w", encoding="utf-8") as fh:
             fh.write("day\tfill%\tjev-err%\treason\n")
         cls.out = os.path.join(_TMP.name, "inference-1.txt")
         buf, err = io.StringIO(), io.StringIO()
@@ -674,7 +674,8 @@ class Inference(unittest.TestCase):
         self.assertEqual(self.code, 0, self.err)
         out2 = os.path.join(_TMP.name, "inference-2.txt")
         p = subprocess.run([sys.executable, "-m", "loop.inference"] + self.ARGV + ["--log", self.path, "--exclusions", self.ex, "--out", out2],
-                           cwd=REPO, env=dict(os.environ, PYTHONHASHSEED="4242"), capture_output=True, timeout=120)
+                           cwd=REPO, env=dict(os.environ, PYTHONHASHSEED="4242", PYTHONIOENCODING="utf-8"),   # the text is compared as UTF-8
+                           capture_output=True, timeout=120)
         self.assertEqual(p.returncode, 0, p.stderr.decode())
         self.assertEqual(p.stdout.decode(), self.text)
         with open(self.out, "rb") as a, open(out2, "rb") as b:

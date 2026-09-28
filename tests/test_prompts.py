@@ -18,7 +18,7 @@ class PromptsTest(unittest.TestCase):
         self.v1 = prompts.load("v1")
 
     def _save(self, name, doc, **dump):
-        with open(os.path.join(self.tmp, name), "w") as fh:
+        with open(os.path.join(self.tmp, name), "w", encoding="utf-8") as fh:
             json.dump(doc, fh, **dump)
             fh.write("\n")
 
@@ -150,15 +150,15 @@ class PromptsTest(unittest.TestCase):
                 prompts.load(bad)
         with self.assertRaises(prompts.PromptError):
             prompts.load("v999", root=self.tmp)                          # absent file
-        with open(os.path.join(self.tmp, "v3.json"), "w") as fh:
+        with open(os.path.join(self.tmp, "v3.json"), "w", encoding="utf-8") as fh:
             fh.write("{not json")
         with self.assertRaises(prompts.PromptError):
             prompts.load("v3", root=self.tmp)
-        with open(os.path.join(self.tmp, "CURRENT"), "w") as fh:
+        with open(os.path.join(self.tmp, "CURRENT"), "w", encoding="utf-8") as fh:
             fh.write("v1\nv2\n")
         with self.assertRaises(prompts.PromptError):
             prompts.current(root=self.tmp)
-        with open(os.path.join(self.tmp, "CURRENT"), "w") as fh:
+        with open(os.path.join(self.tmp, "CURRENT"), "w", encoding="utf-8") as fh:
             fh.write("\n  v7  \n\n")                                     # blank lines tolerated
         self.assertEqual(prompts.current(root=self.tmp), "v7")
         with self.assertRaises(prompts.PromptError):

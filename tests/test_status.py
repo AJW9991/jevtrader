@@ -28,10 +28,10 @@ class Status(unittest.TestCase):
         cls.props = os.path.join(cls.tmp, "proposals")
         os.makedirs(cls.props)
         for name in ("2026-09-21.md", "2026-09-21.json", "2026-09-22.md"):
-            with open(os.path.join(cls.props, name), "w") as fh:
+            with open(os.path.join(cls.props, name), "w", encoding="utf-8") as fh:
                 fh.write("x\n")
         cls.plog = os.path.join(cls.tmp, "propose.log")
-        with open(cls.plog, "w") as fh:
+        with open(cls.plog, "w", encoding="utf-8") as fh:
             fh.write("".join(f"line {i}\n" for i in range(6)))
         cls.halt = os.path.join(cls.tmp, "HALT")
 
@@ -45,7 +45,7 @@ class Status(unittest.TestCase):
         self.assertIn("STOPPED? last tick 19 min ago", self._render("2026-09-23T11:00"))
         self.assertIn("STOPPED? no heartbeat", self._render("2026-09-23T11:00", hb=None))
         self.assertIn("STOPPED? heartbeat unreadable", self._render("2026-09-23T11:00", hb="junk"))
-        with open(self.halt, "w") as fh:
+        with open(self.halt, "w", encoding="utf-8") as fh:
             fh.write("spend: $0.2513 of input tokens today\n")
         try:
             text = self._render("2026-09-23T10:42")

@@ -16,7 +16,7 @@ FIX = os.path.join(config.REPO, "fixtures")
 
 
 def _load(n):
-    with open(os.path.join(FIX, n)) as fh:
+    with open(os.path.join(FIX, n), encoding="utf-8") as fh:
         return json.load(fh)
 
 
@@ -86,7 +86,7 @@ class CycleTest(unittest.TestCase):
         self.enterContext(mock.patch.object(config, "JEV_URL", URL))
         self.enterContext(mock.patch.dict(os.environ, {"TYPESAFE_API_KEY_LOOP": KEY}))
         self.protocol = os.path.join(self.tmp, "PROTOCOL.md")    # signed; the unsigned test rewrites it
-        with open(self.protocol, "w") as fh:
+        with open(self.protocol, "w", encoding="utf-8") as fh:
             fh.write("In force from: `2026-09-24`  Signed: `test`\n")
         self.enterContext(mock.patch.object(config, "PROTOCOL", self.protocol))
         self.prompts_root = pin_v1(self)                        # never the live prompts/: CURRENT moves with bin/promote
@@ -124,11 +124,11 @@ class CycleTest(unittest.TestCase):
     def sends(self):
         if not os.path.exists(config.SENDS):
             return None
-        with open(config.SENDS) as fh:
+        with open(config.SENDS, encoding="utf-8") as fh:
             return fh.read().splitlines()
 
     def heartbeat(self):
-        with open(config.HEARTBEAT) as fh:
+        with open(config.HEARTBEAT, encoding="utf-8") as fh:
             return fh.read().strip()
 
     def assert_nothing_sent(self):
@@ -185,7 +185,7 @@ class CycleTest(unittest.TestCase):
     # called and rule_c was null: it pinned a HALT that stopped observation too.)
     def test_halt_present_observes_and_sends_nothing(self):
         os.makedirs(self.data)
-        with open(config.HALT, "w") as fh:
+        with open(config.HALT, "w", encoding="utf-8") as fh:
             fh.write("by hand\n")
         self.assertEqual(cycle.main(["--once"]), 0)
         row = self.only_row()
@@ -203,12 +203,12 @@ class CycleTest(unittest.TestCase):
         self.assert_nothing_sent()                             # no ledger row, no request
         self.assertEqual(self.out.getvalue(), "")              # and no body printed
         self.assertEqual(self.heartbeat(), TS_RX)
-        with open(config.HALT) as fh:                          # HALT is never removed by code
+        with open(config.HALT, encoding="utf-8") as fh:                          # HALT is never removed by code
             self.assertEqual(fh.read(), "by hand\n")
 
     def test_halt_keeps_marks_and_outcomes_but_every_arm_holds(self):
         os.makedirs(self.data)
-        open(config.HALT, "w").close()
+        open(config.HALT, "w", encoding="utf-8").close()
         for dt in (0, 900):                                    # two halted ticks one horizon apart
             with mock.patch("time.time", return_value=NOW + dt):
                 self.snapshot.side_effect = lambda: dict(SNAP, ts_rx=cycle.iso_ms(NOW + dt))
@@ -222,8 +222,8 @@ class CycleTest(unittest.TestCase):
 
     def test_halt_under_a_held_lock_is_a_lock_row(self):
         os.makedirs(self.data)
-        open(config.HALT, "w").close()
-        holder = open(config.LOCK, "a")
+        open(config.HALT, "w", encoding="utf-8").close()
+        holder = open(config.LOCK, "a", encoding="utf-8")
         self.addCleanup(holder.close)
         fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         self.assertEqual(cycle.main(["--once"]), 0)
@@ -232,7 +232,7 @@ class CycleTest(unittest.TestCase):
 
     def test_halt_in_dry_mode_is_a_dry_halt_row(self):
         os.makedirs(self.data)
-        open(config.HALT, "w").close()
+        open(config.HALT, "w", encoding="utf-8").close()
         self.assertEqual(cycle.main(["--dry", "--once"]), 0)
         row = self.only_row()
         self.assertEqual((row["absence"], row["mode"], row["state"]), ("halt", "dry", STATE))
@@ -241,7 +241,7 @@ class CycleTest(unittest.TestCase):
     # ---- CONTRACT §6: spend over the limit writes HALT -------------------------------------
     def test_spend_over_limit_writes_halt_and_a_halt_row(self):
         os.makedirs(self.data)
-        with open(config.DECISIONS, "w") as fh:
+        with open(config.DECISIONS, "w", encoding="utf-8") as fh:
             fh.write(json.dumps(_row("20260923T235900Z", 50_000_000)) + "\n")   # yesterday: not counted
             fh.write(json.dumps(_row(DAY + "T010000Z", OVER)) + "\n")
             fh.write(json.dumps(_row(DAY + "T010100Z", None, "dry")) + "\n")    # dry: null tokens
@@ -249,7 +249,7 @@ class CycleTest(unittest.TestCase):
         self.assertAlmostEqual(cycle.spend_today(NOW), 2 * OVER * config.USD_PER_MTOK / 1e6)
         self.assertEqual(cycle.main(["--once"]), 0)
         self.assertTrue(os.path.exists(config.HALT))
-        with open(config.HALT) as fh:
+        with open(config.HALT, encoding="utf-8") as fh:
             reason = fh.read()
         self.assertIn(cycle.HALT_SPEND, reason)
         self.assertIn(str(config.DAILY_SPEND_HALT_USD), reason)
@@ -265,7 +265,7 @@ class CycleTest(unittest.TestCase):
 
     def test_spend_just_under_limit_proceeds(self):
         os.makedirs(self.data)
-        with open(config.DECISIONS, "w") as fh:
+        with open(config.DECISIONS, "w", encoding="utf-8") as fh:
             for i in range(2):
                 fh.write(json.dumps(_row(DAY + "T0100%02dZ" % i, UNDER)) + "\n")
         self.assertLess(cycle.spend_today(NOW), config.DAILY_SPEND_HALT_USD)
@@ -276,11 +276,11 @@ class CycleTest(unittest.TestCase):
 
     def test_spend_reads_the_tail_and_widens_when_today_overflows_it(self):
         os.makedirs(self.data)
-        with open(config.DECISIONS, "w") as fh:
+        with open(config.DECISIONS, "w", encoding="utf-8") as fh:
             for i in range(20):
                 fh.write(json.dumps(_row(DAY + "T01%02d00Z" % i, 1000)) + "\n")
             fh.write("{truncated line with no newline")
-        with open(config.DECISIONS) as fh:
+        with open(config.DECISIONS, encoding="utf-8") as fh:
             size = len(fh.read())
         with mock.patch.object(cycle, "TAIL_BYTES", size // 3):     # the tail holds ~6 of the 20
             self.assertAlmostEqual(cycle.spend_today(NOW), 20_000 * config.USD_PER_MTOK / 1e6)
@@ -299,7 +299,7 @@ class CycleTest(unittest.TestCase):
         # 8 MiB tail starts inside an earlier day, today fits in it, and nothing widens.
         self.assertEqual(cycle.TAIL_BYTES, 8 << 20)
         os.makedirs(self.data)
-        with open(config.DECISIONS, "w") as fh:
+        with open(config.DECISIONS, "w", encoding="utf-8") as fh:
             self._days(fh, "20260922", 1440, 50_000_000, "x" * 2500)
             self._days(fh, "20260923", 1440, 50_000_000, "x" * 2500)
             self._days(fh, DAY, 600, 1000, "x" * 2500)
@@ -315,7 +315,7 @@ class CycleTest(unittest.TestCase):
         # Rows three times the usual size: today alone no longer fits in 8 MiB, the tail's first
         # row is today's, and the guard reads the whole file rather than miss today's first hours.
         os.makedirs(self.data)
-        with open(config.DECISIONS, "w") as fh:
+        with open(config.DECISIONS, "w", encoding="utf-8") as fh:
             self._days(fh, "20260923", 200, 50_000_000, "x" * 2500)
             self._days(fh, DAY, 1440, 100, "x" * 6500)
         buf, cut = cycle._tail(config.DECISIONS, cycle.TAIL_BYTES)
@@ -342,12 +342,12 @@ class CycleTest(unittest.TestCase):
                 r(8, None, mode="dry"), r(9, 480)]
         self.assertEqual([cycle.billed_tokens(x) for x in rows], [U, U, U, 0, 0, 0, 0, 0, 0, 480])
         os.makedirs(self.data)
-        with open(config.DECISIONS, "w") as fh:
+        with open(config.DECISIONS, "w", encoding="utf-8") as fh:
             fh.writelines(json.dumps(x) + "\n" for x in rows)
         self.assertAlmostEqual(cycle.spend_today(NOW), (3 * U + 480) * config.USD_PER_MTOK / 1e6)
         # enough of them trip it: a runaway whose replies carry no usage still writes HALT
         n = int(config.DAILY_SPEND_HALT_USD / (U * config.USD_PER_MTOK / 1e6)) + 1
-        with open(config.DECISIONS, "w") as fh:
+        with open(config.DECISIONS, "w", encoding="utf-8") as fh:
             fh.writelines(json.dumps(r(i % 60, 0)) + "\n" for i in range(n))
         self.assertGreaterEqual(cycle.spend_today(NOW), config.DAILY_SPEND_HALT_USD)
         self.assertEqual(cycle.main(["--once"]), 0)
@@ -515,7 +515,7 @@ class CycleTest(unittest.TestCase):
                 self.assertIsNone(row["answers"])
                 self.assertEqual(row["columns"], {"a": None, "b": None})
                 self.assertEqual(row["state"], STATE)          # the observation survives the refusal
-                with open(config.HALT) as fh:
+                with open(config.HALT, encoding="utf-8") as fh:
                     reason = fh.read()
                 self.assertIn(cycle.HALT_KEY_REJECTED, reason)
                 self.assertIn(str(code), reason)
@@ -584,7 +584,7 @@ class CycleTest(unittest.TestCase):
             with self.subTest(at=at, hb=hb):
                 if hb:
                     os.makedirs(self.data, exist_ok=True)
-                    with open(config.HEARTBEAT, "w") as fh:
+                    with open(config.HEARTBEAT, "w", encoding="utf-8") as fh:
                         fh.write(hb + "\n")
                 elif os.path.exists(config.HEARTBEAT):
                     os.remove(config.HEARTBEAT)
@@ -603,7 +603,7 @@ class CycleTest(unittest.TestCase):
         # The repo as committed: PROTOCOL.md unsigned. A live tick still records the feed,
         # the state and arm C -- observation is free and outlives sending -- but jev.ask
         # refuses before the key, the ledger or a socket, and the row bills nothing.
-        with open(self.protocol, "w") as fh:
+        with open(self.protocol, "w", encoding="utf-8") as fh:
             fh.write("In force from: `____________`  Signed: `____________`\n")
         self.assertEqual(cycle.main(["--once"]), 0)
         row = self.only_row()
@@ -679,7 +679,7 @@ class CycleTest(unittest.TestCase):
     # ---- the lock ----------------------------------------------------------------------------------
     def test_lock_held_elsewhere_is_absence_lock(self):
         os.makedirs(self.data)
-        holder = open(config.LOCK, "a")
+        holder = open(config.LOCK, "a", encoding="utf-8")
         self.addCleanup(holder.close)
         fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         self.assertEqual(cycle.main(["--once"]), 0)
@@ -693,7 +693,7 @@ class CycleTest(unittest.TestCase):
 
     def test_lock_is_released_after_the_tick(self):
         cycle.main(["--dry", "--once"])
-        fh = open(config.LOCK, "a")
+        fh = open(config.LOCK, "a", encoding="utf-8")
         self.addCleanup(fh.close)
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)  # would raise if the tick kept it
 
@@ -843,7 +843,7 @@ class CycleTest(unittest.TestCase):
         self.assertEqual((row["absence"], row["jev"]["error"]), ("jev", "http-4xx"))    # the first failure stays
         self.assertEqual(cycle.billed_tokens(row), config.JEV_TOKENS_IF_UNKNOWN)
         self.assertEqual(len(calls), 2)
-        with open(config.HALT) as fh:
+        with open(config.HALT, encoding="utf-8") as fh:
             self.assertIn(cycle.HALT_KEY_REJECTED + ": http-4xx 401", fh.read())
         self.assertNotIn("no row", self.err.getvalue())
         self.assertIn("watchdog", self.err.getvalue())
@@ -940,7 +940,7 @@ class CycleTest(unittest.TestCase):
         row = self.only_row()                                  # complete, parseable, single line
         self.assertEqual((row["absence"], row["state"]), (None, STATE))
         self.assertEqual(self.heartbeat(), TS_RX)
-        fh = open(config.LOCK, "a")
+        fh = open(config.LOCK, "a", encoding="utf-8")
         self.addCleanup(fh.close)
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)  # released on the way out
         self.assertEqual(signal.getsignal(signal.SIGTERM), signal.SIG_DFL)   # handlers restored

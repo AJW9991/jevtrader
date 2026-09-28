@@ -24,7 +24,7 @@ def assert_health_only(tc, path, allowed_report, allowed_imports):
     from loop.report is on the allowlist and never aliased; no other loop module is imported by any
     spelling (relative, absolute, `import loop.x`, `from loop import x as y`); no getattr/vars/
     __import__/eval/importlib or __dict__/__globals__ that could reach a name the scan cannot see."""
-    with open(path) as fh:
+    with open(path, encoding="utf-8") as fh:
         tree = ast.parse(fh.read())
     used = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) and n.value.id == "report"}
     tc.assertLessEqual(used, allowed_report, used - allowed_report)
@@ -131,7 +131,7 @@ class Dash(unittest.TestCase):
                     "import loop.report as r\n", "x = getattr(report, 'tab' + 'le')\n", "import importlib\n",
                     "y = vars(report)['h2']\n", "z = report.__dict__\n"):
             p = os.path.join(self.tmp, "mutant.py")
-            with open(p, "w") as fh:
+            with open(p, "w", encoding="utf-8") as fh:
                 fh.write("from . import config, outcomes, report, state\n" + src)
             with self.assertRaises(AssertionError, msg=src):
                 assert_health_only(self, p, ALLOWED_REPORT, ALLOWED_IMPORTS)
@@ -228,7 +228,7 @@ class Dash(unittest.TestCase):
         with mock.patch.object(config, "HEARTBEAT", os.path.join(self.tmp, "heartbeat")), \
                 mock.patch.object(config, "HALT", os.path.join(self.tmp, "HALT")), \
                 mock.patch.object(config, "PROPOSALS", os.path.join(self.tmp, "no-proposals")):
-            with open(config.HEARTBEAT, "w") as fh:
+            with open(config.HEARTBEAT, "w", encoding="utf-8") as fh:
                 fh.write("2026-09-23T10:41:00.100Z\n")
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
@@ -236,7 +236,7 @@ class Dash(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertTrue(os.path.exists(out))
             self.assertIn("42 rows, 1 skipped", buf.getvalue())
-            with open(out) as fh:
+            with open(out, encoding="utf-8") as fh:
                 page = fh.read()
             self.assertIn("no T0: whole log", page)
             self.assertIn("prompt_b v1", page)                           # the pinned root, not the live CURRENT
@@ -253,18 +253,18 @@ class Dash(unittest.TestCase):
         os.makedirs(os.path.join(root, "data"))
         os.makedirs(os.path.join(root, "proposals"))
         os.makedirs(os.path.join(root, "prompts"))
-        with open(os.path.join(root, "data", "heartbeat"), "w") as fh:
+        with open(os.path.join(root, "data", "heartbeat"), "w", encoding="utf-8") as fh:
             fh.write("2026-09-23T10:41:00.100Z\n")
-        with open(os.path.join(root, "data", "HALT"), "w") as fh:
+        with open(os.path.join(root, "data", "HALT"), "w", encoding="utf-8") as fh:
             fh.write("test\n")
-        with open(os.path.join(root, "prompts", "CURRENT"), "w") as fh:
+        with open(os.path.join(root, "prompts", "CURRENT"), "w", encoding="utf-8") as fh:
             fh.write("v7\n")
         out = os.path.join(root, "dash.html")
         with contextlib.redirect_stdout(io.StringIO()):
             code = dash.main(["--log", self.log, "--out", out, "--no-t0", "--data", os.path.join(root, "data"),
                               "--proposals", os.path.join(root, "proposals"), "--prompts", os.path.join(root, "prompts")])
         self.assertEqual(code, 0)
-        with open(out) as fh:
+        with open(out, encoding="utf-8") as fh:
             page = fh.read()
         self.assertIn("HALT present", page)
         self.assertIn("heartbeat 2026-09-23T10:41:00.100Z", page)
@@ -299,7 +299,7 @@ class Dash(unittest.TestCase):
                              [("cand_0", 0, 0), ("cand_1", 27, 27), ("cand_2", 27, 27)])
         root = os.path.join(self.tmp, "props")
         os.makedirs(root, exist_ok=True)
-        with open(os.path.join(root, "2026-09-30.md"), "w") as fh:
+        with open(os.path.join(root, "2026-09-30.md"), "w", encoding="utf-8") as fh:
             fh.write("# policy table 2026-09-30\n\nrequests: 81, answered: 79, errors: 2 -- INCOMPLETE  \n\n"
                      "## current (v2)\n\ndiffers from rule_c on 27 of 79 answered states\n\n"
                      "## cand_0\n\nrationale: a first line\nand a second line of it\n\n"

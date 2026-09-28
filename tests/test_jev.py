@@ -19,6 +19,16 @@ GOOD = {"model": config.MODEL, "usage": {"input_tokens": 123, "output_tokens": 7
                     "skip": {"noul": 0.02}}}
 
 
+def _putenv(name, value):
+    """os.environ[name] = value. A value the filesystem encoding cannot hold ("é" under LC_ALL=C with
+    PYTHONUTF8=0) goes in as the UTF-8 bytes a UTF-8 shell would have exported, which os.environ then
+    shows surrogate-escaped: a key that is still not printable ASCII, and still refused."""
+    try:
+        os.environ[name] = value
+    except UnicodeEncodeError:
+        os.environb[os.fsencode(name)] = value.encode("utf-8")
+
+
 class _Resp:
     """What urlopen yields: a context manager with read()."""
     def __init__(self, doc, raw=None):
@@ -51,7 +61,7 @@ class JevTest(unittest.TestCase):
         self.enterContext(mock.patch.object(config, "JEV_URL", URL))
         self.enterContext(mock.patch.dict(os.environ, {"TYPESAFE_API_KEY_LOOP": KEY}))
         self.protocol = os.path.join(self.tmp, "PROTOCOL.md")    # signed: these tests are about sending
-        with open(self.protocol, "w") as fh:
+        with open(self.protocol, "w", encoding="utf-8") as fh:
             fh.write("# PROTOCOL\n\nIn force from: `2026-09-24`  Signed: `test`\n")
         self.enterContext(mock.patch.object(config, "PROTOCOL", self.protocol))
         self.sleeps = []
@@ -66,7 +76,7 @@ class JevTest(unittest.TestCase):
     def rows(self):
         if not os.path.exists(self.sends):
             return None
-        with open(self.sends) as fh:
+        with open(self.sends, encoding="utf-8") as fh:
             return fh.read().splitlines()
 
     # --- CONTRACT §6: the ledger row exists BEFORE the request --------------------
@@ -101,7 +111,7 @@ class JevTest(unittest.TestCase):
 
     def test_ledger_header_once_and_on_empty_file(self):
         os.makedirs(os.path.dirname(self.sends))
-        open(self.sends, "a").close()                                     # exists but empty (the reference's fresh-clone case)
+        open(self.sends, "a", encoding="utf-8").close()                                     # exists but empty (the reference's fresh-clone case)
         self.assertEqual(jev.ledger(STATE, Q), hashlib.sha256(STATE.encode()).hexdigest()[:12])
         jev.ask(STATE, Q)
         lines = self.rows()
@@ -111,7 +121,7 @@ class JevTest(unittest.TestCase):
     # --- CONTRACT §6: unwritable ledger -> JevError('ledger'), nothing sent ---------
     def test_unwritable_ledger_raises_and_sends_nothing(self):
         blocker = os.path.join(self.tmp, "blocker")
-        open(blocker, "w").close()                                        # a FILE where the data dir must go
+        open(blocker, "w", encoding="utf-8").close()                                        # a FILE where the data dir must go
         with mock.patch.object(config, "SENDS", os.path.join(blocker, "sends.tsv")):
             self.assertIsNone(jev.ledger(STATE, Q))
             with self.assertRaises(jev.JevError) as cm:
@@ -309,11 +319,11 @@ class JevTest(unittest.TestCase):
                            ("TYPESAFE_API_KEY_LOOP=\"quoted=with=equals\"\n", "quoted=with=equals"),
                            ("\n\n  second-line\n", "second-line"),
                            ("sk_ABC==\n", "sk_ABC==")):                    # base64 padding is not a NAME= line
-            with open(f, "w") as fh:
+            with open(f, "w", encoding="utf-8") as fh:
                 fh.write(text)
             with mock.patch.object(config, "KEY_PATHS", paths):
                 self.assertEqual(jev.key(), (want, name), text)
-        with open(f, "w") as fh:
+        with open(f, "w", encoding="utf-8") as fh:
             fh.write("\n")                                                 # empty file: fall through to the next
         with mock.patch.object(config, "KEY_PATHS", paths):
             self.assertEqual(jev.key(), (KEY, "env:TYPESAFE_API_KEY_LOOP"))
@@ -333,7 +343,8 @@ class JevTest(unittest.TestCase):
         # http.client refuses a header with an embedded newline with a ValueError whose
         # message quotes 'Bearer <key>': the value must never get that far.
         for bad in ("FAKEKEY-abc123\nsecond-line", "FAKEKEY abc123", "FAKEKEY\x1babc", "FAKEKEY-\u00e9"):
-            with self.subTest(bad=bad), mock.patch.dict(os.environ, {"TYPESAFE_API_KEY_LOOP": bad}):
+            with self.subTest(bad=bad), mock.patch.dict(os.environ):
+                _putenv("TYPESAFE_API_KEY_LOOP", bad)
                 with self.assertRaises(jev.JevError) as cm:
                     jev.ask(STATE, Q)
                 self.assertEqual(cm.exception.kind, "no-key")
@@ -441,7 +452,7 @@ class JevTest(unittest.TestCase):
         with self.assertRaises(jev.JevError) as cm:
             jev.ask(STATE, Q)
         self.assertNotIn(KEY, str(cm.exception) + repr(vars(cm.exception)))
-        with open(self.sends) as fh:
+        with open(self.sends, encoding="utf-8") as fh:
             self.assertNotIn(KEY, fh.read())
 
 
@@ -506,7 +517,7 @@ class SignatureGateTest(unittest.TestCase):
         self.key = self.enterContext(mock.patch.object(jev, "key", wraps=jev.key))
 
     def _write(self, line):
-        with open(self.protocol, "w") as fh:
+        with open(self.protocol, "w", encoding="utf-8") as fh:
             fh.write("# PROTOCOL\n\n## 5. Signature\n\n" + line + "\n")
 
     def test_the_real_protocol_has_exactly_one_parseable_signature_line(self):

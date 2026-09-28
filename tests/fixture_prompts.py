@@ -16,7 +16,7 @@ def pin_v1(testcase):
     root = os.path.join(testcase.enterContext(tempfile.TemporaryDirectory()), "prompts")
     os.makedirs(root)
     shutil.copy(V1, root)
-    with open(os.path.join(root, "CURRENT"), "w") as fh:
+    with open(os.path.join(root, "CURRENT"), "w", encoding="utf-8") as fh:
         fh.write("v1\n")
     testcase.enterContext(mock.patch.object(config, "PROMPTS", root))
     return root

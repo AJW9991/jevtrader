@@ -66,7 +66,7 @@ def synthetic_log():
 
 def _write_log(path, rows):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as fh:
+    with open(path, "w", encoding="utf-8") as fh:
         for r in rows:
             fh.write(json.dumps(r) + "\n")
 
@@ -105,7 +105,7 @@ def _sh_env(tc, tmp=None, **extra):
     env.update(extra)
     if tmp is not None and not os.access("/usr/bin/caffeinate", os.X_OK):
         stub = os.path.join(tmp, "caffeinate")
-        with open(stub, "w") as fh:
+        with open(stub, "w", encoding="utf-8") as fh:
             fh.write('#!/bin/bash\n[ "$1" = "-i" ] && shift\nexec "$@"\n')
         os.chmod(stub, 0o755)
         env["JEVLOOP_CAFFEINATE"] = stub
@@ -269,12 +269,12 @@ class DigestTest(unittest.TestCase):
         with redirect_stdout(io.StringIO()):
             rc = digest.main(["--date", "2026-09-22", "--log", self.log, "--out", out])
         self.assertEqual(rc, 0)
-        with open(out) as fh:
+        with open(out, encoding="utf-8") as fh:
             self.assertIn("B disagreements 3", fh.read())
         with redirect_stdout(io.StringIO()):
             rc = digest.main(["--date", "2026-09-22", "--log", os.path.join(self.tmp, "none.jsonl"), "--out", out])
         self.assertEqual(rc, digest.EXIT_EMPTY)
-        with open(out) as fh:
+        with open(out, encoding="utf-8") as fh:
             text = fh.read()
         self.assertIn("ticks 0", text)
         self.assertIn("(none)", text)
@@ -304,7 +304,7 @@ class PolicyTableTest(unittest.TestCase):
         self.enterContext(mock.patch.object(config, "HALT", self.halt))
         pin_v1(self)                                                 # current_action() reads CURRENT: pin it to v1
         self.prop = os.path.join(self.tmp, "2026-09-22.json")
-        with open(self.prop, "w") as fh:
+        with open(self.prop, "w", encoding="utf-8") as fh:
             json.dump({"candidates": [CAND]}, fh)
 
     def test_a_send_past_the_mocked_ask_meets_two_walls(self):
@@ -382,7 +382,7 @@ class PolicyTableTest(unittest.TestCase):
         self.assertEqual(self.ask.call_count, 81)
         for call in self.ask.call_args_list:
             self.assertEqual(list(call.args[1]), ["cand_0", "current"])
-        with open(out) as fh:
+        with open(out, encoding="utf-8") as fh:
             text = fh.read()
         self.assertIn("differs from rule_c on 0 of 81 answered states", text)          # current
         self.assertIn("differs from CURRENT on 57 of 81 answered states; from rule_c on 57 of 81", text)
@@ -403,11 +403,11 @@ class PolicyTableTest(unittest.TestCase):
             rc = policy_table.main([self.prop, "--out", out])
         self.assertEqual(rc, policy_table.EXIT_INCOMPLETE)
         self.assertEqual(self.ask.call_count, 1)
-        with open(out) as fh:
+        with open(out, encoding="utf-8") as fh:
             text = fh.read()
         self.assertIn("INCOMPLETE", text)
         self.assertIn("errors: 81", text)
-        with open(self.halt) as fh:                                   # the caller writes HALT (CONTRACT §2)
+        with open(self.halt, encoding="utf-8") as fh:                                   # the caller writes HALT (CONTRACT §2)
             reason = fh.read()
         self.assertIn("key rejected", reason)
         self.assertIn("401", reason)
@@ -415,7 +415,7 @@ class PolicyTableTest(unittest.TestCase):
     def test_halt_present_sends_nothing(self):
         # PROTOCOL §3.8: HALT stops sends. These never reach decisions.jsonl, so the spend
         # guard cannot see them; without this check the nightly sent 81 after a HALT.
-        with open(self.halt, "w") as fh:
+        with open(self.halt, "w", encoding="utf-8") as fh:
             fh.write("spend: by hand\n")
         out = os.path.join(self.tmp, "t.md")
         buf = io.StringIO()
@@ -468,7 +468,7 @@ class PolicyTableTest(unittest.TestCase):
             self.assertEqual(policy_table.main([self.prop, "--out", out]), 0)
         with open(self.prop, "rb") as fh:
             sha = hashlib.sha256(fh.read()).hexdigest()
-        with open(out) as fh:
+        with open(out, encoding="utf-8") as fh:
             self.assertIn(f"proposal sha256: {sha}", fh.read())
 
     def test_transient_error_continues(self):
@@ -505,7 +505,7 @@ class PolicyTableTest(unittest.TestCase):
         for bad in ({"candidates": []}, {"candidates": [CAND] * 4},
                     {"candidates": [{**CAND, "criteria": {"yes": "a", "no": "b"}}]},
                     {"candidates": [{**CAND, "instructions": "wait 15 minutes"}]}):
-            with open(self.prop, "w") as fh:
+            with open(self.prop, "w", encoding="utf-8") as fh:
                 json.dump(bad, fh)
             with redirect_stdout(io.StringIO()):
                 self.assertEqual(policy_table.main([self.prop]), 1)
@@ -525,7 +525,7 @@ class PolicyTableTest(unittest.TestCase):
         def fake(s, qs, **kw):
             calls.append(s)
             if len(calls) == 3:
-                with open(self.halt, "w") as fh:
+                with open(self.halt, "w", encoding="utf-8") as fh:
                     fh.write("spend: by hand, mid-table\n")
             return self._answers(s)
         self.ask.side_effect = fake
@@ -534,7 +534,7 @@ class PolicyTableTest(unittest.TestCase):
             rc = policy_table.main([self.prop, "--out", out])
         self.assertEqual(rc, policy_table.EXIT_INCOMPLETE)
         self.assertEqual(len(calls), 3)                                  # the fourth state found HALT: no send
-        with open(out) as fh:
+        with open(out, encoding="utf-8") as fh:
             text = fh.read()
         self.assertIn("requests: 81, answered: 3, errors: 78 -- INCOMPLETE", text)
         self.assertIn("error kinds: halt", text)
@@ -580,14 +580,14 @@ class PolicyTableTest(unittest.TestCase):
 
         def fake(s, qs, **kw):
             if self.ask.call_count == 1:
-                with open(self.prop, "w") as fh:
+                with open(self.prop, "w", encoding="utf-8") as fh:
                     json.dump({"candidates": [{**CAND, "rationale": "rewritten mid-table"}]}, fh)
             return self._answers(s)
         self.ask.side_effect = fake
         out = os.path.join(self.tmp, "t.md")
         with redirect_stdout(io.StringIO()):
             self.assertEqual(policy_table.main([self.prop, "--out", out]), 0)
-        with open(out) as fh:
+        with open(out, encoding="utf-8") as fh:
             text = fh.read()
         self.assertIn(f"proposal sha256: {hashlib.sha256(original).hexdigest()}", text)
         self.assertIn("rationale: test", text)
@@ -599,13 +599,13 @@ class PolicyTableTest(unittest.TestCase):
         out = os.path.join(self.tmp, "t.md")
         with redirect_stdout(io.StringIO()):
             self.assertEqual(policy_table.main([self.prop, "--out", out]), 0)
-        with open(out) as fh:
+        with open(out, encoding="utf-8") as fh:
             text = fh.read()
         self.assertIn(f"model answered: no model named on 81 -- DRIFT, requested {config.MODEL}", text)
         self.ask.side_effect = lambda s, qs, **kw: self._answers(s, model=None if s.endswith("calm") else config.MODEL)
         with redirect_stdout(io.StringIO()):
             self.assertEqual(policy_table.main([self.prop, "--out", out]), 0)
-        with open(out) as fh:
+        with open(out, encoding="utf-8") as fh:
             text = fh.read()
         self.assertIn(f"model answered: {config.MODEL}, no model named on 27 -- DRIFT", text)
 
@@ -631,10 +631,10 @@ class PromoteTest(unittest.TestCase):
         self.root = os.path.join(self.tmp, "prompts")
         os.makedirs(self.root)
         shutil.copy(os.path.join(REPO, "prompts", "v1.json"), self.root)
-        with open(os.path.join(self.root, "CURRENT"), "w") as fh:  # v1, not the live CURRENT (v2 since 2026-09-26)
+        with open(os.path.join(self.root, "CURRENT"), "w", encoding="utf-8") as fh:  # v1, not the live CURRENT (v2 since 2026-09-26)
             fh.write("v1\n")
         self.prop = os.path.join(self.tmp, "2026-09-22.json")
-        with open(self.prop, "w") as fh:
+        with open(self.prop, "w", encoding="utf-8") as fh:
             json.dump({"candidates": [CAND, {**CAND, "instructions": "Second candidate."}]}, fh)
         self.enterContext(mock.patch.object(sys, "path", list(sys.path)))   # bin/promote inserts REPO at import
         self.promote = _load_promote()
@@ -657,7 +657,7 @@ class PromoteTest(unittest.TestCase):
 
     def test_the_committed_table_vouches_for_the_json(self):
         md = self.prop[:-5] + ".md"
-        with open(md, "w") as fh:
+        with open(md, "w", encoding="utf-8") as fh:
             fh.write("# policy table\n\nproposal sha256: " + "0" * 64 + "  \n")
         rc, _, err = self._run(self.prop, "0", "--prompts", self.root)
         self.assertEqual(rc, 1)
@@ -665,7 +665,7 @@ class PromoteTest(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.root, "v2.json")))
         with open(self.prop, "rb") as fh:
             sha = hashlib.sha256(fh.read()).hexdigest()
-        with open(md, "w") as fh:
+        with open(md, "w", encoding="utf-8") as fh:
             fh.write("# policy table\n\nproposal sha256: " + sha + "  \n")
         rc, _, err = self._run(self.prop, "0", "--prompts", self.root)
         self.assertEqual(rc, 0)
@@ -682,7 +682,7 @@ class PromoteTest(unittest.TestCase):
         with open(self.prop, "rb") as fh:
             sha = hashlib.sha256(fh.read()).hexdigest()
         md = self.prop[:-5] + ".md"
-        with open(md, "w") as fh:
+        with open(md, "w", encoding="utf-8") as fh:
             fh.write("# policy table\n\nproposal sha256: " + sha + "  \n"
                      "requests: 81, answered: 2, errors: 79 -- INCOMPLETE  \n")
         rc, _, err = self._run(self.prop, "0", "--prompts", self.root)
@@ -698,7 +698,7 @@ class PromoteTest(unittest.TestCase):
             rc, _, _ = self._run(self.prop, "0", "--prompts", self.root)
         self.assertEqual(rc, 0)
         rep.assert_called_once_with(tmp, current)
-        with open(current) as fh:
+        with open(current, encoding="utf-8") as fh:
             self.assertEqual(fh.read(), "v2\n")
         self.assertFalse(os.path.exists(tmp))
         # a rename that fails leaves CURRENT exactly as it was, and no CURRENT.tmp behind
@@ -706,7 +706,7 @@ class PromoteTest(unittest.TestCase):
             rc, _, err = self._run(self.prop, "0", "--prompts", self.root)
         self.assertEqual(rc, 1)
         self.assertIn("could not switch CURRENT (disk full); CURRENT still names v2", err)
-        with open(current) as fh:
+        with open(current, encoding="utf-8") as fh:
             self.assertEqual(fh.read(), "v2\n")
         self.assertFalse(os.path.exists(tmp))
         self.assertTrue(os.path.exists(os.path.join(self.root, "v3.json")))
@@ -757,9 +757,9 @@ class PromoteTest(unittest.TestCase):
         rc, out, _ = self._run(self.prop, "1", "--prompts", self.root)
         self.assertEqual(rc, 0, out)
         self.assertEqual(prompts.current(self.root), "v2")
-        with open(os.path.join(self.root, "v1.json")) as fh:
+        with open(os.path.join(self.root, "v1.json"), encoding="utf-8") as fh:
             t1 = fh.read()
-        with open(os.path.join(self.root, "v2.json")) as fh:
+        with open(os.path.join(self.root, "v2.json"), encoding="utf-8") as fh:
             t2 = fh.read()
         for q in ("skip", "up15", "down15"):
             self.assertEqual(_block(t1, q), _block(t2, q))
@@ -768,7 +768,8 @@ class PromoteTest(unittest.TestCase):
         self.assertEqual(v2["version"], "v2")
         self.assertEqual(v2["action"], {"type": "choice", "instructions": "Second candidate.", "criteria": CAND["criteria"]})
         self.assertIn("candidate 1", v2["note"])
-        self.assertEqual(t1, open(os.path.join(REPO, "prompts", "v1.json")).read())   # v1 untouched
+        with open(os.path.join(REPO, "prompts", "v1.json"), encoding="utf-8") as fh:
+            self.assertEqual(t1, fh.read())                                    # v1 untouched
         qs = prompts.build(v1, v2)                                             # and the loop can build from it
         self.assertEqual(qs["b_action"]["instructions"], "Second candidate.")
         self.assertEqual(qs["a_action"], prompts.question(v1["action"], "choice"))
@@ -794,7 +795,7 @@ class PromoteTest(unittest.TestCase):
 
     def test_numbers_from_highest_file_not_current(self):
         self._run(self.prop, "0", "--prompts", self.root)                     # v2
-        with open(os.path.join(self.root, "CURRENT"), "w") as fh:
+        with open(os.path.join(self.root, "CURRENT"), "w", encoding="utf-8") as fh:
             fh.write("v1\n")                                                    # rolled back by hand
         rc, out, _ = self._run(self.prop, "0", "--prompts", self.root)
         self.assertEqual(rc, 0)
@@ -805,7 +806,7 @@ class PromoteTest(unittest.TestCase):
         rc, _, err = self._run(self.prop, "2", "--prompts", self.root)
         self.assertEqual(rc, 1)
         self.assertIn("no candidate 2", err)
-        with open(self.prop, "w") as fh:
+        with open(self.prop, "w", encoding="utf-8") as fh:
             json.dump({"candidates": [{**CAND, "instructions": "wait 15 minutes"}]}, fh)
         rc, _, err = self._run(self.prop, "0", "--prompts", self.root)
         self.assertEqual(rc, 1)
@@ -821,7 +822,7 @@ class ProposeDryTest(unittest.TestCase):
                             "--date", "2026-09-22", "--root", tmp],
                            cwd=tmp, capture_output=True, text=True, timeout=120, env=_sh_env(self))
         self.assertEqual(r.returncode, 0, r.stderr)
-        with open(os.path.join(tmp, "proposals", "2026-09-22.json")) as fh:
+        with open(os.path.join(tmp, "proposals", "2026-09-22.json"), encoding="utf-8") as fh:
             doc = json.load(fh)
         self.assertEqual(list(doc), ["candidates"])
         self.assertEqual(len(doc["candidates"]), 1)
@@ -831,7 +832,7 @@ class ProposeDryTest(unittest.TestCase):
         self.assertIn("liquidity is deep", c["criteria"]["buy"])
         self.assertFalse(any(ch.isdigit() for ch in c["instructions"] + "".join(c["criteria"].values())))
         policy_table.load_candidates(os.path.join(tmp, "proposals", "2026-09-22.json"))   # the table accepts it
-        with open(os.path.join(tmp, "logs", "propose.log")) as fh:
+        with open(os.path.join(tmp, "logs", "propose.log"), encoding="utf-8") as fh:
             log = fh.read()
         self.assertIn("OK proposals/2026-09-22.json", log)
         self.assertIn("dry: 81 payloads, 0 sent", log)
@@ -871,26 +872,26 @@ class ProposeDryTest(unittest.TestCase):
         tmp = self.enterContext(tempfile.TemporaryDirectory())
         _write_log(os.path.join(tmp, "data", "decisions.jsonl"), synthetic_log())
         os.makedirs(os.path.join(tmp, "proposals"))
-        with open(os.path.join(tmp, "proposals", "2026-09-22.md"), "w") as fh:
+        with open(os.path.join(tmp, "proposals", "2026-09-22.md"), "w", encoding="utf-8") as fh:
             fh.write("# policy table 2026-09-22\n")
         r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry", "--date", "2026-09-22", "--root", tmp],
                            cwd=tmp, capture_output=True, text=True, timeout=120, env=_sh_env(self))
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("FAIL proposals/2026-09-22.md exists (the committed table)", r.stderr)
         self.assertFalse(os.path.exists(os.path.join(tmp, "proposals", "2026-09-22.json")))
-        with open(os.path.join(tmp, "proposals", "2026-09-22.md")) as fh:
+        with open(os.path.join(tmp, "proposals", "2026-09-22.md"), encoding="utf-8") as fh:
             self.assertEqual(fh.read(), "# policy table 2026-09-22\n")
 
     def test_halt_present_skips_the_table(self):
         tmp = self.enterContext(tempfile.TemporaryDirectory())
         _write_log(os.path.join(tmp, "data", "decisions.jsonl"), synthetic_log())
-        with open(os.path.join(tmp, "data", "HALT"), "w") as fh:
+        with open(os.path.join(tmp, "data", "HALT"), "w", encoding="utf-8") as fh:
             fh.write("by hand\n")
         r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry",
                             "--date", "2026-09-22", "--root", tmp],
                            cwd=tmp, capture_output=True, text=True, timeout=120, env=_sh_env(self))
         self.assertEqual(r.returncode, 0, r.stderr)
-        with open(os.path.join(tmp, "logs", "propose.log")) as fh:
+        with open(os.path.join(tmp, "logs", "propose.log"), encoding="utf-8") as fh:
             log = fh.read()
         self.assertIn("HALT present", log)
         self.assertNotIn("dry: 81 payloads", log)                    # policy_table.py never ran
@@ -908,7 +909,7 @@ class ProposeDryTest(unittest.TestCase):
                             "--date", "2026-09-22", "--root", tmp],
                            cwd=tmp, capture_output=True, text=True, timeout=120, env=_sh_env(self))
         self.assertEqual(r.returncode, 0, r.stderr)
-        with open(os.path.join(tmp, "logs", "propose.log")) as fh:
+        with open(os.path.join(tmp, "logs", "propose.log"), encoding="utf-8") as fh:
             log = fh.read()
         self.assertIn("OK proposals/2026-09-22.json", log)
         self.assertIn("dash: loop.dash exit", log)
@@ -919,7 +920,7 @@ class ProposeDryTest(unittest.TestCase):
         r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--bogus"],
                            capture_output=True, text=True, timeout=30, env=_sh_env(self))
         self.assertEqual(r.returncode, 2)
-        with open(os.path.join(REPO, "nightly", "propose.sh")) as fh:
+        with open(os.path.join(REPO, "nightly", "propose.sh"), encoding="utf-8") as fh:
             src = fh.read()
         self.assertIn('--tools ""', src)
         self.assertNotIn("echo $CLAUDE_CODE_OAUTH_TOKEN", src)
@@ -982,10 +983,10 @@ class ProposeDryTest(unittest.TestCase):
         tmp = self.enterContext(tempfile.TemporaryDirectory())
         _write_log(os.path.join(tmp, "data", "decisions.jsonl"), synthetic_log())
         os.makedirs(os.path.join(tmp, "proposals"))
-        with open(os.path.join(tmp, "proposals", "2026-09-21.md"), "w") as fh:
+        with open(os.path.join(tmp, "proposals", "2026-09-21.md"), "w", encoding="utf-8") as fh:
             fh.write("# policy table 2026-09-21\n")
         self.assertEqual(self._dry(tmp).returncode, 0)
-        with open(os.path.join(tmp, "logs", "propose.log")) as fh:
+        with open(os.path.join(tmp, "logs", "propose.log"), encoding="utf-8") as fh:
             self.assertNotIn("note: no proposal exists", fh.read())
 
 
@@ -1032,10 +1033,10 @@ class LiveBranch(unittest.TestCase):
         self.tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.tmp, True)                  # holds a fake token and a stub claude
         _write_log(os.path.join(self.tmp, "data", "decisions.jsonl"), synthetic_log())
-        with open(os.path.join(self.tmp, "data", "HALT"), "w") as fh:
+        with open(os.path.join(self.tmp, "data", "HALT"), "w", encoding="utf-8") as fh:
             fh.write("test: no sends\n")
         self.token = os.path.join(self.tmp, "token")
-        with open(self.token, "w") as fh:
+        with open(self.token, "w", encoding="utf-8") as fh:
             fh.write(self.TOKEN + "\n")
         self.saw = os.path.join(self.tmp, "saw")                         # what the stub saw: argv, cwd, token
         os.makedirs(self.saw)
@@ -1043,7 +1044,7 @@ class LiveBranch(unittest.TestCase):
 
     def _stub(self, body):
         p = os.path.join(self.tmp, "claude")
-        with open(p, "w") as fh:
+        with open(p, "w", encoding="utf-8") as fh:
             fh.write("#!/bin/bash\n" + body)
         os.chmod(p, 0o755)
         return p
@@ -1059,7 +1060,7 @@ class LiveBranch(unittest.TestCase):
         home = os.path.join(self.tmp, "home")
         os.makedirs(os.path.join(home, ".claude"), exist_ok=True)
         if memory is not None:
-            with open(os.path.join(home, ".claude", "CLAUDE.md"), "w") as fh:
+            with open(os.path.join(home, ".claude", "CLAUDE.md"), "w", encoding="utf-8") as fh:
                 fh.write(memory)
         return home
 
@@ -1067,7 +1068,7 @@ class LiveBranch(unittest.TestCase):
         out = []
         for d in ("logs", "proposals", "data"):
             for f in os.listdir(os.path.join(self.tmp, d)):
-                with open(os.path.join(self.tmp, d, f), errors="replace") as fh:
+                with open(os.path.join(self.tmp, d, f), errors="replace", encoding="utf-8") as fh:
                     out.append(fh.read())
         return "\n".join(out)
 
@@ -1087,7 +1088,7 @@ class LiveBranch(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(os.path.exists(os.path.join(self.saw, "token")), "the stub never saw the token in its environment")
         self.assertTrue(os.path.exists(os.path.join(self.tmp, "proposals", f"{DAY.isoformat()}.json")))
-        with open(os.path.join(self.tmp, "logs", "propose.log")) as fh:
+        with open(os.path.join(self.tmp, "logs", "propose.log"), encoding="utf-8") as fh:
             log = fh.read()
         self.assertIn("claude exit 0 after", log)
         self.assertIn("(cap 2700 s awake)", log)
@@ -1108,11 +1109,11 @@ class LiveBranch(unittest.TestCase):
         for a in argv:
             self.assertNotIn(self.TOKEN, a)
         # the working directory: not the repo, not under it, empty, no CLAUDE.md above it, gone after
-        with open(os.path.join(self.saw, "cwd")) as fh:
+        with open(os.path.join(self.saw, "cwd"), encoding="utf-8") as fh:
             cwd = fh.read().strip()
         self.assertNotEqual(cwd, repo)
         self.assertFalse(cwd.startswith(repo + os.sep), cwd)
-        with open(os.path.join(self.saw, "ls")) as fh:
+        with open(os.path.join(self.saw, "ls"), encoding="utf-8") as fh:
             self.assertEqual(fh.read(), "")
         d = os.path.dirname(cwd)
         while True:
@@ -1130,12 +1131,12 @@ class LiveBranch(unittest.TestCase):
         # auto-loaded like the repo's was. The ancestors are walked and the night fails, nothing sent.
         tmpdir = os.path.join(self.tmp, "tmpbase")
         os.makedirs(tmpdir)
-        with open(os.path.join(tmpdir, "CLAUDE.md"), "w") as fh:
+        with open(os.path.join(tmpdir, "CLAUDE.md"), "w", encoding="utf-8") as fh:
             fh.write("# planted\n")
         stub = self._stub('printf "%s\\0" "$@" >"' + self.saw + '/argv"\necho "{}"\n')
         r = self._run(stub, TMPDIR=tmpdir)
         self.assertEqual(r.returncode, 0, r.stderr)
-        with open(os.path.join(self.tmp, "logs", "propose.log")) as fh:
+        with open(os.path.join(self.tmp, "logs", "propose.log"), encoding="utf-8") as fh:
             log = fh.read()
         self.assertIn("/CLAUDE.md exists above claude's cwd", log)
         self.assertIn("nothing sent", log)
@@ -1179,7 +1180,7 @@ class LiveBranch(unittest.TestCase):
         r = self._run(stub, cap="1")
         self.assertEqual(r.returncode, 0)
         self.assertLess(time.monotonic() - t, 25)
-        with open(os.path.join(self.tmp, "logs", "propose.log")) as fh:
+        with open(os.path.join(self.tmp, "logs", "propose.log"), encoding="utf-8") as fh:
             log = fh.read()
         self.assertIn("claude exit 124 after", log)
         self.assertIn("FAIL claude capped at 1 s awake", log)
@@ -1189,21 +1190,21 @@ class LiveBranch(unittest.TestCase):
         stub = self._stub('pwd -P >"%s/cwd"; echo boom >&2; exit 7\n' % self.saw)
         r = self._run(stub, HOME=self._home())
         self.assertEqual(r.returncode, 0)
-        with open(os.path.join(self.tmp, "logs", "propose.log")) as fh:
+        with open(os.path.join(self.tmp, "logs", "propose.log"), encoding="utf-8") as fh:
             log = fh.read()
         self.assertIn("FAIL claude exit 7", log)
         self.assertIn("CLAUDE.md absent; cli unknown", log)                  # no user memory; --version failed too
-        with open(os.path.join(self.saw, "cwd")) as fh:
+        with open(os.path.join(self.saw, "cwd"), encoding="utf-8") as fh:
             self.assertFalse(os.path.exists(fh.read().strip()), "a failed night left its empty cwd behind")
         self.assertTrue(os.path.exists(os.path.join(self.tmp, "data", "dash.html")))   # a failed night rebuilds it too
-        with open(os.path.join(self.tmp, "logs", f"claude-{DAY.isoformat()}.err")) as fh:
+        with open(os.path.join(self.tmp, "logs", f"claude-{DAY.isoformat()}.err"), encoding="utf-8") as fh:
             self.assertIn("boom", fh.read())
 
     def test_a_reply_without_one_json_block_is_invalid(self):
         stub = self._stub('echo "no block here"\n')
         r = self._run(stub)
         self.assertEqual(r.returncode, 0)
-        with open(os.path.join(self.tmp, "logs", "propose.log")) as fh:
+        with open(os.path.join(self.tmp, "logs", "propose.log"), encoding="utf-8") as fh:
             self.assertIn("FAIL invalid proposal", fh.read())
 
     def test_a_reply_that_cannot_be_written_leaves_no_json(self):
@@ -1213,22 +1214,22 @@ class LiveBranch(unittest.TestCase):
                           ' "criteria": {"buy": "pumping", "sell": "dumping", "hold": "else"}}]}\n```\nEOF\n')
         r = self._run(stub)
         self.assertEqual(r.returncode, 0)
-        with open(os.path.join(self.tmp, "logs", "propose.log")) as fh:
+        with open(os.path.join(self.tmp, "logs", "propose.log"), encoding="utf-8") as fh:
             self.assertIn("FAIL invalid proposal", fh.read())
         self.assertEqual([f for f in os.listdir(os.path.join(self.tmp, "proposals")) if f.startswith(DAY.isoformat())], [])
 
     def test_a_day_that_has_a_json_spends_no_claude_call(self):
         prop = os.path.join(self.tmp, "proposals", f"{DAY.isoformat()}.json")
         os.makedirs(os.path.dirname(prop))
-        with open(prop, "w") as fh:
+        with open(prop, "w", encoding="utf-8") as fh:
             fh.write('{"candidates": "the first run\'s, which a table may vouch for"}\n')
         stub = self._stub('echo called >"%s/called"\n' % self.saw)
         r = self._run(stub)
         self.assertEqual(r.returncode, 0)
         self.assertEqual(os.listdir(self.saw), [])                                 # not even --version
-        with open(prop) as fh:
+        with open(prop, encoding="utf-8") as fh:
             self.assertIn("the first run's", fh.read())
-        with open(os.path.join(self.tmp, "logs", "propose.log")) as fh:
+        with open(os.path.join(self.tmp, "logs", "propose.log"), encoding="utf-8") as fh:
             self.assertIn(f"FAIL proposals/{DAY.isoformat()}.json exists", fh.read())
 
 
@@ -1292,7 +1293,7 @@ class Capped(unittest.TestCase):
         self.assertEqual(r.returncode, 128 + 15)
 
     def test_propose_sh_rebuilds_the_dash_at_the_end_of_every_night_non_fatally(self):
-        with open(os.path.join(REPO, "nightly", "propose.sh")) as fh:
+        with open(os.path.join(REPO, "nightly", "propose.sh"), encoding="utf-8") as fh:
             src = fh.read()
         code = [l for l in src.splitlines() if not l.lstrip().startswith("#")]
         dash = [l for l in code if "-m loop.dash" in l]
@@ -1317,17 +1318,17 @@ class Capped(unittest.TestCase):
         # and a --dry run against a temp root writes the page there, never into the repo's data/
         tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
-        with open(os.path.join(tmp, "decisions.jsonl"), "w") as fh:
+        with open(os.path.join(tmp, "decisions.jsonl"), "w", encoding="utf-8") as fh:
             pass
         r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry", "--date", "2026-09-22", "--root", tmp],
                            capture_output=True, text=True, timeout=120, env=_sh_env(self))
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(os.path.exists(os.path.join(tmp, "data", "dash.html")))
-        with open(os.path.join(tmp, "logs", "propose.log")) as fh:
+        with open(os.path.join(tmp, "logs", "propose.log"), encoding="utf-8") as fh:
             self.assertIn("note: no proposal exists for 2026-09-21 (a missed slot?); this run is for 2026-09-22 only", fh.read())
 
     def test_propose_sh_guards_repo_root_and_cwd(self):
-        with open(os.path.join(REPO, "nightly", "propose.sh")) as fh:
+        with open(os.path.join(REPO, "nightly", "propose.sh"), encoding="utf-8") as fh:
             code = [l for l in fh.read().splitlines() if not l.lstrip().startswith("#")]
         self.assertEqual([l for l in code if l.startswith("guard_path ")],
                          ['guard_path "$REPO" repo', 'guard_path "$ROOT_REAL" root', 'guard_path "$(pwd -P)" cwd'])
@@ -1343,7 +1344,7 @@ class Capped(unittest.TestCase):
         # The JEVLOOP_* variables are for the suite (here, and on a host without Homebrew or
         # caffeinate). Under launchd the plist sets only PATH, so every one of them is its default,
         # and the defaults must stay the paths STEPS.md installs against.
-        with open(os.path.join(REPO, "nightly", "propose.sh")) as fh:
+        with open(os.path.join(REPO, "nightly", "propose.sh"), encoding="utf-8") as fh:
             src = fh.read()
         for line in ('PY="${JEVLOOP_PY:-/opt/homebrew/bin/python3}"',
                      'CLAUDE="${JEVLOOP_CLAUDE:-/opt/homebrew/bin/claude}"',
@@ -1351,7 +1352,7 @@ class Capped(unittest.TestCase):
                      'TOKEN_FILE="${JEVLOOP_TOKEN_FILE:-$HOME/.secondbrain-secrets/oauth_token}"'):
             self.assertIn(line, src)
         for plist in ("com.alexward.jevloop.loop.plist", "com.alexward.jevloop.nightly.plist"):
-            with open(os.path.join(REPO, "launchd", plist)) as fh:
+            with open(os.path.join(REPO, "launchd", plist), encoding="utf-8") as fh:
                 self.assertNotIn("JEVLOOP", fh.read(), plist)
         # and a --dry run with no knob at all still refuses, in one FAIL line, when the Mac's
         # python is absent, rather than falling back to whatever python3 is on PATH
@@ -1364,7 +1365,7 @@ class Capped(unittest.TestCase):
             self.assertIn("FAIL no python at /opt/homebrew/bin/python3", r.stderr)
 
     def test_propose_sh_wires_the_cap_around_claude_under_caffeinate(self):
-        with open(os.path.join(REPO, "nightly", "propose.sh")) as fh:
+        with open(os.path.join(REPO, "nightly", "propose.sh"), encoding="utf-8") as fh:
             src = fh.read()
         code = [l for l in src.splitlines() if not l.lstrip().startswith("#")]
         call = [l for l in code if '"$CAFFEINATE" -i' in l]

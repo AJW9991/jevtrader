@@ -95,7 +95,7 @@ def _row(m):
 
 
 def _write(path, rows, garbage=True):
-    with open(path, "w") as fh:
+    with open(path, "w", encoding="utf-8") as fh:
         for r in rows:
             fh.write(json.dumps(r) + "\n")
         if garbage:
@@ -198,7 +198,7 @@ class Synthetic(unittest.TestCase):
         self.assertEqual((h["horizon"]["n"], h["horizon"]["mean"], h["horizon"]["max"], h["horizon"]["skips"]), (23, 900.0, 0.0, 0))
         self.assertIn("HALT: absent", text)
         self.assertFalse(h["halt"])
-        with open(halt, "w") as fh:
+        with open(halt, "w", encoding="utf-8") as fh:
             fh.write("spend: $0.2513 of input tokens today\n")
         with mock.patch.object(config, "HALT", halt):
             h = report.health(self.rows, self.outs, self.bad)
@@ -805,7 +805,7 @@ class Degenerate(unittest.TestCase):
     def test_empty_file(self):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "decisions.jsonl")
-            open(p, "w").close()
+            open(p, "w", encoding="utf-8").close()
             code, out = _main(["--log", p])
         self.assertEqual(code, 0)
         self.assertIn("empty log: no rows", out)
@@ -863,7 +863,7 @@ class Withheld(unittest.TestCase):
         _write(cls.pre, [_row(m) for m in MINUTES], garbage=False)
         cls.rows = outcomes.load(cls.log, [])
         cls.unsealed = os.path.join(cls.tmp, "PREREG-unsealed.md")
-        with open(cls.unsealed, "w") as fh:
+        with open(cls.unsealed, "w", encoding="utf-8") as fh:
             fh.write("# PREREG\n\nT0 (first tick_id of day 1): `________`\n")
 
     def _run(self, argv, now):
