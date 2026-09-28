@@ -7,12 +7,14 @@ temporary log with config.DATA and config.DECISIONS pointed into a temporary dir
 import contextlib, datetime, io, os, tempfile, unittest
 from unittest import mock
 
+import test_inference
+from fixture_prereg import pin_prereg
 from loop import inference, outcomes, report
 from test_inference import AFTER_SEALED_END, END, T0, T0S, _at, _edge_rows, _end_rows, _exclusions, _minutes
 from test_report import _write
 
 NOW = "2026-10-21T10:00"                                             # the synthetic sample's end (T0S + 28 d)
-SEALED = report._t0("2026-09-25T21:40")                               # PREREG §11's T0, the repository's seal
+SEALED = report._t0("2026-09-25T21:40")                               # PREREG §11's T0 as the pinned fixture seals it
 
 
 def setUpModule():
@@ -355,6 +357,7 @@ class EmptyLog(unittest.TestCase):
 class MainGuards(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        pin_prereg(cls)                  # the live log's T0 and the sealed-copy guard: the fixture's seal, not the repository's
         cls.none = _exclusions(_path("none-main.tsv"))
         cls.small = _log("small.jsonl", _edge_rows(blocks=4))
 
@@ -422,6 +425,17 @@ class MainGuards(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("rows in scope 50\n", out)
         self.assertIn(" over 50 rows (dropped: gap 0, missing noul 0)", out)
+
+
+class SealUnread(test_inference.SealUnread):
+    """test_inference.SealUnread over this module: every class above, run under a blanked and under a
+    re-sealed PREREG §11 standing in for the repository's (HANDOFF.md and the Makefile rewritten as
+    well), still passes. All of them, not a list, so a class added here is covered the day it is added.
+    MainGuards reads the repository's seal (the live log with no --t0, the sealed-copy guard), so it pins
+    the fixture; it read the real PREREG.md until 2026-09-28: blanked, two of its tests failed, and
+    re-sealed, one."""
+    SEAL_READERS = tuple(c for c in dict(globals()).values()
+                         if isinstance(c, type) and issubclass(c, unittest.TestCase) and c.__module__ == __name__)
 
 
 if __name__ == "__main__":
