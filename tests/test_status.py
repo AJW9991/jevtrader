@@ -177,6 +177,25 @@ class Status(unittest.TestCase):
                 self.assertEqual(status.main(["--log", self.log, "--t0", "2026-09-23T10:00", "--now", "2026-09-23T10:42"]), 0)
             self.assertIn(want, buf.getvalue())
 
+    def test_a_data_dir_this_user_cannot_enter_is_named_not_counted_as_zero(self):
+        # os.path.exists is False on a path under a directory the user cannot enter, so status read
+        # "no log" and printed $0 "as the guard counts it" while the guard counted inf and tripped
+        log = os.path.join(self.tmp, "locked", "decisions.jsonl")
+        real_open = open
+
+        def no_entry(path, *a, **k):
+            if os.path.abspath(str(path)) == log:
+                raise PermissionError(13, "Permission denied", path)
+            return real_open(path, *a, **k)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), mock.patch("builtins.open", side_effect=no_entry), \
+                mock.patch.object(config, "HALT", self.halt), mock.patch.object(config, "DATA", self.tmp), \
+                mock.patch.object(dash, "heartbeat", return_value=None), mock.patch.object(dash, "current_version", return_value="v9"):
+            self.assertEqual(status.main(["--log", log, "--t0", "2026-09-23T10:00", "--now", "2026-09-23T10:42"]), 0)
+        out = buf.getvalue()
+        self.assertTrue(out.startswith(f"LOG UNREADABLE: {log}: "), out[:120])
+        self.assertIn("spend UNREADABLE", out)
+
     def test_an_unreadable_log_is_named_not_a_traceback(self):
         # a 0200 log (write_row still appends to it) or a directory: the spend guard trips on it, and
         # the morning screen says why instead of dying in outcomes.load

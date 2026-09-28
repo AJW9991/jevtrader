@@ -288,6 +288,17 @@ class CycleTest(unittest.TestCase):
         self.assertEqual(cycle.spend_today(NOW, os.path.join(self.tmp, "missing")), 0.0)     # missing is still $0
         self.assertEqual(cycle.spend_today(NOW, self.data), float("inf"))                   # a directory: cannot count
 
+    def test_a_token_count_past_a_floats_range_trips_the_guard_instead_of_crashing(self):
+        # the server reports input_tokens; a count past a float's range made spend_today raise
+        # OverflowError, and every later tick that UTC day exited 1 with no row and no HALT
+        os.makedirs(self.data)
+        with open(config.DECISIONS, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(_row(DAY + "T010000Z", 10 ** 400)) + "\n")
+        self.assertEqual(cycle.spend_today(NOW), float("inf"))
+        self.assertEqual(cycle.main(["--once"]), 0)
+        self.assertEqual(self.rows()[-1]["absence"], "halt")
+        self.assert_nothing_sent()
+
     def test_spend_just_under_limit_proceeds(self):
         os.makedirs(self.data)
         with open(config.DECISIONS, "w", encoding="utf-8") as fh:

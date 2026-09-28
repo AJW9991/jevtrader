@@ -66,7 +66,7 @@ def _today_line(rows, now, log):
     today = [r for r in rows if str(r.get("tick_id", ""))[:8] == day]
     live = sum(1 for r in today if r.get("mode") == "live" and r.get("absence") is None)
     absent = collections.Counter(r["absence"] for r in today if r.get("absence"))
-    usd = cycle.spend_today(now.timestamp(), log) if os.path.exists(log) else 0.0
+    usd = cycle.spend_today(now.timestamp(), log)          # a missing log is $0 there; an unreadable one is inf
     elapsed = max(1, int((now - now.replace(hour=0, minute=0, second=0, microsecond=0)).total_seconds() // config.CADENCE_S))
     return (f"today {now.strftime('%Y-%m-%d')}Z: {len(today)} rows in {elapsed} min ({100.0 * len(today) / elapsed:.0f}%), live answered {live},"
             f" absence " + (", ".join(f"{k} {v}" for k, v in sorted(absent.items())) or "none")
@@ -164,8 +164,11 @@ def main(argv=None, now=None):
     now = now or datetime.datetime.now(datetime.timezone.utc)
     unreadable = None
     try:
-        rows = outcomes.load(args.log, []) if os.path.exists(args.log) else []
-    except OSError as e:                                    # a 0200 log (write_row still appends), a directory, EIO
+        rows = outcomes.load(args.log, [])
+    except FileNotFoundError:
+        rows = []
+    except OSError as e:                                    # a 0200 log (write_row still appends), a directory, EIO,
+                                                            # a data/ this user cannot enter (exists() says False there)
         rows, unreadable = [], f"LOG UNREADABLE: {args.log}: {e.strerror or e}; the spend guard trips (HALT) until it can be read\n"
     outs = outcomes.join(rows)
     text = (unreadable or "") + render(rows, outs, t0, now, dash.heartbeat(), config.HALT, args.log, config.PROPOSALS,

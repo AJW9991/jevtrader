@@ -187,7 +187,10 @@ def spend_today(now, path=None):
     except OSError:
         return math.inf             # it exists and cannot be read: the spend cannot be counted
     tokens = sum(billed_tokens(r) for r in rows if str(r.get("tick_id", ""))[:8] == day)
-    return tokens * config.USD_PER_MTOK / 1e6
+    try:
+        return tokens * config.USD_PER_MTOK / 1e6
+    except OverflowError:                   # a server-reported count past a float's range: over any limit,
+        return math.inf                     # and a raise here would cost every later tick of the day its row
 
 
 def new_row(ts_rx, mode):
