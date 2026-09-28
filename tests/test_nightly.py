@@ -421,6 +421,104 @@ class PolicyTableTest(unittest.TestCase):
                 self.assertEqual(policy_table.main([self.prop]), 1)
         self.ask.assert_not_called()
 
+    def _answers(self, s, model=config.MODEL):
+        r = {"answers": {"cand_0": _answer("hold", 0.5), "current": _answer(state.rule_c(_by_state()[s]), 0.9)}}
+        if model is not None:
+            r["model"] = model
+        return r
+
+    def test_a_halt_written_mid_table_stops_the_rest(self):
+        # PROTOCOL §3.8: HALT stops sends. main() checks it once before the first send; a HALT a
+        # person or the loop writes while the table runs must stop every send after it too.
+        calls = []
+
+        def fake(s, qs, **kw):
+            calls.append(s)
+            if len(calls) == 3:
+                with open(self.halt, "w") as fh:
+                    fh.write("spend: by hand, mid-table\n")
+            return self._answers(s)
+        self.ask.side_effect = fake
+        out = os.path.join(self.tmp, "t.md")
+        with redirect_stdout(io.StringIO()):
+            rc = policy_table.main([self.prop, "--out", out])
+        self.assertEqual(rc, policy_table.EXIT_INCOMPLETE)
+        self.assertEqual(len(calls), 3)                                  # the fourth state found HALT: no send
+        with open(out) as fh:
+            text = fh.read()
+        self.assertIn("requests: 81, answered: 3, errors: 78 -- INCOMPLETE", text)
+        self.assertIn("error kinds: halt", text)
+        self.urlopen.assert_not_called()
+
+    def test_alternating_error_kinds_end_the_night(self):
+        # timeout resets the "other" run and a 404 resets the transient run, so each per-kind
+        # counter alone never reaches 3; the any-kind counter does.
+        kinds = [("timeout", None), ("http-4xx", 404)]
+        calls = []
+
+        def fake(s, qs, **kw):
+            k, st = kinds[len(calls) % 2]
+            calls.append(s)
+            raise jev.JevError(k, "x", st, "env:X")
+        self.ask.side_effect = fake
+        results = policy_table.run(policy_table.questions(policy_table.load_candidates(self.prop),
+                                                          policy_table.current_action()[1]))
+        self.assertEqual(len(calls), policy_table.MAX_ERROR_RUN)
+        self.assertEqual(policy_table.MAX_ERROR_RUN, 3)
+        self.assertEqual(sum(1 for r in results if r["error"]), 81)
+        self.assertFalse(os.path.exists(self.halt))                      # neither kind is a rejected key
+
+    def test_an_answer_between_errors_resets_the_any_kind_run(self):
+        seq = ["timeout", "http-4xx", "ok"] * 27                          # never three errors in a row
+
+        def fake(s, qs, **kw):
+            k = seq[self.ask.call_count - 1]
+            if k == "ok":
+                return self._answers(s)
+            raise jev.JevError(k, "x", 404 if k == "http-4xx" else None, "env:X")
+        self.ask.side_effect = fake
+        results = policy_table.run(policy_table.questions(policy_table.load_candidates(self.prop),
+                                                          policy_table.current_action()[1]))
+        self.assertEqual(self.ask.call_count, 81)
+        self.assertEqual(sum(1 for r in results if r["answers"]), 27)
+
+    def test_the_sha_is_of_the_bytes_the_candidates_were_read_from(self):
+        # the json is read once: a rewrite while the 81 sends run must not give the table a sha
+        # of bytes it never described (bin/promote trusts that line)
+        with open(self.prop, "rb") as fh:
+            original = fh.read()
+
+        def fake(s, qs, **kw):
+            if self.ask.call_count == 1:
+                with open(self.prop, "w") as fh:
+                    json.dump({"candidates": [{**CAND, "rationale": "rewritten mid-table"}]}, fh)
+            return self._answers(s)
+        self.ask.side_effect = fake
+        out = os.path.join(self.tmp, "t.md")
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(policy_table.main([self.prop, "--out", out]), 0)
+        with open(out) as fh:
+            text = fh.read()
+        self.assertIn(f"proposal sha256: {hashlib.sha256(original).hexdigest()}", text)
+        self.assertIn("rationale: test", text)
+        self.assertNotIn("rewritten mid-table", text)
+
+    def test_an_answer_naming_no_model_is_drift(self):
+        # cycle.py logs drift when the reply's model is not config.MODEL, None included
+        self.ask.side_effect = lambda s, qs, **kw: self._answers(s, model=None)
+        out = os.path.join(self.tmp, "t.md")
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(policy_table.main([self.prop, "--out", out]), 0)
+        with open(out) as fh:
+            text = fh.read()
+        self.assertIn(f"model answered: no model named on 81 -- DRIFT, requested {config.MODEL}", text)
+        self.ask.side_effect = lambda s, qs, **kw: self._answers(s, model=None if s.endswith("calm") else config.MODEL)
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(policy_table.main([self.prop, "--out", out]), 0)
+        with open(out) as fh:
+            text = fh.read()
+        self.assertIn(f"model answered: {config.MODEL}, no model named on 27 -- DRIFT", text)
+
 
 def _load_promote():
     path = os.path.join(REPO, "bin", "promote")
