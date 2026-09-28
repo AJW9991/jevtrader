@@ -484,14 +484,16 @@ def _this_minute_has_its_row(now):
     return len(hb) >= 16 and tick_id(hb) == tick_id(iso_ms(now))
 
 
-def _sleep_to_boundary():
-    """Sleep to the next multiple of CADENCE_S on the wall clock, recomputed from
+def _sleep_to_boundary(now=None):
+    """Sleep to the next multiple of CADENCE_S after `now` (the clock, by default) on the wall clock, recomputed from
     time.time() every round: no accumulated drift, and a 1.3 s tick still fires the
     next one at :00. Loops until the clock has actually crossed the boundary:
     time.sleep can return early (measured 2026-09-24: woke at :59.910 twice in 181
     ticks), and a tick started before :00 floors to the minute just done -- a
-    duplicate send, and the next minute never recorded."""
-    nxt = (int(time.time()) // config.CADENCE_S + 1) * config.CADENCE_S
+    duplicate send, and the next minute never recorded. `now` is the clock a caller already
+    read: a --once fire at :59.9999 must wake at the :00 a hair away, not the one after it, if
+    the boundary passed between the caller's read and this one (that cost the minute a row)."""
+    nxt = (int(time.time() if now is None else now) // config.CADENCE_S + 1) * config.CADENCE_S
     while True:
         left = nxt - time.time()
         if left <= 0:
@@ -519,7 +521,7 @@ def main(argv=None):
         if a.once:                           # launchd's StartCalendarInterval can fire a hair before :00;
             now = time.time()                # started there, the tick would floor to the minute just done
             if now % config.CADENCE_S > config.CADENCE_S - 2 and _this_minute_has_its_row(now):
-                _sleep_to_boundary()         # (only when this minute already has its row: a late fire keeps its minute)
+                _sleep_to_boundary(now)      # (only when this minute already has its row: a late fire keeps its minute)
             return _guarded_tick(a.dry)
         while True:                          # aligned first: a tick at :37 would be one odd row
             _sleep_to_boundary()

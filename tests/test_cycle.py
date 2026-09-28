@@ -538,6 +538,22 @@ class CycleTest(unittest.TestCase):
         self.assertGreaterEqual(clock[0], 1020.0)
         self.assertEqual(int(clock[0]) // config.CADENCE_S, 17)
 
+    def test_sleep_to_boundary_takes_the_boundary_after_the_callers_clock(self):
+        # --once reads the clock at :59.99995, then _sleep_to_boundary reads it again at :00.00005:
+        # computed from the second read, the boundary would be the NEXT :00, a 60 s sleep and a
+        # minute with no row. Given the caller's read, it is the :00 a hair away.
+        clock = [1020.00005]                                   # already past the boundary at 1020
+        slept = []
+        with mock.patch("time.time", side_effect=lambda: clock[0]), \
+             mock.patch("time.sleep", side_effect=slept.append):
+            cycle._sleep_to_boundary(1019.99995)
+        self.assertEqual(slept, [])                            # the boundary has passed: no sleep at all
+        with mock.patch("time.time", side_effect=lambda: clock[0]), \
+             mock.patch("time.sleep", side_effect=lambda s: (slept.append(s), clock.__setitem__(0, clock[0] + s))):
+            cycle._sleep_to_boundary()                         # without it, the next boundary: 1080
+        self.assertEqual(len(slept), 1)
+        self.assertAlmostEqual(slept[0], 59.99995, places=4)
+
     def test_once_fired_a_hair_before_the_minute_waits_for_it(self):
         # Production runs --once from launchd's StartCalendarInterval; a fire at :59.x would
         # take the minute just done (a duplicate) and leave the next one unrecorded. More than
