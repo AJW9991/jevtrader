@@ -1768,7 +1768,11 @@ class LaunchdPlists(unittest.TestCase):
     only for a comment's end), and nothing parsed either file, so a real break, a missing
     </string>, would have reached a hand install unseen. The pinned dicts are the whole of each
     file: a comment may change, a key or a value may not without this test changing with it.
-    plistlib never fetches the DOCTYPE's DTD; nothing here opens a socket."""
+    plistlib alone is looser than Apple's reader: it skips a tag it does not know and drops text
+    between elements, so an arrow '-->' inside a comment, a stray word, or a wrapper element
+    still parsed to the pinned dict, though CoreFoundation's reader, the one plutil and launchd
+    use, refuses each. So every file is also read the way that reader reads it (_strict_problems).
+    Neither parser fetches the DOCTYPE's DTD; nothing here opens a socket."""
     HOME = "/Users/alexanderward/Projects/jev-paper-loop"
     PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
     EXPECTED = {
@@ -1819,6 +1823,102 @@ class LaunchdPlists(unittest.TestCase):
             bad = [text.count("\n", 0, m.start()) + 1 for m in re.finditer(r"<!--(.*?)-->", text, re.S)
                    if "--" in m.group(1) or m.group(1).endswith("-")]
             self.assertEqual(bad, [], f"{name}: a comment starting on these lines holds '--'")
+
+    CONTAINERS = ("plist", "dict", "array")
+    SCALARS = ("key", "string", "integer", "real", "date", "data", "true", "false")
+
+    @classmethod
+    def _strict_problems(cls, raw):
+        """What CoreFoundation's XML plist reader refuses in these bytes and plistlib lets through,
+        one line each: a tag outside the plist vocabulary ('unknown tag'), text that is not
+        whitespace between elements ('unexpected character ... while looking for open tag'), an
+        element, comment or processing instruction inside a key or a scalar, and any text inside
+        <true/> or <false/> (the reader wants the close tag at once). Whitespace is XML's four
+        characters, which is what that reader skips; str.strip's wider set would pass a no-break
+        space. A file that is not well-formed raises here, as it does in plistlib."""
+        from xml.etree import ElementTree as ET
+        ws = " \t\r\n"
+        parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True, insert_pis=True))
+        parser.feed(raw)
+        root = parser.close()
+
+        def named(el, parent):
+            if el is None:
+                return f"the end of <{parent.tag}>"
+            if el.tag is ET.Comment:
+                return f"the comment {(el.text or '').strip(ws)[:30]!r}"
+            if el.tag is ET.PI:
+                return "a processing instruction"
+            return f"<key>{el.text}</key>" if el.tag == "key" else f"<{el.tag}>"
+
+        def snip(text):
+            return repr(text.strip(ws)[:40])
+
+        bad = []
+
+        def walk(el):
+            if not isinstance(el.tag, str):
+                return                                   # a comment or a PI: its parent judges its place
+            if el.tag not in cls.CONTAINERS + cls.SCALARS:
+                bad.append(f"<{el.tag}> is not a plist tag")
+            kids = list(el)
+            if el.tag in cls.SCALARS:
+                if kids:
+                    bad.append(f"<{el.tag}> holds {named(kids[0], el)}")
+                if el.tag in ("true", "false") and el.text:
+                    bad.append(f"<{el.tag}/> holds text {el.text[:40]!r}")
+            else:
+                if (el.text or "").strip(ws):
+                    bad.append(f"text {snip(el.text)} at the start of <{el.tag}>, before "
+                               f"{named(kids[0] if kids else None, el)}")
+                for i, kid in enumerate(kids):
+                    if (kid.tail or "").strip(ws):
+                        after = kids[i + 1] if i + 1 < len(kids) else None
+                        bad.append(f"text {snip(kid.tail)} between {named(kid, el)} and {named(after, el)}")
+            for kid in kids:
+                walk(kid)
+
+        walk(root)
+        return bad
+
+    def test_every_plist_holds_nothing_apples_reader_refuses(self):
+        for name in sorted(self.EXPECTED):
+            with self.subTest(plist=name):
+                with open(os.path.join(REPO, "launchd", name), "rb") as fh:
+                    self.assertEqual(self._strict_problems(fh.read()), [], name)
+
+    # a small plist in the shape of the real two, and edits of it that plistlib reads to the same
+    # dict while CoreFoundation refuses them: the first three are the independent checker's
+    SAMPLE = (b'<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0">\n<dict>\n'
+              b'  <!-- a comment -->\n  <key>Label</key>\n  <string>x</string>\n\n'
+              b'  <key>RunAtLoad</key>\n  <true/>\n\n'
+              b'  <key>EnvironmentVariables</key>\n  <dict>\n    <key>PATH</key>\n'
+              b'    <string>/bin</string>\n  </dict>\n</dict>\n</plist>\n')
+    LOOSE = {   # what: (bytes found once in SAMPLE, what replaces them, what the refusal names)
+        "an arrow inside a comment": (b"a comment -->", b"a comment. A --> B -->", "'B -->'"),
+        "a bare word on its own line": (b"\n  <key>RunAtLoad</key>", b"\n  oops\n  <key>RunAtLoad</key>",
+                                        "'oops' between <string> and <key>RunAtLoad</key>"),
+        "an unknown wrapper element": (b"<string>/bin</string>", b"<foo><string>/bin</string></foo>",
+                                       "<foo> is not a plist tag"),
+        "a word at the start of <plist>": (b'<plist version="1.0">\n', b'<plist version="1.0">\noops\n',
+                                           "'oops' at the start of <plist>"),
+        "a no-break space between elements": (b"\n\n  <key>RunAtLoad</key>", b"\n\xc2\xa0\n  <key>RunAtLoad</key>",
+                                              "'\\xa0' between <string>"),
+        "a comment inside a string": (b"<string>/bin</string>", b"<string>/b<!-- c -->in</string>",
+                                      "<string> holds the comment 'c'"),
+        "a space inside <true/>": (b"<true/>", b"<true> </true>", "<true/> holds text ' '"),
+    }
+
+    def test_the_strict_read_refuses_what_plistlib_lets_through(self):
+        self.assertEqual(self._strict_problems(self.SAMPLE), [])
+        want = self._typed(plistlib.loads(self.SAMPLE, fmt=plistlib.FMT_XML))
+        for what, (line, edit, named) in self.LOOSE.items():
+            with self.subTest(edit=what):
+                self.assertEqual(self.SAMPLE.count(line), 1)
+                raw = self.SAMPLE.replace(line, edit)
+                self.assertEqual(self._typed(plistlib.loads(raw, fmt=plistlib.FMT_XML)), want)   # the gap
+                problems = self._strict_problems(raw)
+                self.assertTrue(any(named in p for p in problems), problems)
 
 
 if __name__ == "__main__":
