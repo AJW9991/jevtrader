@@ -4,7 +4,7 @@ synthetic log that shows it: the empty series, the day bounds of data/exclusions
 a block's last minute, H1's and H2's descriptive counts, the pending-unit guard at its edges, the
 printed verdicts, and main's argument and clock guards at their boundaries. Every run reads a
 temporary log with config.DATA and config.DECISIONS pointed into a temporary directory."""
-import contextlib, datetime, io, os, tempfile, unittest
+import contextlib, datetime, io, os, sys, tempfile, unittest
 from unittest import mock
 
 import test_inference
@@ -430,12 +430,27 @@ class MainGuards(unittest.TestCase):
 class SealUnread(test_inference.SealUnread):
     """test_inference.SealUnread over this module: every class above, run under a blanked and under a
     re-sealed PREREG §11 standing in for the repository's (HANDOFF.md and the Makefile rewritten as
-    well), still passes. All of them, not a list, so a class added here is covered the day it is added.
+    well), still passes. All of them, not a list, found when the test runs rather than when this class is
+    defined, so a class added anywhere in this module, above this one or below it, is covered the day it
+    is added (a sweep at definition time missed every class below it: round-4c checker, 2026-09-28).
     MainGuards reads the repository's seal (the live log with no --t0, the sealed-copy guard), so it pins
     the fixture; it read the real PREREG.md until 2026-09-28: blanked, two of its tests failed, and
     re-sealed, one."""
-    SEAL_READERS = tuple(c for c in dict(globals()).values()
-                         if isinstance(c, type) and issubclass(c, unittest.TestCase) and c.__module__ == __name__)
+
+    @property
+    def SEAL_READERS(self):
+        return tuple(c for c in vars(sys.modules[__name__]).values()
+                     if isinstance(c, type) and issubclass(c, unittest.TestCase) and c.__module__ == __name__
+                     and not issubclass(c, test_inference.SealUnread))
+
+    def test_a_class_added_below_this_one_is_swept_too(self):
+        late = type("AddedBelow", (unittest.TestCase,), {"__module__": __name__, "test_x": lambda self: None})
+        setattr(sys.modules[__name__], "AddedBelow", late)
+        self.addCleanup(delattr, sys.modules[__name__], "AddedBelow")
+        readers = self.SEAL_READERS
+        self.assertIn(late, readers)
+        self.assertIn(MainGuards, readers)
+        self.assertNotIn(SealUnread, readers)                          # never itself: it would run itself forever
 
 
 if __name__ == "__main__":
