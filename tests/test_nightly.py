@@ -1771,7 +1771,8 @@ class LaunchdPlists(unittest.TestCase):
     plistlib alone is looser than Apple's reader: it skips a tag it does not know and drops text
     between elements, so an arrow '-->' inside a comment, a stray word, or a wrapper element
     still parsed to the pinned dict, though CoreFoundation's reader, the one plutil and launchd
-    use, refuses each. So every file is also read the way that reader reads it (_strict_problems).
+    use, refuses each. So every file is also read closer to the way that reader reads it
+    (_strict_problems, whose docstring says what it checks and the two things it does not).
     Neither parser fetches the DOCTYPE's DTD; nothing here opens a socket."""
     HOME = "/Users/alexanderward/Projects/jev-paper-loop"
     PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
@@ -1833,11 +1834,17 @@ class LaunchdPlists(unittest.TestCase):
         one line each: a tag outside the plist vocabulary ('unknown tag'), text that is not
         whitespace between elements ('unexpected character ... while looking for open tag'), an
         element, comment or processing instruction inside a key or a scalar, and any text inside
-        <true/> or <false/> (the reader wants the close tag at once). Whitespace is XML's four
-        characters, which is what that reader skips; str.strip's wider set would pass a no-break
-        space. A file that is not well-formed raises here, as it does in plistlib."""
+        <true/> or <false/> (the reader wants the close tag at once), an <integer> that is not an
+        optionally signed decimal or 0x number after optional leading whitespace (Python's int() also
+        takes a trailing space or an underscore), and a <plist> that holds other than one object
+        (plistlib keeps the last). Whitespace is XML's four characters, which is what that reader
+        skips; str.strip's wider set would pass a no-break space. Not checked: a character reference
+        (&#32;) or a CDATA section between elements, which the XML parser decodes before this check
+        sees the text, though CoreFoundation refuses both. A file that is not well-formed raises here,
+        as it does in plistlib."""
         from xml.etree import ElementTree as ET
         ws = " \t\r\n"
+        integer = re.compile(r"[ \t\r\n]*[+-]?[ \t\r\n]*(?:0[xX][0-9a-fA-F]+|[0-9]+)")
         parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True, insert_pis=True))
         parser.feed(raw)
         root = parser.close()
@@ -1867,6 +1874,8 @@ class LaunchdPlists(unittest.TestCase):
                     bad.append(f"<{el.tag}> holds {named(kids[0], el)}")
                 if el.tag in ("true", "false") and el.text:
                     bad.append(f"<{el.tag}/> holds text {el.text[:40]!r}")
+                if el.tag == "integer" and not integer.fullmatch(el.text or ""):
+                    bad.append(f"<integer> holds {(el.text or '')[:40]!r}")
             else:
                 if (el.text or "").strip(ws):
                     bad.append(f"text {snip(el.text)} at the start of <{el.tag}>, before "
@@ -1878,6 +1887,10 @@ class LaunchdPlists(unittest.TestCase):
             for kid in kids:
                 walk(kid)
 
+        if root.tag == "plist":
+            n = sum(1 for kid in root if isinstance(kid.tag, str))
+            if n != 1:
+                bad.append(f"<plist> holds {n} objects")
         walk(root)
         return bad
 
@@ -1893,7 +1906,8 @@ class LaunchdPlists(unittest.TestCase):
               b'  <!-- a comment -->\n  <key>Label</key>\n  <string>x</string>\n\n'
               b'  <key>RunAtLoad</key>\n  <true/>\n\n'
               b'  <key>EnvironmentVariables</key>\n  <dict>\n    <key>PATH</key>\n'
-              b'    <string>/bin</string>\n  </dict>\n</dict>\n</plist>\n')
+              b'    <string>/bin</string>\n  </dict>\n  <key>StartInterval</key>\n  <integer>60</integer>\n'
+              b'</dict>\n</plist>\n')
     LOOSE = {   # what: (bytes found once in SAMPLE, what replaces them, what the refusal names)
         "an arrow inside a comment": (b"a comment -->", b"a comment. A --> B -->", "'B -->'"),
         "a bare word on its own line": (b"\n  <key>RunAtLoad</key>", b"\n  oops\n  <key>RunAtLoad</key>",
@@ -1907,6 +1921,10 @@ class LaunchdPlists(unittest.TestCase):
         "a comment inside a string": (b"<string>/bin</string>", b"<string>/b<!-- c -->in</string>",
                                       "<string> holds the comment 'c'"),
         "a space inside <true/>": (b"<true/>", b"<true> </true>", "<true/> holds text ' '"),
+        "a space before </integer>": (b"<integer>60</integer>", b"<integer>60 </integer>", "<integer> holds '60 '"),
+        "an underscore in an integer": (b"<integer>60</integer>", b"<integer>6_0</integer>", "<integer> holds '6_0'"),
+        "a second object in <plist>": (b'<plist version="1.0">\n<dict>', b'<plist version="1.0">\n<true/>\n<dict>',
+                                       "<plist> holds 2 objects"),
     }
 
     def test_the_strict_read_refuses_what_plistlib_lets_through(self):
