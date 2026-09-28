@@ -45,11 +45,13 @@ Written 2026-09-28 by Claude (Fable 5.1) in a CLOUD session on branch `claude/co
 
 ## Day 28 (`make results`, after 2026-10-23 21:55Z)
 `loop.inference --sample` now refuses while the last block's H2 unit still waits for its t + h
-row (~15 min after the sample ends), refuses `--now`, another `--t0` or `--resamples` on the
+row (~30 s after the sample ends normally, up to ~15.5 min when the last block's first live
+row is in its last minute), refuses `--now`, another `--t0` or `--resamples` on the
 live log, reads the log once and prints its sha/bytes/last tick, prints the stop rules and
 §9's reading on lines of their own (VOID-prefixed under 21 kept days), and lists per kept day
-the blocks with a live row. The draw is unchanged at 10,000 resamples (byte-identical output,
-pinned by tests/test_inference_golden.py against an independent transcription of PREREG §5).
+the blocks with a live row. The draw is unchanged at 10,000 resamples (a verifier found old and new output
+byte-identical on a 28-day synthetic log; tests/test_inference_golden.py pins the resampled
+sequence against an independent transcription of PREREG §5, the lower bounds to 9-12 places).
 A full run on a 28-day synthetic log takes about a minute here.
 
 ## Tooling (all in the Makefile)
@@ -71,7 +73,8 @@ and says so) · `make dash` · `make inference-smoke` · `make results` (day 28;
   kind; the locally refused request keeps no key-quoting context.
 - cycle: a torn last line is closed before the next row (it cost two rows); the watchdog can no
   longer lose a row past the lock, bill a send $0 or exit 1; `--once` started in a minute's last
-  2 s sleeps to :00 first; the heartbeat failure has its own message and a per-pid temp name.
+  2 s sleeps to :00 first, and only when the heartbeat shows this minute already has its row
+  (a late fire keeps its minute); the heartbeat failure has its own message and a per-pid temp name.
 - rules/cycle: a bool, NaN or wrong-typed answer field is `jev`/`parse` (the answer kept, no
   column), never a column; feed: a candle that is not finite and positive refuses the set.
 - outcomes: the live decision speaks for its tick when two rows share it; ties in whole ms; a

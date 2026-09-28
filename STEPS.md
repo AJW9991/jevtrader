@@ -128,7 +128,7 @@ writes no ledger row. The tests mock `urllib.request.urlopen`; nothing under
 cd ~/Projects/jev-paper-loop && make test
 ```
 
-The same thing by hand (191 tests at integration, 2026-09-24; 320-odd by 2026-09-28, also run by CI on every push):
+The same thing by hand (191 tests at integration, 2026-09-24; 410 by 2026-09-28, also run by CI on every push):
 
 ```bash
 cd ~/Projects/jev-paper-loop && /opt/homebrew/bin/python3 -m unittest discover -s tests -v 2>&1 | tail -3
@@ -173,8 +173,10 @@ before step 0.
 ## 5. The first attended live run  (a few hours; ~$0.002/h)
 
 **Why.** Before launchd runs it unwatched, watch it: `make run` is `--forever`
-in a terminal, one tick a minute on the wall-clock minute, SIGINT/SIGTERM
-finish the current write. Two to three hours is 120–180 ticks: enough rows
+in a terminal, one tick a minute on the wall-clock minute. SIGTERM finishes the
+current write, releases the lock and exits 0; Ctrl-C (SIGINT) is not handled and
+stops the run where it is, with a traceback (in the sleep between ticks that
+costs nothing). Two to three hours is 120–180 ticks: enough rows
 for `make report` to show the absences, the latency, the key path, the drift
 count and the first outcome joins (the first join lands 15 min in). Only
 after steps 0 and 1.
@@ -227,9 +229,11 @@ cd ~/Projects/jev-paper-loop && git add PREREG.md && git commit -m "PREREG: T0 a
 
 Want `prereg-v1`. Only then `bin/promote proposals/<date>.json <k>` (it
 refuses while `git tag -l prereg-v1` is empty). From here on the sample's
-numbers are `/opt/homebrew/bin/python3 -m loop.report --t0 <T0>`: rows cut to
-`[T0, T0 + 28 d)`, every arm replayed from flat at T0, the 900 s block
-statistic S_k of PREREG §3–§4 beside the per-tick figures. The day-14 look
+health is `make health` (`loop.report --health --sample`): rows cut to
+`[T0, T0 + 28 d)`, §1–§3 only. `loop.report --t0 <T0>` withholds §4–§7 (every arm
+replayed from flat at T0, the 900 s block statistic S_k of PREREG §3–§4) until
+2026-10-23 21:40Z; `--unblind` prints them and is a look. The day-28 numbers are
+`make results`. The day-14 look
 (PREREG §8.4) is `/opt/homebrew/bin/python3 -m loop.report --health --t0 <T0>`:
 report §1–§3 only, no H1 or H2 number.
 

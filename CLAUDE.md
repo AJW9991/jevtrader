@@ -21,8 +21,9 @@ person installs), and `HANDOFF.md` (where the last session left off).
 - The loop and the nightly run on Alex's Mac under launchd (`launchd/*.plist`, hand-installed).
   `data/` (the decision log, ledger, heartbeat, dash) and `logs/` live only there and are
   gitignored; a cloud or other checkout has code, docs, fixtures and tests, not data.
-- In a checkout without `data/`: `make test` (offline, ~9 s; CI runs it on every push) is the whole gate;
-  `make dry` needs the network (three public GETs); `make report`/`make dash` need the log.
+- In a checkout without `data/`: `make test` (offline, ~15 s; CI runs it on every push) is the whole gate;
+  `make dry` needs the network (three public GETs); `make report`/`make dash`/`make status` read
+  the log (without one: "no log", an empty page); `make inference-smoke`/`make results` exit 2 without it.
 - Nothing here sends to api.typesafe.ai except `loop/jev.py::ask`; the ledger row comes first;
   `data/HALT` stops sends; a 401/403 writes it. Never run `make run` outside the Mac.
 - Never touch `~/Projects/crypto-trading-system` or its mirror (path guard, exit 3).
@@ -35,8 +36,8 @@ Put such decisions to him as options.
 ## Conventions
 - Python 3.14 (`/opt/homebrew/bin/python3` on the Mac), standard library only, `unittest`.
 - Every change with a test; `make test` green before a commit; one concern per commit; commit
-  messages say what and why in plain prose. Tests never read the live `prompts/`
-  (`tests/fixture_prompts.pin_v1`).
+  messages say what and why in plain prose. No test depends on what the live
+  `prompts/CURRENT` names (`tests/fixture_prompts.pin_v1`; one test checks it builds, whatever it names).
 - Report every Jev-side finding by its table, not its wording (Jev reads "volatility is calm"
   as "not violent": `proposals/2026-09-25.review.md`).
 - Fan-outs (reviewers, verifiers) run on Opus; the main loop and synthesis on the session model.

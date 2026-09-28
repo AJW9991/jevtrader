@@ -1,8 +1,9 @@
 # jev-paper-loop ("JevTrader")
 
 A paper-only, forward-only measurement of the "two models at two speeds" loop: a fast typed
-model (Jev, TypeSafe System One) answers one fixed question a minute about SOL-USD from a
-ten-word state; a slow model proposes a rewrite of the question nightly; a person applies it.
+model (Jev, TypeSafe System One) answers five fixed typed questions a minute, in one request,
+about SOL-USD from a ten-word state; a slow model proposes a rewrite of the one `action`
+question nightly; a person applies it.
 Three arms are paired on every tick — the frozen wording, the rewritten wording, and the
 no-model rule the thresholds already imply — and a sealed 28-day pre-registration says how
 they are compared.
