@@ -1225,6 +1225,32 @@ class PerDay(unittest.TestCase):
                 self.assertEqual(h["usd"], math.inf)                       # a float still: the dash's tile formats it
                 self.assertIn(want + "\n", text)
 
+    def test_a_float_count_after_two_that_sum_past_a_float_is_named_not_a_crash(self):
+        # the sum itself sat outside the overflow guard: two int counts of 1e308 add up to an int past a float's
+        # range, and a float count after them (a foreign row) makes int + float raise OverflowError inside sum(),
+        # so the day-14 look died a line before the guarded product. In either order the sum is named, not priced.
+        halt = os.path.join(self.enterContext(tempfile.TemporaryDirectory()), "no-HALT")
+        want = f"  input tokens: their sum is past a float's range, so no dollar figure at ${config.USD_PER_MTOK}/Mtok"
+        for order in ((10 ** 308, 10 ** 308, 1000.0), (1000.0, 10 ** 308, 10 ** 308)):
+            with self.subTest(order=[type(x).__name__ for x in order]):
+                rows = [dict(_row(m)) for m in range(20, 30)]
+                for i, t in zip((3, 4, 5), order):
+                    rows[i] = dict(rows[i], jev=dict(rows[i]["jev"], input_tokens=t))
+                self.assertTrue(all(report._num(t) for t in order))         # each count on its own is in range
+                with mock.patch.object(config, "HALT", halt):
+                    h = report.health(rows, outcomes.join(rows))
+                    text = report.render(rows, [], health_only=True)
+                self.assertEqual([l for l in h["lines"] if l.startswith("  input tokens")], [want])
+                self.assertEqual((h["tokens"], h["usd"]), (math.inf, math.inf))
+                self.assertIn(want + "\n", text)
+        log = os.path.join(os.path.dirname(halt), "sum.jsonl")                   # and `make health` exits 0 on it
+        _write(log, rows[:3] + [dict(rows[i], jev=dict(rows[i]["jev"], input_tokens=t))
+                                for i, t in zip((3, 4, 5), (10 ** 308, 10 ** 308, 1000.0))] + rows[6:], garbage=False)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()), mock.patch.object(config, "HALT", halt):
+            self.assertEqual(report.main(["--log", log, "--health"], now=report.tick_epoch("20260923T120000Z")), 0)
+        self.assertIn(want + "\n", buf.getvalue())
+
     def test_since_cuts_the_view_not_the_sample_days(self):
         # --since is a display cut: the per-day table used to pre-list every T0 day from d01, so the
         # days before it read 0 ticks and NO LIVE ROWS (a false stop-rule-3 prompt), and the day it

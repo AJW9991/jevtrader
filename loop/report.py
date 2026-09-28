@@ -152,13 +152,14 @@ def health(rows, outs, bad=(), t0=None, last=None, now=None, since=None):
     attempted = [r for r in rows if r.get("mode") == "live" and r.get("absence") in (None, "jev")]
     errors = collections.Counter((_jev(r, "error") or "?") for r in attempted if r.get("absence") == "jev")
     lat = [_jev(r, "latency_ms") for r in rows if _num(_jev(r, "latency_ms"))]
-    tokens = sum(_jev(r, "input_tokens") for r in rows if _num(_jev(r, "input_tokens")))
     uncounted = sum(1 for r in rows if type(_jev(r, "input_tokens")) is int and not _num(_jev(r, "input_tokens")))   # not a
                                                                     # bool: an int subclass that _num refuses, and cycle.billed_tokens skips
     try:
+        tokens = sum(_jev(r, "input_tokens") for r in rows if _num(_jev(r, "input_tokens")))   # in the try: two int counts of 1e308
+                                            # sum to an int past a float's range, and a float count after them raises here
         usd = tokens * config.USD_PER_MTOK / 1e6
     except OverflowError:                   # counts that each fit a float can sum past one (two server replies of 1e308)
-        usd = math.inf                      # still a float: the dash's spend tile formats it
+        tokens = usd = math.inf             # still a float: the dash's spend tile formats it
     spent = (f"  input tokens {tokens} = ${usd:.6f} to date" if math.isfinite(usd)
              else "  input tokens: their sum is past a float's range, so no dollar figure") + f" at ${config.USD_PER_MTOK}/Mtok"
     models = collections.Counter(r["model_answered"] for r in rows if isinstance(r.get("model_answered"), str))
