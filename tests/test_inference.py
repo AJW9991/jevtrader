@@ -65,9 +65,21 @@ class Draw(unittest.TestCase):
         a = inference.bootstrap([0.5, -0.5] * 20, inference.mean, resamples=500)
         a2 = inference.bootstrap([0.5, -0.5] * 20, inference.mean, resamples=500)
         self.assertEqual(a["sorted"], a2["sorted"])                        # seeded: reproducible
-        self.assertIs(a["sorted"][inference.ALPHA_RANK], a["lower"])
+        self.assertEqual(inference.alpha_rank(500), 12)                    # ceil(12.5) = 13th value
+        self.assertIs(a["sorted"][inference.alpha_rank(500)], a["lower"])
         self.assertFalse(a["reject"])
         self.assertEqual(inference.bootstrap([], inference.mean)["reject"], False)
+
+    def test_the_rank_is_the_nearest_rank_percentile_at_any_resample_count(self):
+        # ceil(0.025 R) - 1 in integer arithmetic: 249 at the pre-registered 10,000, never a fixed 249
+        self.assertEqual(inference.alpha_rank(inference.RESAMPLES), 249)
+        self.assertEqual(inference.ALPHA_RANK, 249)
+        self.assertEqual([inference.alpha_rank(r) for r in (1, 40, 41, 200, 1000, 9999, 10000, 10001)],
+                         [0, 0, 1, 4, 24, 249, 249, 250])
+        with self.assertRaises(ValueError):
+            inference.alpha_rank(0)
+        b = inference.bootstrap([float(i) for i in range(40)], inference.mean, resamples=1000)
+        self.assertIs(b["lower"], b["sorted"][24])                          # the 25th of 1,000, not the 250th
 
     def test_undefined_statistic_counts_as_zero(self):
         ps = [(1.0, 5.0)] * 8                                        # every resample has no variance in x
@@ -123,6 +135,8 @@ class Guard(unittest.TestCase):
         self.assertIn("--accept-pending given: 1 H2 unit(s)", out)
         self.assertIn("mode sample", out)
         self.assertIn("(clock overridden with --now 2026-10-21T10:00)", out.splitlines()[0])
+        self.assertIn("lower bound = sorted[4] (nearest-rank 2.5th percentile)", out)     # ceil(0.025 x 200) - 1
+        self.assertIn("NOT the pre-registered run (resamples R != 10000)", out)
         self.assertIn("n blocks 2688", out)                           # every block kept, empty ones as 0
         self.assertIn("blocks on which a gap longer than the horizon lands 0 of 2688", out)
         self.assertIn("days kept 28 of 28", out)
@@ -167,6 +181,59 @@ class Guard(unittest.TestCase):
         self.assertEqual(len(e["S"]), 2688 - 96)
         self.assertTrue(all(inference.day_of_block(k) != 1 for k, _ in e["series"]))
         self.assertEqual(sum(v for _, v in e["series"]), 0.0)         # the only rows were in day 1
+
+
+AFTER_SEALED_END = datetime.datetime(2026, 10, 24, tzinfo=datetime.timezone.utc)   # PREREG §11's T0 + 28 d has passed
+
+
+def _fake_bootstrap(series, stat, seed=inference.SEED, resamples=inference.RESAMPLES, L=inference.BLOCK_LEN):
+    """A stand-in with bootstrap's shape, so a test can reach the 10,000-resample path in no time."""
+    return {"n": len(series), "lower": 0.0, "reject": False, "sorted": []}
+
+
+class LiveLog(unittest.TestCase):
+    """--log resolving to config.DECISIONS is the launchd log: the pre-registered run only."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp()
+        cls.log = os.path.join(cls.tmp, "decisions.jsonl")
+        _write(cls.log, [_row(m) for m in range(42)])                # 2026-09-23, before PREREG's T0: no sample row
+        cls.ex = os.path.join(cls.tmp, "exclusions.tsv")
+        with open(cls.ex, "w") as fh:
+            fh.write("day\tfill%\tjev-err%\treason\n")
+
+    def _run(self, argv, now=AFTER_SEALED_END):
+        with mock.patch.object(inference.config, "DECISIONS", self.log):
+            return _main(argv + ["--exclusions", self.ex], now=now)
+
+    def test_sample_on_the_live_log_refuses_any_other_resample_count(self):
+        with mock.patch.object(outcomes, "load", side_effect=AssertionError("the log was opened")):
+            code, out, err = self._run(["--sample", "--resamples", "1000"])
+        self.assertEqual((code, out), (3, ""))
+        self.assertIn("runs the pre-registered 10000 resamples only, got --resamples 1000", err)
+        # the same log by another spelling of its path is still the live log
+        with mock.patch.object(outcomes, "load", side_effect=AssertionError("the log was opened")):
+            code, _, err = self._run(["--sample", "--resamples", "1000", "--log", os.path.join(self.tmp, ".", "decisions.jsonl")])
+        self.assertEqual(code, 3, err)
+
+    def test_sample_on_the_live_log_at_10000_is_the_pre_registered_run(self):
+        with mock.patch.object(inference, "bootstrap", _fake_bootstrap):
+            code, out, err = self._run(["--sample"])
+        self.assertEqual(code, 0, err)
+        self.assertIn("10000 resamples", out)
+        self.assertIn("lower bound = sorted[249]", out)
+        self.assertNotIn("NOT the pre-registered run", out)
+
+    def test_pre_t0_on_the_live_log_may_use_fewer_resamples_and_says_so(self):
+        code, out, err = self._run(["--pre-t0", "--resamples", "50"])
+        self.assertEqual(code, 0, err)
+        self.assertIn("NOT the pre-registered run (resamples R != 10000)", out)
+
+    def test_a_copy_of_the_log_is_not_the_live_log(self):
+        code, out, err = _main(["--sample", "--log", self.log, "--resamples", "50", "--exclusions", self.ex], now=AFTER_SEALED_END)
+        self.assertEqual(code, 0, err)
+        self.assertIn("NOT the pre-registered run", out)
 
 
 class Pending(unittest.TestCase):

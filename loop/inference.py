@@ -46,6 +46,7 @@ BLOCKS_PER_DAY = 86400 // report.BLOCK_S     # 96
 N_DAYS = report.SAMPLE_DAYS                  # 28
 MIN_KEPT_DAYS = 21               # PREREG §8.3: fewer kept at day 28 -> void
 EXIT_NOT_YET = 3
+EXIT_REFUSED = 3                 # every refusal of the pre-registered run is exit 3 (the day-28 clock is one of them)
 PAIRS = (("b", "c", "H1 (co-primary): B - C at the primary cell, alpha 0.025"),
          ("a", "c", "A - C at the primary cell, alpha 0.025: stop rule 1's input and §9's reading only (a claim would be a §6 secondary)"),
          ("b", "a", "B - A at the primary cell: point estimate only, stop rule 2 (<= 0 stops the nightly)"))
@@ -62,11 +63,23 @@ def resample_indices(rng, n, L=BLOCK_LEN):
     return out[:n]
 
 
+def alpha_rank(resamples):
+    """The 0-based index of the nearest-rank 2.5th percentile of `resamples` sorted values:
+    ceil(0.025 x R) - 1, in integer arithmetic (0.025 x R is not exact in binary). 249 at the
+    pre-registered R = 10,000 (PREREG §5 step 3); a fixed 249 would read the 25th percentile
+    at R = 1,000, which is why a test run at another R goes through here too."""
+    if resamples < 1:
+        raise ValueError(f"resamples must be >= 1, got {resamples}")
+    return (25 * resamples + 999) // 1000 - 1
+
+
 def bootstrap(series, stat, seed=SEED, resamples=RESAMPLES, L=BLOCK_LEN):
-    """The sorted resampled statistics and the one-sided lower bound sorted[ALPHA_RANK].
-    `stat` maps a list of series elements to a float (None -> 0.0, PREREG §5: undefined never
-    rejects). One generator per call: H1 and H2 each get their own random.Random(seed)."""
+    """The sorted resampled statistics and the one-sided lower bound sorted[alpha_rank(R)]
+    (= sorted[ALPHA_RANK] at R = 10,000). `stat` maps a list of series elements to a float
+    (None -> 0.0, PREREG §5: undefined never rejects). One generator per call: H1 and H2 each
+    get their own random.Random(seed)."""
     n = len(series)
+    rank = alpha_rank(resamples)
     if n == 0:
         return {"n": 0, "lower": None, "reject": False, "sorted": []}
     rng = random.Random(seed)
@@ -76,7 +89,7 @@ def bootstrap(series, stat, seed=SEED, resamples=RESAMPLES, L=BLOCK_LEN):
         v = stat([series[i] for i in idx])
         stats.append(0.0 if v is None else v)
     stats.sort()
-    lower = stats[ALPHA_RANK] if len(stats) > ALPHA_RANK else stats[-1]
+    lower = stats[rank]
     return {"n": n, "lower": lower, "reject": lower > 0, "sorted": stats}
 
 
@@ -229,7 +242,10 @@ def render(mode, t0, now, log, log_sha, n_rows, excluded, excl_lines, kept_days,
              (f"  days kept {kept_days} of {N_DAYS}; excluded {sorted(excluded) or 'none'} (data/exclusions.tsv, reproduced below)" if mode == "sample"
               else "  days and exclusions: not applicable before T0; blocks run over the shakedown's own span"),
              f"  bootstrap: circular blocks of {BLOCK_LEN}, {resamples} resamples, seed {SEED}, one generator per statistic;"
-             f" lower bound = sorted[{ALPHA_RANK}] (nearest-rank 2.5th percentile); reject iff > 0"]
+             f" lower bound = sorted[{alpha_rank(resamples)}] (nearest-rank 2.5th percentile); reject iff > 0"]
+    if resamples != RESAMPLES:
+        lines.append(f"  NOT the pre-registered run (resamples R != {RESAMPLES}): R = {resamples}, lower bound = sorted[ceil(0.025 x R) - 1];"
+                     " a test or a smoke, never the result")
     if pending is not None:
         lines.append(f"  --accept-pending given: {len(pending)} H2 unit(s) whose t + h the log has not reached are counted as gaps"
                      " (for a log that really stopped; without the flag the run is refused)"
@@ -279,11 +295,19 @@ def main(argv=None, now=None):
     ap.add_argument("--prereg", default=os.path.join(config.REPO, "PREREG.md"))
     ap.add_argument("--exclusions", default=os.path.join(config.DATA, "exclusions.tsv"))
     ap.add_argument("--now", help="override the clock (tests). Printed in the header when used.")
-    ap.add_argument("--resamples", type=int, default=RESAMPLES, help="tests only; the pre-registered number is 10000")
+    ap.add_argument("--resamples", type=int, default=RESAMPLES,
+                    help=f"tests only; the pre-registered number is {RESAMPLES}, and --sample on the live log refuses any other")
     ap.add_argument("--out", help="also write the text here")
     ap.add_argument("--accept-pending", action="store_true",
                     help="--sample on a log that really stopped: count the units whose t + h it never reached as gaps (printed)")
     args = ap.parse_args(argv)
+    if args.resamples < 1:
+        ap.error(f"--resamples wants a positive count, got {args.resamples}")
+    live_log = os.path.realpath(args.log) == os.path.realpath(config.DECISIONS)   # the launchd log, not a copy or a fixture
+    if args.sample and live_log and args.resamples != RESAMPLES:
+        sys.stderr.write(f"inference: refusing: --sample on the live log {config.DECISIONS} runs the pre-registered"
+                         f" {RESAMPLES} resamples only, got --resamples {args.resamples} (PREREG §4-§5)\n")
+        return EXIT_REFUSED
     try:
         t0 = report._t0(args.t0) if args.t0 else _read_t0(args.prereg)
     except ValueError:
