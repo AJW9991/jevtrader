@@ -205,7 +205,7 @@ class Synthetic(unittest.TestCase):
         text = "\n".join(h["lines"])
         self.assertIn("SHARED KEY on 34 rows", text)
         self.assertEqual(h["horizon"]["skips"], 1)
-        self.assertIn("isolated skipped minutes 1 (a launchd StartInterval of 60 s runs a ~61 s grid", text)
+        self.assertIn("isolated skipped minutes 1 (a missed :00 fire; until 2026-09-27 05:18Z launchd's 60 s StartInterval ran a ~61 s grid", text)
         self.assertEqual(outs[rows[1]["tick_id"]]["mid_h"], rows[16]["mid"])      # minute 22's row (minute 20 is missing)
         self.assertAlmostEqual(h["horizon"]["max"], 20.1, places=6)                # the fixture rows carry .100 ms
         self.assertLessEqual(h["horizon"]["max"], outcomes.JOIN_TOL_S)             # never a row the join did not take
@@ -416,7 +416,7 @@ class Synthetic(unittest.TestCase):
             self.assertIn(t, out)
         for t in report.TITLES[3:]:
             self.assertNotIn(t, out)
-        for word in ("H1 statistic", "H2 statistic", "Pearson", "Spearman", "Brier", "P(correct)", "pair B-C"):
+        for word in ("H1 cell", "H2 statistic", "Pearson", "Spearman", "Brier", "P(correct)", "pair B-C"):
             self.assertIn(word, self.text)                              # the full report prints each of them ...
             self.assertNotIn(word, out)                                 # ... and the blind look none
         self.assertEqual(report.render(self.rows, self.bad, self.log, health_only=True), out)
@@ -459,9 +459,58 @@ class SampleAndSides(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("T0 2026-09-23T10:25Z (sample [T0, T0 + 28 d), replayed from flat at T0)", out.splitlines()[0])
         self.assertIn("rows 17 (17 ticks", out)
-        self.assertIn("H1 statistic (PREREG §4), mean S_k at the primary cell:", out)
+        self.assertIn("H1 cell (PREREG §4), mean S_k at the primary cell, descriptive here (the statistic is loop.inference's", out)
         self.assertIn("anchored at T0 2026-09-23T10:25Z (--t0)", out)
         self.assertEqual(out, _main(["--log", self.log, "--t0", "20260923T102500Z"])[1])
+
+    def test_blocks_run_to_the_logs_last_tick_and_the_cell_is_labelled_descriptive(self):
+        # 2026-09-28 (review): the table's block count stopped at the last tick in the cut, so with
+        # --t0 the "H1 statistic" line averaged over fewer blocks than PREREG's 2,688 and could
+        # differ from loop.inference's number; it is now labelled descriptive and, given the whole
+        # log's last tick, runs to the end of the log (capped at the sample's 2,688 blocks)
+        from loop import outcomes
+        rows = [_row(m) for m in MINUTES]
+        outs = outcomes.join(rows)
+        t0 = report.tick_epoch("20260923T100000Z")
+        tb = report.table(rows, outs, t0)                               # no `last`: k0 .. the last tick's block
+        self.assertEqual(tb["cells"][report.PRIMARY]["blocks"]["n"], 3)
+        tb = report.table(rows, outs, t0, last=t0 + 5 * 900)              # a log that runs 75 min past the cut
+        self.assertEqual(tb["cells"][report.PRIMARY]["blocks"]["n"], 6)
+        self.assertEqual([v for _, v in tb["cells"][report.PRIMARY]["blocks"]["S"][3:]], [0.0, 0.0, 0.0])
+        tb = report.table(rows, outs, t0, last=t0 + 40 * 86400)            # never past the sample's 2,688
+        self.assertEqual(tb["cells"][report.PRIMARY]["blocks"]["n"], 96 * 28)
+        self.assertEqual(tb["cells"][report.PRIMARY]["blocks"]["pre"], 0)
+        blk = report._blocks([("20260923T095900Z", 5.0), ("20260923T100000Z", 1.0)], set(), t0)
+        self.assertEqual((blk["pre"], blk["n"], blk["S"]), (1, 1, [(0, 1.0)]))   # a tick before the anchor is counted out loud
+        # the block index map computed once per table equals the per-tick arithmetic
+        kof = {t: int((report.tick_epoch(t) - t0) // report.BLOCK_S) for t in {r["tick_id"] for r in rows}}
+        a = report._blocks(tb["cells"][report.PRIMARY]["all"]["d"], set(), t0, kof, 4)
+        b = report._blocks(tb["cells"][report.PRIMARY]["all"]["d"], set(), t0, None, 4)
+        self.assertEqual(a["S"], b["S"])
+
+    def test_tick_epoch_is_strptime_exactly_and_refuses_what_it_refused(self):
+        import calendar, random
+        rng = random.Random(3)
+        for _ in range(2000):
+            e = 946684800 + 60 * rng.randrange(0, 60 * 24 * 366 * 40)
+            tid = datetime.datetime.fromtimestamp(e, datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            self.assertEqual(report.tick_epoch(tid), float(e))
+            self.assertEqual(report.tick_epoch(tid), datetime.datetime.strptime(tid, "%Y%m%dT%H%M%SZ").replace(tzinfo=datetime.timezone.utc).timestamp())
+        self.assertEqual(report.tick_epoch("20240229T235900Z"), calendar.timegm((2024, 2, 29, 23, 59, 0)))
+        for bad in ("20261399T000000Z", "20260230T000000Z", "2026092T2140000Z", "20260925T214000", "20260925T2140x0Z", "20260925 214000Z"):
+            with self.assertRaises(ValueError, msg=bad):
+                report.tick_epoch(bad)
+
+    def test_a_skipped_minute_is_its_own_days_and_dNN_sorts_by_number(self):
+        from loop import outcomes
+        t0 = report.tick_epoch("20260923T100000Z")
+        rows = [dict(_row(m)) for m in range(5, 40) if m != 20]
+        # T0 at 10:20: minute 20 is the first minute of d01, so its skip is d01's, not d00's (the row before it)
+        h = report.health(rows, outcomes.join(rows), t0=report.tick_epoch("20260923T102000Z"))
+        self.assertEqual({d["day"]: d["skips"] for d in h["days"]}, {"d00": 0, "d01": 1})
+        self.assertEqual([report._day_key(x) for x in ("d-1", "d00", "d01", "d10")], [(0, -1), (0, 0), (0, 1), (0, 10)])
+        self.assertEqual(sorted(["d10", "d2", "d-1", "d00"], key=report._day_key), ["d-1", "d00", "d2", "d10"])
+        self.assertEqual(report._day_key("20260923"), (1, "20260923"))
 
     def test_sample_ends_before_t0_plus_28_days(self):
         t0 = report._t0("2026-08-26T10:20")                             # T0 + 28 d = 2026-09-23T10:20
@@ -747,7 +796,7 @@ class Degenerate(unittest.TestCase):
     def test_dry_only_log(self):
         rows = [_row(m) for m in range(5)]                              # the five dry rows: adjectives, no answers
         text = report.render(rows, [], "x")
-        self.assertIn("dry-only log: 5 rows and none answered", text)
+        self.assertIn("no answered rows: 5 rows (5 dry, 0 absences)", text)
         self.assertIn("live answered 0; dry 5; absence: none", text)
         self.assertIn("deep 5/5 (100.0%)", text)
         self.assertIn("FLAG liq is deep", text)
@@ -757,7 +806,9 @@ class Degenerate(unittest.TestCase):
         self.assertIn("A equity 0.00 bps, trades 0, forced holds 5", text)
         self.assertIn("nothing to calibrate", text)
         self.assertIn("no unit yet", text)                               # dry rows are never H2 units
-        self.assertIn("dry-only log: 5 rows and none answered; sections 3-7 need live rows", text)
+        self.assertIn("no answered rows: 5 rows (5 dry, 0 absences); sections 3-7 need live rows", text)
+        halted = [dict(_row(m), mode="live", absence="halt", answers=None, columns={"a": None, "b": None}) for m in range(5, 8)]
+        self.assertIn("no answered rows: 3 rows (0 dry, 3 absences)", report.render(halted, [], "x"))
 
     def test_no_network_no_key_no_write(self):
         import inspect

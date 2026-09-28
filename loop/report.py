@@ -41,7 +41,7 @@ market. --health prints sections 1-3 only (PREREG §8.4's day-14 look) and compu
 An empty, missing or dry-only log is said so at the top; health and occupancy still print
 (a dry log has adjectives), the other sections say what they lack.
 """
-import argparse, bisect, collections, datetime, math, os, sys
+import argparse, bisect, collections, datetime, functools, math, os, sys
 
 from loop import book, config, outcomes, rules, state
 
@@ -167,7 +167,7 @@ def health(rows, outs, bad=(), t0=None, last=None):
         + (f"; SHARED KEY on {shared} rows (PROTOCOL §3.6: the loop key file is missing or empty)" if shared else ""),
         f"  realised horizon, ts_rx to ts_rx of the row the join picked: mean {_f(hz['mean'], 1)} s, |offset from {config.HORIZON_S}| p95 {_f(hz['p95'], 0)} s,"
         f" max {_f(hz['max'], 0)} s (n {hz['n']}); isolated skipped minutes {hz['skips']}"
-        + (" (a launchd StartInterval of 60 s runs a ~61 s grid: each skip costs the row 15 min earlier its outcome)" if hz["skips"] else ""),
+        + (" (a missed :00 fire; until 2026-09-27 05:18Z launchd's 60 s StartInterval ran a ~61 s grid, ~28 a day; each costs the row 15 min earlier its outcome)" if hz["skips"] else ""),
         ("  HALT: PRESENT since " + _halt_when() + " (the reason is the file's text; nothing is sent; the feed, arm C, the join and this"
          " report go on; clearing it is a person's act, STEPS §7)") if halt else "  HALT: absent",
     ] + per_day["lines"]
@@ -247,6 +247,11 @@ def day_span(label, t0):
     return (_tick_of(a), _tick_of(a + 86400))
 
 
+def _day_key(label):
+    """dNN labels by number (d-1 < d00 < d01 < d10); calendar labels as they are."""
+    return (0, int(label[1:])) if label[:1] == "d" and label[1:].lstrip("-").isdigit() else (1, label)
+
+
 def _tick_of(epoch):
     return datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
@@ -276,7 +281,7 @@ def days_table(rows, outs, t0=None, last=None):
     skips = collections.Counter()
     for a, b in zip(all_ticks, all_ticks[1:]):
         if tick_epoch(b) - tick_epoch(a) == 2 * config.CADENCE_S:
-            skips[day_of(a, t0)] += 1                                  # the missing minute belongs to the day of the row before it
+            skips[day_of(_tick_of(tick_epoch(a) + config.CADENCE_S), t0)] += 1   # the missing minute's own day
     for r in rows:
         d = day_of(r.get("tick_id"), t0)
         x = per.setdefault(d, {"ticks": set(), "live": 0, "filled": 0, "pending": 0, "attempted": 0, "errors": 0})
@@ -296,7 +301,7 @@ def days_table(rows, outs, t0=None, last=None):
             else:
                 x["live"] += 1
     days, bad, empty = [], [], []
-    for d in sorted(per):
+    for d in sorted(per, key=_day_key):
         x = per[d]
         span = day_span(d, t0)
         end = tick_epoch(span[1]) if span else tick_epoch(d + "T000000Z") + 86400
@@ -410,9 +415,17 @@ def agreement(rows):
 
 
 # ---- §4.5 the pair table -------------------------------------------------------------------
+@functools.lru_cache(maxsize=None)
 def tick_epoch(tid):
-    """tick_id 'YYYYMMDDTHHMM00Z' -> epoch seconds (UTC)."""
-    return datetime.datetime.strptime(tid, "%Y%m%dT%H%M%SZ").replace(tzinfo=datetime.timezone.utc).timestamp()
+    """tick_id 'YYYYMMDDTHHMM00Z' -> epoch seconds (UTC). Cached: the pair table asks for every
+    tick's epoch in each of its 198 cells (~8M calls over 28 days) and strptime cost 20 us each,
+    two thirds of `--health`'s time on a 28-day log (2026-09-28). The fields are cut by position
+    and handed to datetime, which refuses what strptime refused (a 13th month, February 30th);
+    a string of the wrong shape raises ValueError the same way."""
+    if len(tid) != 16 or tid[8] != "T" or tid[15] != "Z" or not (tid[:8] + tid[9:15]).isdigit():
+        raise ValueError(f"not a tick_id: {tid!r}")
+    return datetime.datetime(int(tid[0:4]), int(tid[4:6]), int(tid[6:8]), int(tid[9:11]), int(tid[11:13]), int(tid[13:15]),
+                             tzinfo=datetime.timezone.utc).timestamp()
 
 
 def _disagreement(px, py):
@@ -429,23 +442,30 @@ def _disagreement(px, py):
     return out
 
 
-def _blocks(d, dis, anchor):
+def _blocks(d, dis, anchor, kof=None, n_blocks=None):
     """PREREG §3: S_k = sum of d_t over the ticks with anchor + 900k <= tick < anchor + 900(k+1),
-    k = 0 .. the block of the last tick. A block with no row is kept with S_k = 0 (PREREG: the
-    arms agree on nothing). A disagreement block holds at least one disagreement tick."""
+    k = 0 .. n_blocks - 1, where n_blocks is the block of the log's last tick + 1 (capped at the
+    sample's 2,688 with --t0; `table` passes it), else the block of the last tick in `d` + 1. A
+    block with no row is kept with S_k = 0 (PREREG: the arms agree on nothing), trailing empty
+    blocks included when n_blocks says so. A disagreement block holds at least one disagreement
+    tick. `kof` maps tick_id -> k, computed once per table (198 cells x every tick). A tick before
+    the anchor (never, once the rows are cut to [T0, ...)) is counted in `pre` and left out."""
     if not d:
-        return {"n": 0, "dis": 0, "share": None, "mean": None, "mean_dis": None, "S": []}
-    S, hot = collections.defaultdict(float), set()
+        return {"n": 0, "dis": 0, "share": None, "mean": None, "mean_dis": None, "S": [], "pre": 0}
+    S, hot, pre = collections.defaultdict(float), set(), 0
     for t, v in d:
-        k = int((tick_epoch(t) - anchor) // BLOCK_S)
+        k = kof[t] if kof is not None else int((tick_epoch(t) - anchor) // BLOCK_S)
+        if k < 0:
+            pre += 1
+            continue
         S[k] += v
         if t in dis:
             hot.add(k)
-    ks = range(max(S) + 1)
-    s = [(k, S.get(k, 0.0)) for k in ks]
+    n = n_blocks if n_blocks is not None else (max(S) + 1 if S else 0)
+    s = [(k, S.get(k, 0.0)) for k in range(n)]
     sd = [v for k, v in s if k in hot]
     return {"n": len(s), "dis": len(sd), "share": _rate(len(sd), len(s)), "mean": _mean([v for _, v in s]),
-            "mean_dis": _mean(sd), "S": s}
+            "mean_dis": _mean(sd), "S": s, "pre": pre}
 
 
 def _cell(px, py, dis):
@@ -458,9 +478,11 @@ def _cell(px, py, dis):
             "hit": _rate(sum(1 for v in dd if v > 0), len(dd)), "d": d}
 
 
-def table(rows, outs, t0=None):
+def table(rows, outs, t0=None, last=None):
     """t0: T0 as epoch seconds (the rows are already cut to the sample), or None: blocks are
-    then anchored at the first tick of the log."""
+    then anchored at the first tick of the log. last: the whole log's last tick (epoch), so the
+    block count runs to the end of the log (capped at the sample's 2,688) and not just to the
+    last tick in the cut."""
     fees = tuple(config.FEE_BPS_COLUMNS)
     if PRIMARY[3] not in fees:
         fees = (PRIMARY[3],) + fees                                  # the primary fee is always a column of the table
@@ -507,12 +529,18 @@ def table(rows, outs, t0=None):
     anchor = t0 if t0 is not None else tick_epoch(first)
     where = (f"T0 {_iso_minute(t0)} (--t0), replayed from flat at T0" if t0 is not None
              else f"the log's first tick {first}; no --t0, so descriptive only")
+    kof = {t: int((tick_epoch(t) - anchor) // BLOCK_S) for t in {r["tick_id"] for r in rows}}
+    n_blocks = None
+    if last is not None:
+        n_blocks = int((last - anchor) // BLOCK_S) + 1
+        if t0 is not None:
+            n_blocks = min(n_blocks, SAMPLE_DAYS * 86400 // BLOCK_S)
     lines.append("  d_t = pnl_x - pnl_y in bps of NOTIONAL per tick; dis = ticks where the SIDES (long vs flat) differ"
                  " into or out of the tick; hit = share of dis ticks with d_t > 0 (a zero is not a hit);"
                  f" tr/d = trades per {TICKS_PER_DAY} ticks")
-    lines.append(f"  blocks: S_k = sum of d_t over {BLOCK_S} s block k (PREREG §3), anchored at {where}; n = blocks"
-                 " (an empty block is S_k = 0 and kept); dis = blocks holding a dis tick; mean_S at the * cell is"
-                 " PREREG §4's H1 statistic; days excluded by stop rule 3 are NOT removed here")
+    lines.append(f"  blocks: S_k = sum of d_t over {BLOCK_S} s block k (PREREG §3), anchored at {where}; n = blocks to the"
+                 " log's last tick (an empty block is S_k = 0 and kept); dis = blocks holding a dis tick; mean_S at the * cell"
+                 " is PREREG §4's cell, descriptive here; days excluded by stop rule 3 are NOT removed here")
     head = (f"  {'':1} {'column':<9}{'n':>6}{'dis':>6}{'mean_d':>10}{'mean_d|dis':>12}{'hit':>8}{'tr/d x':>8}{'tr/d y':>8}"
             f"  | blocks:{'n':>6}{'dis':>6}{'dis%':>7}{'mean_S':>10}{'mean_S|dis':>12}")
     for x, y in PAIRS:
@@ -526,7 +554,7 @@ def table(rows, outs, t0=None):
                 px, py = rep(x, col, fee), rep(y, col, fee)
                 dis = _disagreement(px, py)
                 a = _cell(px, py, dis)
-                b = _blocks(a["d"], dis, anchor)
+                b = _blocks(a["d"], dis, anchor, kof, n_blocks)
                 tpd = (_rate(len(px["trades"]) * TICKS_PER_DAY, n_ticks), _rate(len(py["trades"]) * TICKS_PER_DAY, n_ticks))
                 cells[(x, y, col, fee)] = {"all": a, "blocks": b, "trades_per_day": tpd}
                 mark = "*" if (x, y, col, fee) == PRIMARY else " "
@@ -534,8 +562,10 @@ def table(rows, outs, t0=None):
                              f"{_r(a['hit']):>8}{_f(tpd[0], 1):>8}{_f(tpd[1], 1):>8}"
                              f"  |        {b['n']:>6}{b['dis']:>6}{_r(b['share']):>7}{_f(b['mean']):>10}{_f(b['mean_dis']):>12}")
     pb = cells[PRIMARY]["blocks"]
-    lines.insert(head_n, f"  H1 statistic (PREREG §4), mean S_k at the primary cell: {_f(pb['mean'])} bps over {pb['n']} blocks;"
-                    f" disagreement blocks {pb['dis']} ({_r(pb['share'])}), mean S_k on them {_f(pb['mean_dis'])}")
+    lines.insert(head_n, f"  H1 cell (PREREG §4), mean S_k at the primary cell, descriptive here (the statistic is loop.inference's, over"
+                    f" the sample's {SAMPLE_DAYS * 86400 // BLOCK_S} blocks with excluded days dropped): {_f(pb['mean'])} bps over {pb['n']} blocks;"
+                    f" disagreement blocks {pb['dis']} ({_r(pb['share'])}), mean S_k on them {_f(pb['mean_dis'])}"
+                    + (f"; {pb['pre']} ticks before the anchor left out" if pb["pre"] else ""))
     return {"lines": lines, "cells": cells, "per_arm": per_arm, "per_arm_venue": per_arm_venue, "fees": fees,
             "anchor": anchor}
 
@@ -788,7 +818,7 @@ def render(rows, bad=(), log=None, since=None, missing=False, t0=None, outs=None
     outs = outcomes.join(rows) if outs is None else outs
     secs = (health(rows, outs, bad, t0, last), occupancy(rows), retest(rows))
     if not health_only:
-        secs += (agreement(rows), table(rows, outs, t0), h2(rows, outs, t0), calibration(rows, outs))
+        secs += (agreement(rows), table(rows, outs, t0, last), h2(rows, outs, t0), calibration(rows, outs))
     lines = [f"jev-paper-loop report: {config.VENUE} {config.PRODUCT}, cadence {config.CADENCE_S} s, horizon {config.HORIZON_S} s"
              + (f", log {log}" if log else "") + (f", since {since}" if since else "")
              + (f", T0 {_iso_minute(t0)} (sample [T0, T0 + {SAMPLE_DAYS} d), replayed from flat at T0)" if t0 is not None else "")]
@@ -801,7 +831,8 @@ def render(rows, bad=(), log=None, since=None, missing=False, t0=None, outs=None
         lines.append("empty log" + (f" since {since}" if since else "") + (" in the sample window" if t0 is not None else "")
                      + ": no rows (health and occupancy print anyway)")
     elif not answered(rows):
-        lines.append(f"dry-only log: {len(rows)} rows and none answered; sections 3-7 need live rows")
+        n_dry = sum(1 for r in rows if r.get("mode") == "dry")
+        lines.append(f"no answered rows: {len(rows)} rows ({n_dry} dry, {len(rows) - n_dry} absences); sections 3-7 need live rows")
     for title, sec in zip(TITLES, secs):
         lines.append("")
         lines.append(title)
