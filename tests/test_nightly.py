@@ -1574,6 +1574,24 @@ class Capped(unittest.TestCase):
         self.assertIn("refusing", r.stderr)
         self.assertFalse(os.path.exists(os.path.join(env["HOME"], "root2")))
 
+    def test_a_guard_that_answers_nothing_refuses(self):
+        # The silent interpreter above never reaches the guard: realpath_py refuses first. This one runs
+        # every other call and answers nothing (exit 0, no output) only to cycle.forbidden, so the
+        # guard's own "neither ok nor forbidden" branch is what must refuse. Before 61ebbb1 the empty
+        # answer read as "not forbidden" and the night ran.
+        env = _sh_env(self)
+        wrapper = os.path.join(env["HOME"], "python-silent-at-the-guard")
+        with open(wrapper, "w", encoding="utf-8") as fh:
+            fh.write('#!/bin/sh\ncase "$*" in *cycle.forbidden*) exit 0 ;; esac\nexec "$REAL_PY" "$@"\n')
+        os.chmod(wrapper, 0o755)
+        env.update(JEVLOOP_PY=wrapper, REAL_PY=sys.executable)
+        root = os.path.join(env["HOME"], "root")
+        r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry", "--date", "2026-09-22", "--root", root],
+                           capture_output=True, text=True, timeout=30, env=env)
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertIn("propose: the path guard could not run (repo); refusing", r.stderr)
+        self.assertFalse(os.path.exists(root))
+
     def test_propose_sh_defaults_are_the_mac_paths_and_launchd_sets_no_knob(self):
         # The JEVLOOP_* variables are for the suite (here, and on a host without Homebrew or
         # caffeinate). Under launchd the plist sets only PATH, so every one of them is its default,
