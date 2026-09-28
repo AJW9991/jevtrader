@@ -285,6 +285,31 @@ class DaysAndExclusions(unittest.TestCase):
                 fh.write("day\tfill%\tjev-err%\treason\n" + gap + "\n")
             self.assertEqual(exclusions.read_exclusions(p)[0], {1}, repr(gap))
 
+    def test_a_jev_err_joined_to_a_numbered_reason_by_a_point_is_refused_too(self):
+        # a number was read with any count of points, so a jev-err% without a % joined by '.' or ',' to a reason
+        # that begins with a number ('0.0' + '.' + '3h asleep') read as one number run into a letter, a word,
+        # and the tab typed inside the day gave d01 silently; so did 'n/a' run into a digit (2026-09-28,
+        # round-4c checker). A number now has at most one point, and 'n/a' before a digit is not a word
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        p = os.path.join(tmp, "exclusions.tsv")
+        for bad in ("d1\t6\t80.0\t0.0.3h asleep", "d1\t6\t80.0\t0.0,2nd night", "d1\t6\t94.2\t0.3.1.5h asleep",
+                    "d1\t6\t0/0\tn/a3h asleep", "d1\t6\t0/0\tN/A0.5h"):
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write("day\tfill%\tjev-err%\treason\n" + bad + "\n")
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                exclusions.read_exclusions(p)
+        for good in ("d16\t80.0\t0.0\t3h asleep", "d16\t80.0\t0.0\t1.5h asleep", "d16\t80.0\t0.0\t0,5h", "d16\t80.0\t0.0\t.5h",
+                     "d16\t80.0\t0.0\tn/about", "d16\t80.0\t0.0\t2nd night"):
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write("day\tfill%\tjev-err%\treason\n" + good + "\n")
+            self.assertEqual(exclusions.read_exclusions(p)[0], {16}, repr(good))
+        # still a gap, as the docstring says: an integer jev-err% joined by a point to such a reason reads as
+        # the reason '0.3h'; and 'n/a' run into a word
+        for gap in ("d1\t6\t80.0\t0.3h asleep", "d1\t6\t0/0\tn/aMac asleep"):
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write("day\tfill%\tjev-err%\treason\n" + gap + "\n")
+            self.assertEqual(exclusions.read_exclusions(p)[0], {1}, repr(gap))
+
     def test_a_no_break_space_before_the_percent_is_taken_like_a_space(self):
         # a fill% or jev-err% allowed only an ASCII space before the %, so the correct line
         # 'd16<TAB>94.2<U+00A0>%<TAB>0.3%<TAB>Mac asleep', which looks the same on screen and which the parser

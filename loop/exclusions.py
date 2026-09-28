@@ -67,12 +67,14 @@ def _day_field(line):
     '0.3%. Mac', '0.0.', '0.3%, Mac', '0.0-Mac', '0.3%/Mac', '0.0,Mac', '0.0—Mac'), four whose last
     begins with the jev-err%. A reason that itself begins with a number standing apart ('3 h asleep',
     '401 from Jev', '3-hour outage', '1:30 feed down', '24/7') is refused too and can be reworded; one
-    whose number runs into a letter ('3h asleep', '1.5h', '2nd night') is taken. Three typos cannot be
+    whose number runs into a letter ('3h asleep', '1.5h', '2nd night') is taken. Three kinds of typo cannot be
     caught: in the two-space form 'd1  6  80.0 ...' (meant d16) reads as d01, because a reason may
     itself hold two spaces; a tab typed inside the day of a line that also leaves out its fill% or
     jev-err% ('d1<TAB>6<TAB>80.0<TAB>asleep') is a well-formed d01 line; and so is one whose jev-err%
     has no % and runs into the reason with nothing between, so that a number meets a letter
-    ('d1<TAB>6<TAB>80.0<TAB>0.0Mac asleep'), as in the reason '3h asleep'. make status prints the
+    ('d1<TAB>6<TAB>80.0<TAB>0.0Mac asleep'), as in the reason '3h asleep', or is a whole number
+    joined by one point to a reason that begins with one ('0' + '.' + '3h asleep' reads as the reason
+    '0.3h asleep'), or is 'n/a' run into a word ('n/aMac asleep'). make status prints the
     parsed days every morning, and the day-28 output recomputes stop rule 3 beside them, so such a
     line shows as a listed day the rule judged fine."""
     if "\t" in line:
@@ -102,20 +104,24 @@ def _value(s):
     return bool(_VALUE.fullmatch(s.strip().rstrip(",;:")))
 
 
-_LEAD = re.compile(r"[0-9]+(?:[.,][0-9]+)*|[.,][0-9]+|n/a", re.ASCII | re.IGNORECASE)
+_LEAD = re.compile(r"[0-9]+(?:[.,][0-9]+)?|[.,][0-9]+|n/a", re.ASCII | re.IGNORECASE)
 
 
 def _leads_with_value(reason):
-    """Whether the reason, stripped, begins with a number (ASCII digits with any '.' or ',' points
-    between them, '0.3', '94,2', '1.5.2', or one point before them, '.5') or with 'n/a' in any case,
-    and the character after it is not one str.isalnum takes (a letter, or a digit or numeral of any
-    script): the end, a space of any kind, '%', '.', ',', ';', ':', '-', '/', '—', '(' and so on.
-    So a jev-err% run into the reason by a typo is caught ('0.0', '0.3%. Mac', '0.0-Mac'), and so is
-    '401 from Jev'; '3h asleep', '1.5h' and 'n/about' are words and are not. The number is read
-    whole before the next character is looked at, so '1.5h' is not '1' followed by '.'."""
+    """Whether the reason, stripped, begins with a number (ASCII digits with at most one '.' or ','
+    point, '0.3', '94,2', or one point before them, '.5') or with 'n/a' in any case, and the
+    character after it is not one str.isalnum takes (a letter, or a digit or numeral of any script):
+    the end, a space of any kind, '%', '.', ',', ';', ':', '-', '/', '—', '(' and so on; or it is
+    'n/a' followed by a digit. So a jev-err% run into the reason by a typo is caught ('0.0',
+    '0.3%. Mac', '0.0-Mac', '0.0.3h asleep', 'n/a3h'), and so is '401 from Jev'; '3h asleep', '1.5h'
+    and 'n/about' are words and are not. The number is read with its one point before the next
+    character is looked at, so '1.5h' is not '1' followed by '.', and '0.0.3h' is '0.0' followed by '.'."""
     r = reason.strip()
     m = _LEAD.match(r)
-    return bool(m) and not r[m.end():m.end() + 1].isalnum()
+    if not m:
+        return False
+    nxt = r[m.end():m.end() + 1]
+    return not nxt.isalnum() or (m.group().lower() == "n/a" and nxt.isdigit())
 
 
 def status_line(path):
