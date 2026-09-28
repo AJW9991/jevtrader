@@ -47,10 +47,14 @@ Written 2026-09-28 by Claude (Fable 5.1) in a CLOUD session on branch `claude/co
    ```
    It prints rows read by each tree (a difference = a whole row glued onto a torn line, now
    kept), lines skipped, priced tick_ids with more than one row (item 3), live answered rows
-   with both columns null, and the ticks whose joined outcome differs. Also: dry rows inside
-   [T0, ...) (`grep -c '"mode": "dry"' data/decisions.jsonl` against the pre-T0 rows), the
-   `parse`/`unexpected` jev-error counts in `make health`, and that sample rows since
-   2026-09-26 22:21Z carry `prompt_b_sha` b3291ca4a550 (v2 read as UTF-8; another sha would
+   with both columns null, and the ticks whose joined outcome differs. Also the dry rows inside
+   the sample and the `prompt_b_sha` of the v2 rows (rows are compact JSON, so a grep for
+   `"mode": "dry"` with a space always prints 0):
+   ```bash
+   /opt/homebrew/bin/python3 -c "from loop import outcomes,report;t0=report.tick_epoch('20260925T214000Z');rows=outcomes.load('data/decisions.jsonl');print('dry rows in the sample:',sum(1 for r in rows if r.get('mode')=='dry' and report.tick_epoch(r['tick_id'])>=t0));print('prompt_b_sha of v2 rows:',sorted({str(r.get('prompt_b_sha')) for r in rows if r.get('prompt_b')=='v2'}))"
+   ```
+   and the `parse`/`unexpected` jev-error counts in `make health`. The v2 rows (since
+   2026-09-26 22:21Z) should carry a `prompt_b_sha` starting b3291ca4a550 (v2 read as UTF-8; another sha would
    mean the Mac read the file in another encoding, and the merge would change the question
    sent). Record them here. If every count is 0, the merge changes no existing reading.
 
@@ -156,6 +160,6 @@ No `data/` there. `make test` is the gate (python3 on PATH; the Makefile falls b
 worktrees land under `.claude/worktrees/` (ignored; never `git add -A`). For a benchmark,
 `python3 tests/synth.py --days 28 --seed 1 --out FILE` writes a 28-day synthetic log in the
 writer's exact row shape (knobs in its docstring: holes, torn and glued lines, duplicate ticks,
-an out-of-alphabet word, a promotion day; ~6 s, 41k rows, 81 MB); `make health` on it takes
-~5 s here. tests/test_invariants.py holds the readers to independent transcriptions of SPEC
+an out-of-alphabet word, a promotion day; ~6 s, 41k rows, 81 MB); `python3 -m loop.report --health --sample --log FILE`
+on it takes ~5-7 s here (`make health` reads only data/decisions.jsonl). tests/test_invariants.py holds the readers to independent transcriptions of SPEC
 §10-§11 and PREREG §3-§5 on twelve seeded logs.
