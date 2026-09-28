@@ -227,6 +227,18 @@ class JevTest(unittest.TestCase):
         self.urlopen.return_value = _Resp(d)
         self.assertEqual(jev.ask(STATE, Q)["input_tokens"], 0)
 
+    def test_null_input_tokens_keeps_the_paid_answer_at_zero_tokens(self):
+        # SPEC §12: input_tokens is 0 when absent. A JSON null is absent, not a parse
+        # failure: the answer is complete and was paid for (the guard bills it anyway).
+        for usage in ({"input_tokens": None, "output_tokens": 7}, None):
+            with self.subTest(usage=usage):
+                d = json.loads(json.dumps(GOOD)); d["usage"] = usage
+                self.urlopen.return_value = _Resp(d)
+                r = jev.ask(STATE, Q)
+                self.assertEqual(r["answers"], GOOD["answers"])
+                self.assertEqual(r["input_tokens"], 0)
+                self.assertIsInstance(r["input_tokens"], int)
+
     # --- the body: --dry prints exactly what live sends --------------------------------
     def test_dry_payload_is_the_sent_body(self):
         got = {}

@@ -145,7 +145,10 @@ def _parse(raw, questions, ms, kpath):
             for f in need:
                 if f not in a:
                     raise KeyError(f"{qid}.{f}")
-        tokens = int((d.get("usage") or {}).get("input_tokens", 0))   # output is free (config): input is the spend
+        # output is free (config): input is the spend. Absent OR null is 0 (SPEC §12): a
+        # complete, paid answer must not be thrown away over a null count; the spend guard
+        # charges a 0 at JEV_TOKENS_IF_UNKNOWN anyway. A string or Infinity is still `parse`.
+        tokens = int((d.get("usage") or {}).get("input_tokens") or 0)
     except (ValueError, TypeError, KeyError, AttributeError, ArithmeticError, RecursionError) as e:
         # ArithmeticError: "input_tokens": Infinity parses to inf and int(inf) is OverflowError;
         # RecursionError: a pathologically nested body. Either would otherwise escape as an
