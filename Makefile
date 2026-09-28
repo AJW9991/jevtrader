@@ -6,7 +6,7 @@
 # CI) uses the python3 on PATH. `make PY=... test` overrides either.
 PY ?= $(shell test -x /opt/homebrew/bin/python3 && echo /opt/homebrew/bin/python3 || command -v python3)
 
-.PHONY: test dry run report dash inference-smoke
+.PHONY: test dry run report dash status inference-smoke
 
 test:
 	$(PY) -m unittest discover -s tests
@@ -23,6 +23,12 @@ report:
 # health only (report §1-§3 + the nightly's synthetic tables) as one HTML file, data/dash.html
 dash:
 	$(PY) -m loop.dash
+
+# the morning check in one screen: heartbeat age, HALT, the last row, today's spend against the
+# tripwire, the sample day, the last days of the stop-rule-3 table, the newest proposal, the tail
+# of logs/propose.log. Health only (report §1), like dash.
+status:
+	$(PY) -m loop.status
 
 # PREREG §4-§5's inference on the rows BEFORE T0 (the shakedown): a smoke of the procedure, never a
 # result. The sample form, `python3 -m loop.inference --sample --out RESULTS.md`, refuses until day 28.
