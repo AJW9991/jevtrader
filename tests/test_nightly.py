@@ -1366,6 +1366,25 @@ class Capped(unittest.TestCase):
         self.assertEqual(r.returncode, 3)
         self.assertIn("forbidden prefix (root)", r.stderr)
 
+    def test_the_guard_sees_the_forbidden_tree_through_a_symlinked_home(self):
+        # the paths checked are physical (pwd -P) and the prefixes were matched only as written: with
+        # HOME a symlink, --root under the forbidden tree ran the whole dry night there (cycle.forbidden,
+        # which realpaths the prefix, refused). Both spellings are matched now; nothing is written.
+        env = _sh_env(self)
+        real = os.path.join(env["HOME"], "real")
+        link = os.path.join(env["HOME"], "link")
+        forbidden_real = os.path.join(real, "Projects", "crypto-trading-system", "x")      # the forbidden tree
+        forbidden_via_link = os.path.join(link, "Projects", "crypto-trading-system", "x")  # the forbidden tree, symlinked
+        os.makedirs(forbidden_real)
+        os.symlink(real, link)
+        for home in (link, real):                                  # HOME a link; HOME real and --root through the link
+            env["HOME"] = home
+            r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry", "--date", "2026-09-22",
+                                "--root", forbidden_via_link], capture_output=True, text=True, timeout=30, env=env)
+            self.assertEqual(r.returncode, 3, (home, r.stderr))
+            self.assertIn("forbidden prefix (root)", r.stderr)
+            self.assertEqual(os.listdir(forbidden_real), [])      # nothing written under the tree
+
     def test_propose_sh_defaults_are_the_mac_paths_and_launchd_sets_no_knob(self):
         # The JEVLOOP_* variables are for the suite (here, and on a host without Homebrew or
         # caffeinate). Under launchd the plist sets only PATH, so every one of them is its default,

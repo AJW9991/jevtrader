@@ -55,11 +55,16 @@ done
 # The same two prefixes as config.FORBIDDEN_PREFIXES: the nightly imports loop/ and
 # must never run under the crypto repo or its mirror either (CONTRACT §0, exit 3). Checked on
 # the repo, the --root and the working directory alike: every path this script writes under.
+# Each prefix is matched as written AND as pwd -P spells it (the prefix itself when it exists, else
+# its parent resolved plus its last name), as cycle.forbidden realpaths it: the paths checked are
+# physical, so a HOME or ~/Projects reached through a symlink must not hide the tree.
 guard_path() {
-  case "$1" in
-    "$HOME/Projects/crypto-trading-system"*|"$HOME/Library/Mobile Documents/com~apple~CloudDocs/crypto-trading-system-backup"*)
-      echo "propose: refusing to run under a forbidden prefix ($2)" >&2; exit 3 ;;
-  esac
+  for p in "$HOME/Projects/crypto-trading-system" "$HOME/Library/Mobile Documents/com~apple~CloudDocs/crypto-trading-system-backup"; do
+    q="$(cd "$p" 2>/dev/null && pwd -P || { d="$(cd "${p%/*}" 2>/dev/null && pwd -P)" && echo "$d/${p##*/}"; } || echo "$p")"
+    case "$1" in
+      "$p"*|"$q"*) echo "propose: refusing to run under a forbidden prefix ($2)" >&2; exit 3 ;;
+    esac
+  done
 }
 case "$ROOT" in /*) ;; *) ROOT="$(pwd -P)/$ROOT" ;; esac        # absolute now: the guard and every write see one path
 ROOT_REAL="$(cd "$ROOT" 2>/dev/null && pwd -P || echo "$ROOT")"
