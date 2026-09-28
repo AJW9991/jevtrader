@@ -312,6 +312,25 @@ class JevTest(unittest.TestCase):
         self.assertIsNone(self.rows())                                 # nothing ledgered, nothing sent
         self.urlopen.assert_not_called()
 
+    def test_a_key_file_that_is_not_utf8_is_no_key_naming_its_path(self):
+        # UnicodeDecodeError used to escape key() and the tick logged a billed `unexpected`
+        # with key_path null. SPEC §2: an unusable key is no-key, naming its path. The error's
+        # .object is the file's raw bytes, so it must not ride along as __context__ either.
+        f = os.path.join(self.tmp, "k16")
+        with open(f, "w", encoding="utf-16") as fh:
+            fh.write("FAKEKEY-utf16-abc123\n")
+        name = "file:" + f.replace(os.path.expanduser("~"), "~", 1)
+        with mock.patch.object(config, "KEY_PATHS", (("file", f), ("env", "TYPESAFE_API_KEY_LOOP"))):
+            with self.assertRaises(jev.JevError) as cm:
+                jev.ask(STATE, Q)
+        e = cm.exception
+        self.assertEqual(e.kind, "no-key")                             # not a fall-through to the env key
+        self.assertEqual(e.detail, name + " is not UTF-8 text")
+        self.assertIsNone(e.__context__)
+        self.assertNotIn("FAKEKEY", str(e) + repr(vars(e)))
+        self.assertIsNone(self.rows())                                 # nothing ledgered, nothing sent
+        self.urlopen.assert_not_called()
+
     def test_a_local_valueerror_in_the_send_never_carries_its_message(self):
         # the second belt: whatever http.client raises locally is withheld, not chained
         self.urlopen.side_effect = ValueError("Invalid header value b'Bearer %s\\nx'" % KEY)

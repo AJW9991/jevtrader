@@ -77,16 +77,22 @@ def key():
     """(value, path_name); first hit in config.KEY_PATHS wins, so a loop-triggered rate
     limit lands on the loop's own key before the brain's. The name is safe to log; the
     value goes into one Authorization header and nowhere else. A first hit that is not
-    usable raises no-key naming its PATH; it does not fall through to a shared key."""
+    usable raises no-key naming its PATH; it does not fall through to a shared key. A file
+    that is not UTF-8 text is such a hit: no-key, never an exception the tick would log as
+    a billed `unexpected`."""
     for kind, path in config.KEY_PATHS:
         if kind == "env":
             v = os.environ.get(path, "").strip()
         else:
             try:
-                with open(path) as fh:
+                with open(path, encoding="utf-8") as fh:     # explicit: not the locale's codec
                     text = fh.read()
             except OSError:
                 continue
+            except UnicodeDecodeError:       # raised below, unchained: its .object is the raw file, the key
+                text = None
+            if text is None:
+                raise JevError("no-key", f"{_name(kind, path)} is not UTF-8 text")
             v = next((l.strip() for l in text.splitlines() if l.strip()), "")
             if _ENVLINE.match(v):
                 v = v.split("=", 1)[1].strip().strip("\"'")
