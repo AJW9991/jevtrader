@@ -54,6 +54,24 @@ class Status(unittest.TestCase):
         finally:
             os.remove(self.halt)
 
+    def test_a_heartbeat_is_stale_one_second_past_three_ticks(self):
+        # STALE_S is three cadences: 180 s old is a slow loop, 181 s a stopped one
+        self.assertIn("ticking: last tick 180 s ago", self._render("2026-09-23T10:44", hb="2026-09-23T10:41:00.000Z"))
+        self.assertIn("STOPPED? last tick 3 min ago (2026-09-23T10:40:59.000Z); a healthy loop is under 180 s",
+                      self._render("2026-09-23T10:44", hb="2026-09-23T10:40:59.000Z"))
+
+    def test_the_sample_day_turns_at_t0_each_day_and_ends_at_t0_plus_28_days(self):
+        # T0 10:00Z: a day is [T0 + 86400 (N - 1), T0 + 86400 N), so d01 runs to 09:59 the next morning
+        # and the last minute of d28 is 2026-10-21T09:59; at T0 + 28 d exactly the sample has ended
+        for now, want in (("2026-09-23T09:59", "sample: not started (T0 2026-09-23T10:00Z)"),
+                          ("2026-09-23T10:00", "sample: day d01 of 28"),
+                          ("2026-09-24T09:59", "sample: day d01 of 28"),
+                          ("2026-09-24T10:00", "sample: day d02 of 28"),
+                          ("2026-10-21T09:59", "sample: day d28 of 28 (T0 2026-09-23T10:00Z, ends 2026-10-21T10:00Z)"),
+                          ("2026-10-21T10:00", "sample: ended 2026-10-21T10:00Z")):
+            with self.subTest(now=now):
+                self.assertIn(want, self._render(now))
+
     def test_last_row_today_sample_and_per_day(self):
         text = self._render("2026-09-23T10:42")
         self.assertIn("last row: 20260923T104100Z live ok state=deep organic flat violent c=sell prompt_b=v2 jev=141ms/1000tok err=None key=env:TYPESAFE_API_KEY_LOOP DRIFT", text)

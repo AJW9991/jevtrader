@@ -191,6 +191,24 @@ class Dash(unittest.TestCase):
         self.assertIn("no heartbeat", dash.render(self.rows, self.outs, now=now, hb=None))
         self.assertIn("HALT present", dash.render(self.rows, self.outs, now=now, hb="x", halt=True))
 
+    def test_the_badge_goes_crit_one_second_past_three_ticks(self):
+        import datetime
+        now = datetime.datetime(2026, 9, 23, 10, 44, tzinfo=datetime.timezone.utc)
+        self.assertIn('<span class="badge ok">at render 10:44Z: last tick 180 s before</span>',
+                      dash.render(self.rows, self.outs, now=now, hb="2026-09-23T10:41:00.000Z"))
+        self.assertIn('<span class="badge crit">at render 10:44Z: last tick 3 min before</span>',
+                      dash.render(self.rows, self.outs, now=now, hb="2026-09-23T10:40:59.000Z"))
+
+    def test_the_day_tile_turns_at_t0_each_day_and_ends_at_t0_plus_28_days(self):
+        import datetime
+        t0 = report.tick_epoch("20260923T100000Z")
+        at = lambda s: datetime.datetime.strptime(s, "%Y-%m-%dT%H:%M").replace(tzinfo=datetime.timezone.utc)
+        for now, want in (("2026-09-23T09:59", "not started"), ("2026-09-23T10:00", "1 of 28"), ("2026-09-24T09:59", "1 of 28"),
+                          ("2026-09-24T10:00", "2 of 28"), ("2026-10-21T09:59", "28 of 28"), ("2026-10-21T10:00", "28 of 28 (ended)")):
+            with self.subTest(now=now):
+                self.assertIn(f'<div class="k">sample day</div><div class="v">{want}</div>',
+                              dash.render(self.rows, self.outs, t0=t0, now=at(now)))
+
     def test_outside_alphabet_words_are_loud(self):
         rows = [dict(_row(m)) for m in range(10)]
         for r in rows[:4]:
