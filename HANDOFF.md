@@ -102,7 +102,8 @@ and says so) · `make dash` · `make inference-smoke` · `make results` (day 28;
 - rules/cycle: a bool, NaN or wrong-typed answer field is `jev`/`parse` (the answer kept, no
   column), never a column; feed: a candle that is not finite and positive refuses the set.
 - outcomes: the live decision speaks for its tick when two rows share it; ties in whole ms; a
-  whole row glued onto a torn line is kept. book: null columns hold C too (SPEC §10; latent).
+  whole row glued onto a torn line is kept, and so are two whole rows that lost only their
+  newline. book: null columns hold C too (SPEC §10; latent).
 - **The outcomes and book changes are READERS** (an auditor of the whole diff, 2026-09-28): every
   report, digest and inference run re-reads the whole log with them. On a tick with two or more
   rows, on a torn line with a whole row glued to it, or on an exact-millisecond tie, `join`/`load`
@@ -128,9 +129,23 @@ and says so) · `make dash` · `make inference-smoke` · `make results` (day 28;
   answers. A SPEC erratum for after the sample.
 - `propose.sh --dry` now needs `--root DIR` outside the repo; a HALT night leaves the json
   without a table, and the log names the by-hand `policy_table` command for once HALT is cleared.
+- **Two sentences of the sealed documents do not hold, and the code follows their formal
+  definitions** (found by tests/test_invariants.py's independent references, 2026-09-28):
+  PREREG §3's "Forced holds contribute 0.0; a block with no live row has S_k = 0" fails wherever
+  the arms hold different positions across a priced forced row (HALT, a jev or guard absence, a
+  dry row): SPEC §10 carries the position and marks it to that row's mid, so a HALT-only block
+  has S_k = the arms' difference in marks, and H1 counts those marks (on a 28-day synthetic log,
+  58 of 72 such blocks were non-zero; mean S_k(B−C) −0.7772 bps as defined vs −0.7252 if the
+  sentence held). SPEC §10's "d_t is exactly 0.0 on any tick both arms carry the same qty into
+  and out of" fails when two live decisions share a minute and an arm round-trips inside it (the
+  fold §10 itself prescribes); report._disagreement does not count that tick, H1 is unaffected.
+  Both are for the write-up or prereg-v2; nothing in code changes.
 
 ## Working from a cloud checkout
 No `data/` there. `make test` is the gate (python3 on PATH; the Makefile falls back). Subagent
-worktrees land under `.claude/worktrees/` (ignored; never `git add -A`). For a benchmark, a
-28-day synthetic log is a small script over `tests/test_report.py`'s `_row` shape (the one this
-session used lived in its scratchpad only); `make health` on 40k rows takes ~5 s here.
+worktrees land under `.claude/worktrees/` (ignored; never `git add -A`). For a benchmark,
+`python3 tests/synth.py --days 28 --seed 1 --out FILE` writes a 28-day synthetic log in the
+writer's exact row shape (knobs in its docstring: holes, torn and glued lines, duplicate ticks,
+an out-of-alphabet word, a promotion day; ~6 s, 41k rows, 81 MB); `make health` on it takes
+~5 s here. tests/test_invariants.py holds the readers to independent transcriptions of SPEC
+§10-§11 and PREREG §3-§5 on twelve seeded logs.
