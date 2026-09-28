@@ -69,9 +69,19 @@ def _intent(row, arm, column):
     disagreement). Same rule as an outage."""
     if row.get("absence") is not None or row.get("mode") != "live":
         return None
+    cols = row.get("columns") or {}
+
+    def null(x):                               # the arm's columns absent, or the null_columns() shape
+        return x is None or (isinstance(x, dict) and x.get("argmax") is None)
+    if null(cols.get("a")) and null(cols.get("b")):
+        return None                            # SPEC §10: null columns are a forced hold for EVERY arm, C included.
+                                               # cycle.py writes that shape only with absence set or in dry mode, so
+                                               # on a live row it is a writer bug, and C must not get a trade A and
+                                               # B could never make (2026-09-28, review). One arm's columns null with
+                                               # the other's present is not a shape the tick writes; only that arm holds.
     if arm == "c":
         return row.get("rule_c")
-    cols = (row.get("columns") or {}).get(arm)
+    cols = cols.get(arm)
     if cols is None:
         return None
     if column not in cols:                     # a typo'd column would replay as all-hold; make it loud

@@ -213,6 +213,39 @@ class Paired(unittest.TestCase):
         ca = book.paired(self.ROWS, None, "c", "a", "argmax", 2.0)
         self.assertEqual([(t, -v) for t, v in ca], ac)
 
+    def test_null_columns_hold_every_arm_c_included(self):
+        # SPEC §10: "null columns ... is a forced hold for EVERY arm, C included". A live, absence-null
+        # row with null model columns cannot come from cycle.py, but if one ever did, C trading on it
+        # would manufacture a B-C and an A-C disagreement A and B could never answer.
+        from loop import rules
+        rows = [_row(1, 99.0, 101.0, a="hold", b="hold", c="hold"), _row(2, 99.0, 101.0, a="hold", b="hold", c="buy"),
+                _row(3, 104.0, 106.0, a="hold", b="hold", c="hold")]
+        for cols in ({"a": rules.null_columns(), "b": rules.null_columns()}, {"a": None, "b": None}, {}):
+            rows[1]["columns"] = cols
+            self.assertEqual([d for _, d in book.paired(rows, None, "b", "c", "argmax", 0.0)], [0.0, 0.0, 0.0], cols)
+            rep = book.replay(rows, None, "c", "argmax", 0.0)
+            self.assertEqual(rep["trades"], [])
+            self.assertEqual(rep["forced_hold"], 1)
+        # one arm's columns null with the other's present is not a shape the tick writes: only that arm
+        # holds (the fixtures above lean on it), and C reads rule_c as before
+        for cols in ({"a": _cols("hold"), "b": None}, {"a": None, "b": _cols("hold")}, {"a": _cols("hold"), "b": _cols("hold")}):
+            rows[1]["columns"] = cols
+            self.assertEqual(len(book.replay(rows, None, "c", "argmax", 0.0)["trades"]), 1, cols)
+
+    def test_two_priced_rows_in_one_tick_and_a_locked_book(self):
+        # two priced rows share a minute (a dry row between two live ticks): the dry one is a forced
+        # hold, its mark folds into the minute, and the pnl dict has one entry per tick; a locked book
+        # (bid == ask) opens and closes at the same price, so the spread costs nothing there
+        rows = [_row(1, 99.0, 101.0, a="buy", b="buy", c="buy"), _row(1, 99.5, 100.5, dry=True),
+                _row(2, 100.0, 100.0, a="hold", b="hold", c="hold"), _row(3, 100.0, 100.0, a="sell", b="sell", c="sell")]
+        rep = book.replay(rows, None, "c", "argmax", 0.0)
+        self.assertEqual(list(rep["pnl_bps_per_tick"]), ["20260923T100100Z", "20260923T100200Z", "20260923T100300Z"])
+        self.assertEqual(len(rep["trades"]), 2)
+        self.assertEqual(rep["forced_hold"], 1)
+        self.assertEqual(rep["trades"][1]["price"], 100.0)              # closed at the locked bid
+        for d in (d for _, d in book.paired(rows, None, "b", "c", "argmax", 0.0)):
+            self.assertEqual(d, 0.0)
+
     def test_b_null_columns_is_all_hold(self):
         self.assertEqual(book.paired(self.ROWS, None, "b", "b", "c50v", 60.0),
                          [(r["tick_id"], 0.0) for r in self.ROWS])
