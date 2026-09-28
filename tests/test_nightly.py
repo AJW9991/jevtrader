@@ -585,6 +585,41 @@ class PromoteTest(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("WARNING no policy table", err)
 
+    def test_an_incomplete_table_warns(self):
+        # a table that answered 2 of 81 states vouches for the json's bytes but not for the
+        # candidate's behaviour: the person at the terminal is told before CURRENT moves
+        with open(self.prop, "rb") as fh:
+            sha = hashlib.sha256(fh.read()).hexdigest()
+        md = self.prop[:-5] + ".md"
+        with open(md, "w") as fh:
+            fh.write("# policy table\n\nproposal sha256: " + sha + "  \n"
+                     "requests: 81, answered: 2, errors: 79 -- INCOMPLETE  \n")
+        rc, _, err = self._run(self.prop, "0", "--prompts", self.root)
+        self.assertEqual(rc, 0)
+        self.assertIn(f"WARNING {md} is INCOMPLETE (answered 2 of 81 states)", err)
+        self.assertEqual(prompts.current(self.root), "v2")
+
+    def test_current_is_replaced_whole_never_truncated_in_place(self):
+        # the loop reads CURRENT every minute: it is written beside and renamed over, so no tick
+        # can read an empty file between a truncate and a write
+        current, tmp = os.path.join(self.root, "CURRENT"), os.path.join(self.root, "CURRENT.tmp")
+        with mock.patch.object(self.promote.os, "replace", wraps=os.replace) as rep:
+            rc, _, _ = self._run(self.prop, "0", "--prompts", self.root)
+        self.assertEqual(rc, 0)
+        rep.assert_called_once_with(tmp, current)
+        with open(current) as fh:
+            self.assertEqual(fh.read(), "v2\n")
+        self.assertFalse(os.path.exists(tmp))
+        # a rename that fails leaves CURRENT exactly as it was, and no CURRENT.tmp behind
+        with mock.patch.object(self.promote.os, "replace", side_effect=OSError("disk full")):
+            rc, _, err = self._run(self.prop, "0", "--prompts", self.root)
+        self.assertEqual(rc, 1)
+        self.assertIn("could not switch CURRENT (disk full); CURRENT still names v2", err)
+        with open(current) as fh:
+            self.assertEqual(fh.read(), "v2\n")
+        self.assertFalse(os.path.exists(tmp))
+        self.assertTrue(os.path.exists(os.path.join(self.root, "v3.json")))
+
     def test_dirty_tree_refuses_and_writes_nothing(self):
         self.status = " M loop/x.py\n"
         rc, _, err = self._run(self.prop, "0", "--prompts", self.root)

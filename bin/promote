@@ -11,13 +11,19 @@ promote must be its own commit: every row after it names prompt_b_sha, and that 
 must point at one committed text, not at a working copy someone was still editing.
 It also refuses while the git tag PREREG_TAG (prereg-v1) is missing: PREREG §10
 requires the tag to exist before the first row whose prompt_b is not v1, and that
-ordering is the only thing that makes it a PRE-registration. There is no override
-flag; the tests replace subprocess.run, as they do for `git status`.
+ordering is the only thing that makes it a PRE-registration. No flag skips any of
+these refusals. --repo only names the git tree the clean-tree and tag checks read
+(default: the checkout this file lives in) and --prompts the prompts root; both exist
+for tests (which replace subprocess.run for git rather than point --repo elsewhere),
+and a person never passes either: --repo aimed at another tree would defeat both checks.
 
 May: read the proposal, copy candidate k into prompts/v<N+1>.json as the `action`
 question (with "type": "choice" added: proposals carry none), carry skip/up15/down15
-from v1 byte-for-byte, write the new name to prompts/CURRENT, and print the unified
-diff of the action question against the version that was CURRENT.
+from v1 byte-for-byte, write the new name to prompts/CURRENT (CURRENT.tmp, then
+os.replace: the loop reads CURRENT every minute, and a truncate-then-write would let a
+tick read an empty file), and print the unified diff of the action question against the
+version that was CURRENT. Warn when the table beside the json says INCOMPLETE: a
+candidate can otherwise be promoted on a table that answered 2 of 81 states.
 May not: touch data/, send anything, read the key, edit any existing prompt file, or
 pick k itself. N is the highest vN.json present, not CURRENT+1: after a rollback
 (CURRENT set back to v1 by hand) the next promote must still get a fresh number.
@@ -70,20 +76,28 @@ def diff(cur_name, cur_action, new_name, new_action):
 
 
 _TABLE_SHA = re.compile(r"^proposal sha256: ([0-9a-f]{64})", re.M)
+_TABLE_HEAD = re.compile(r"requests: (\d+), answered: (\d+), errors: (\d+) -- INCOMPLETE")
 
 
 def vouched(proposal):
     """proposals/<date>.json is gitignored; the committed proposals/<date>.md carries its sha256
     (policy_table.render). A mismatch is a refusal: the json was edited after the table was
     made. No table, or a table without the line (made before 2026-09-26), is a warning: the
-    person at the terminal is promoting a file nothing vouches for."""
+    person at the terminal is promoting a file nothing vouches for. A table marked INCOMPLETE
+    is a warning too: it did not ask the candidate on every state."""
     md = proposal[:-5] + ".md" if proposal.endswith(".json") else proposal + ".md"
     try:
         with open(md, encoding="utf-8") as fh:
-            m = _TABLE_SHA.search(fh.read())
+            text = fh.read()
     except OSError:
         print(f"promote: WARNING no policy table beside {proposal}: nothing vouches for this file", file=sys.stderr)
         return
+    if "-- INCOMPLETE" in text:
+        h = _TABLE_HEAD.search(text)
+        seen = f" (answered {h.group(2)} of {h.group(1)} states)" if h else ""
+        print(f"promote: WARNING {md} is INCOMPLETE{seen}: the candidate was not asked on every state; "
+              "read the table before promoting it", file=sys.stderr)
+    m = _TABLE_SHA.search(text)
     if not m:
         print(f"promote: WARNING {md} carries no 'proposal sha256' line: nothing vouches for this file", file=sys.stderr)
         return
@@ -144,8 +158,21 @@ def main(argv=None):
         return 1
     with open(target, "w", encoding="utf-8") as fh:
         fh.write(json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
-    with open(os.path.join(root, "CURRENT"), "w", encoding="utf-8") as fh:
-        fh.write(version + "\n")
+    # The loop reads CURRENT every minute: written whole beside it, then renamed over it, so no
+    # tick can read a truncated or empty CURRENT (PromptError, an absence "guard" row).
+    tmp = os.path.join(root, "CURRENT.tmp")
+    try:
+        with open(os.path.join(root, "CURRENT.tmp"), "w", encoding="utf-8") as fh:   # the one CURRENT writer (test_protocol_scan)
+            fh.write(version + "\n")
+        os.replace(tmp, os.path.join(root, "CURRENT"))
+    except OSError as e:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        print(f"promote: wrote {target} but could not switch CURRENT ({e}); CURRENT still names {cur_name}",
+              file=sys.stderr)
+        return 1
     print(diff(cur_name, cur_doc["action"], version, doc["action"]) or "(action wording identical)")
     print(f"\npromote: wrote {target}, CURRENT -> {version} (sha {prompts.sha_of(doc)[:12]}); "
           f"commit prompts/ now, on its own")
