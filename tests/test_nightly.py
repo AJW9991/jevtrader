@@ -348,9 +348,12 @@ class PolicyTableTest(unittest.TestCase):
 
     def test_dry_prints_81_and_sends_nothing(self):
         buf = io.StringIO()
-        with redirect_stdout(buf):
+        ledger = os.path.join(self.tmp, "sends.tsv")                # the ledger jev.ask would append to: none here
+        with redirect_stdout(buf), mock.patch.object(config, "SENDS", ledger):
             rc = policy_table.main(["--dry", self.prop])
         self.assertEqual(rc, 0)
+        self.assertFalse(os.path.exists(ledger))
+        self.ask.assert_not_called()
         first, body = buf.getvalue().split("\n", 1)
         self.assertEqual(first, "dry: 81 payloads, 0 sent")
         p = json.loads(body)
@@ -864,7 +867,9 @@ class ProposeDryTest(unittest.TestCase):
         self.assertIn(f"prompt_b v1 {prompts.sha('v1')}", dig)
         self.assertIn(prompts.load("v1")["action"]["instructions"], dig)
         self.assertFalse(os.path.exists(os.path.join(tmp, "proposals", "2026-09-22.md")))   # dry writes no table
-        self.assertFalse(os.path.exists(os.path.join(tmp, "data", "sends.tsv")))
+        # no ledger row: jev and the table write only config.SENDS, which --root never moves, so the
+        # dry night's no-send is held by "dry: 81 payloads, 0 sent" above and, in process, by
+        # PolicyTableTest.test_dry_prints_81_and_sends_nothing with the ledger pointed at a temp file
         # (the repo's own data/sends.tsv is never read here: on the Mac the live loop appends to it
         # every minute, and a size compared across the run went red about once in fifty runs)
         self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", log + r.stdout + r.stderr)

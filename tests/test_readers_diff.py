@@ -57,8 +57,10 @@ class ReadersDiff(unittest.TestCase):
     def test_no_number_of_the_outcome_is_printed(self):
         code, out, _ = _run(self.old, REPO, "--log", self.log)
         self.assertEqual(code, 0)
+        head, body = out.split("\n", 1)                                     # the first line is paths, by design
+        self.assertTrue(head.startswith(f"log {self.log}: read by old "), head)
         for token in ("mid_h", "ret_h", "bps", "101.0", "100.0", "up", "down", "flat", "S_k", "H1", "H2", "r("):
-            self.assertNotIn(token, out.replace("H2 unit", ""), token)
+            self.assertNotIn(token, body.replace("H2 unit", ""), token)
 
     def test_an_empty_loop_is_refused_even_run_from_the_checkout(self):
         # run from the repository root (the documented use: --log defaults to a relative path), an old
