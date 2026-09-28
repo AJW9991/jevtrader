@@ -1,17 +1,19 @@
 # HANDOFF — where the last session left off
 
-Written 2026-09-28 by Claude (Fable 5.1) in a CLOUD session on branch `claude/cool-lamport-7sirtw`
-(not merged; nothing here reaches the Mac until Alex merges to `main` and pulls). Supersedes the
-2026-09-27 05:40Z handoff. Update this file at the end of every session that changes state.
+Written 2026-09-28 by Claude in a CLOUD session on branch `claude/cool-lamport-7sirtw`, merged to
+`main` the same day by fast-forward (Alex: "you can merge with main when it's safe"). Nothing here
+reaches the Mac until Alex pulls (below). Supersedes the 2026-09-27 05:40Z handoff. Update this
+file at the end of every session that changes state.
 
 ## State
 - The Mac's loop is untouched by this session (no `data/` here). Sample: `prereg-v1`, T0
   2026-09-25 21:40Z, ends 2026-10-23 21:40Z; day 3 of 28 on 2026-09-28. Arm B is v2 since
   2026-09-26 22:21Z. Spend ≈ $0.05 to date.
-- This branch (`git log origin/main..`): 76 commits, `make test` green (469 tests) under 3.11-3.13 here, and in CI on Linux 3.11-3.14 and macOS 3.14; the
-  suite also passes shuffled, with warnings as errors and under a C locale
-  (`.github/workflows/test.yml`, every push). Five Opus reviews (tick/send, book+outcomes+report, inference, nightly,
-  dash+docs) found no defect on the normal path; every fix below is a guard, a report line, a
+- The merge (`git log 09e867f..origin/main`): 142 commits, `make test` green (743 tests) under 3.11-3.13 here, and in
+  CI on Linux 3.11-3.14 and macOS 3.14 (`.github/workflows/test.yml`, every push); the suite also passes shuffled, with
+  warnings as errors, under a C locale and under a clock moved to 2026-10-23, 2026-11-15 and 2027. Reviewed by five
+  code reviews, a six-lens bug hunt, a mutation round (4,012 mutants), a day-28 triple check and two pre-merge
+  verification passes; none found a defect on the normal path; every fix below is a guard, a report line, a
   test or tooling. Nothing frozen changed: SPEC, PREREG, PROTOCOL, prompts/, PROMPT.md, the
   digest's content, config thresholds.
 
@@ -26,7 +28,7 @@ Written 2026-09-28 by Claude (Fable 5.1) in a CLOUD session on branch `claude/co
    version and the user-memory sha each night. Note: the CLI's own per-machine context (cwd,
    git status, memory paths) differs between the repo and an empty non-git directory, so the
    night this is deployed is itself a change of the model's context; record the date. (a) merge
-   and `git pull` on the Mac before 08:30Z (recommended; merging the branch IS this option, and
+   and `git pull` on the Mac before 08:30Z (recommended; pulling the merged `main` IS this option, and
    the CLI's per-project state for the repo path no longer reaches the night either); (b) leave it
    and record the deviation date here; (c) for prereg-v2, `--safe-mode` so the model sees
    PROMPT.md + digest only.
@@ -39,11 +41,11 @@ Written 2026-09-28 by Claude (Fable 5.1) in a CLOUD session on branch `claude/co
 4. **Model pin for the nightly.** Nothing pins or records which Claude model writes the
    proposals; the CLI version is now logged per night. `--model` is a spending/treatment call.
 5. **120 bps taker fee** still unverified in-account (`config.FEE_BPS_VENUE`).
-6. **Counts to take on the Mac BEFORE merging** (numbers, never a statistic; no §4-§7 look), with
-   the branch's `bin/readers-diff`, which reads the log with two trees and prints counts and
+6. **Counts to take on the Mac BEFORE pulling** (numbers, never a statistic; no §4-§7 look), with
+   the merged `main`'s `bin/readers-diff` (old = the code the Mac runs now, new = `origin/main`), which reads the log with two trees and prints counts and
    tick_ids only:
    ```bash
-   cd ~/Projects/jev-paper-loop && git fetch origin && rm -rf /tmp/old /tmp/new && mkdir /tmp/old /tmp/new && git archive origin/main loop | tar -x -C /tmp/old && git archive origin/claude/cool-lamport-7sirtw loop | tar -x -C /tmp/new && git show origin/claude/cool-lamport-7sirtw:bin/readers-diff > /tmp/readers-diff && /opt/homebrew/bin/python3 /tmp/readers-diff /tmp/old /tmp/new --log data/decisions.jsonl
+   cd ~/Projects/jev-paper-loop && git fetch origin && rm -rf /tmp/old /tmp/new && mkdir /tmp/old /tmp/new && git archive HEAD loop | tar -x -C /tmp/old && git archive origin/main loop | tar -x -C /tmp/new && git show origin/main:bin/readers-diff > /tmp/readers-diff && /opt/homebrew/bin/python3 /tmp/readers-diff /tmp/old /tmp/new --log data/decisions.jsonl
    ```
    It prints rows read by each tree (a difference = a whole row glued onto a torn line, now
    kept), lines skipped, priced tick_ids with more than one row (item 3), live answered rows
@@ -58,7 +60,9 @@ Written 2026-09-28 by Claude (Fable 5.1) in a CLOUD session on branch `claude/co
    mean the Mac read the file in another encoding, and the merge would change the question
    sent). Record them here. If every count is 0, the merge changes no existing reading.
 
-## Merging and pulling on the Mac (Alex; the loop keeps running)
+## Pulling on the Mac (Alex; the loop keeps running)
+`main` on GitHub holds the merge; the Mac's checkout does not until this pull. Take the counts of
+decision 6 first.
 Each tick is a fresh process, so a pull between ticks is safe; a tick that imports during the
 sub-second checkout would traceback and lose its minute (one row, never a wrong one). Not while
 the nightly runs (08:30Z plus ~15 min, or at wake after a slept-through 03:30 local). `--ff-only`:
