@@ -1,21 +1,25 @@
 # HANDOFF — where the last session left off
 
 Written 2026-09-28 by Claude in a CLOUD session on branch `claude/cool-lamport-7sirtw`, merged to
-`main` the same day by fast-forward (Alex: "you can merge with main when it's safe"). Nothing here
-reaches the Mac until Alex pulls (below). Supersedes the 2026-09-27 05:40Z handoff. Update this
-file at the end of every session that changes state.
+`main` by fast-forward twice that day, at 1e7faeb and again after a fourth review round (Alex: "you
+can merge with main when it's safe"; for the second, "approved for recommended on all" on the three
+options below). Nothing here reaches the Mac until Alex pulls (below). Supersedes the 2026-09-27
+05:40Z handoff. Update this file at the end of every session that changes state.
 
 ## State
 - The Mac's loop is untouched by this session (no `data/` here). Sample: `prereg-v1`, T0
   2026-09-25 21:40Z, ends 2026-10-23 21:40Z; day 3 of 28 on 2026-09-28. Arm B is v2 since
   2026-09-26 22:21Z. Spend ≈ $0.05 to date.
-- The merge (`git log 09e867f..origin/main`): 142 commits, `make test` green (743 tests) under 3.11-3.13 here, and in
-  CI on Linux 3.11-3.14 and macOS 3.14 (`.github/workflows/test.yml`, every push); the suite also passes shuffled, with
-  warnings as errors, under a C locale and under a clock moved to 2026-10-23, 2026-11-15 and 2027. Reviewed by five
-  code reviews, a six-lens bug hunt, a mutation round (4,012 mutants), a day-28 triple check and two pre-merge
-  verification passes; none found a defect on the normal path; every fix below is a guard, a report line, a
-  test or tooling. Nothing frozen changed: SPEC, PREREG, PROTOCOL, prompts/, PROMPT.md, the
-  digest's content, config thresholds.
+- The merge (`git log 09e867f..origin/main`): `make test` green (825 tests) under 3.11-3.13 here, and in CI on
+  every push (`.github/workflows/test.yml`): Linux 3.11-3.14, macOS 3.14, and six modes on 3.14 that were hand runs
+  until 2026-09-28: warnings as errors, a C locale with UTF-8 mode off, a shuffled order, and the clock moved to the
+  day-28 run, to 2026-11-15 and to 2027 (`make test-modes` runs them here, ~7 min). Reviewed by five code reviews, a
+  six-lens bug hunt, a mutation round (4,012 mutants), a day-28 triple check, two pre-merge verification passes and
+  a fourth round (76 agents, 33 confirmed findings) with two rounds of fixes after it, each patch re-run and tried
+  by an agent that did not write it. None found a defect on the normal path (a tick or a night on the inputs the
+  loop itself writes); every fix is a guard, a report line, a test or tooling. Nothing frozen changed: SPEC,
+  PREREG, PROTOCOL, prompts/, PROMPT.md, the digest's content, config thresholds, and tests/test_frozen.py now
+  pins them (an edit fails the suite the day it is made).
 
 ## Decisions for Alex (options, not done)
 1. **The slow model's context.** `claude -p` run with cwd = the repo auto-loads `./CLAUDE.md`
@@ -38,8 +42,12 @@ file at the end of every session that changes state.
 3. **Duplicate priced ticks.** The join now lets the live decision speak for its tick (a later
    dry/double-fire row can no longer score it against a shifted window). Check the live log for
    any such duplicate: `python3 -c "from loop import outcomes;import collections;c=collections.Counter(r['tick_id'] for r in outcomes.load('data/decisions.jsonl') if r.get('mid'));print({t:n for t,n in c.items() if n>1})"`.
-4. **Model pin for the nightly.** Nothing pins or records which Claude model writes the
-   proposals; the CLI version is now logged per night. `--model` is a spending/treatment call.
+4. **Model for the nightly: recorded, not pinned** (the recommended option; Alex approved it
+   2026-09-28). From the first night after the pull, the log says `claude model <id>` (or
+   `unrecorded`), read after the call from the CLI's own transcript of it
+   (nightly/answered_model.py), and each table's header says `proposal written by: <id>`; the
+   call itself is byte-identical. Nights before the pull recorded neither the model nor the CLI
+   version. Pinning with `--model` stays a treatment and spending decision for prereg-v2.
 5. **120 bps taker fee** still unverified in-account (`config.FEE_BPS_VENUE`).
 6. **Counts to take on the Mac BEFORE pulling** (numbers, never a statistic; no §4-§7 look), with
    the merged `main`'s `bin/readers-diff` (old = the code the Mac runs now, new = `origin/main`), which reads the log with two trees and prints counts and
@@ -59,6 +67,24 @@ file at the end of every session that changes state.
    2026-09-26 22:21Z) should carry a `prompt_b_sha` starting b3291ca4a550 (v2 read as UTF-8; another sha would
    mean the Mac read the file in another encoding, and the merge would change the question
    sent). Record them here. If every count is 0, the merge changes no existing reading.
+7. **2026-09-26 is likely a BAD day.** The 09-25 review measured that UTC day's fill at 90.2 %,
+   under stop rule 3's 95 % (STEPS said "0.2 points from a BAD day"; corrected). The exclusions
+   line is yours (PREREG §8.3): `make health` or `make status` names the T0-anchored day and its
+   fill. The parser, pulled with main, refuses a tab-form line whose reason begins with a number
+   standing apart ('3 h asleep', '401 from Jev', '24/7'), because a tab typed inside the day
+   ('d1<TAB>6<TAB>...') shifts that number into the reason: write '3h asleep' or start with a
+   word. A header typed with single spaces or reworded is accepted again. `make status` shows
+   REFUSED, with the fix, the morning after a line it cannot read.
+
+## Approved 2026-09-28 ("approved for recommended on all")
+- The nightly model is recorded, not pinned: decision 4.
+- The 81-state table: under each candidate's counts, where it changes CURRENT's answer (per
+  adjective, changed / answered states, and the CURRENT -> candidate moves), for the person who
+  promotes; the digest never carries a table. Tables built before 2026-09-28 lack it. It says which
+  states moved, not whether the move follows the wording's criteria: that stays your read.
+- Report §4.5: the H1 cell by arm B's prompt version, one row per contiguous stretch of a version
+  (a rollback's return is `<version> #2`). Descriptive, not in PREREG, and withheld with §4-§7
+  until day 28; read it beside, never instead of, the H1 statistic.
 
 ## Pulling on the Mac (Alex; the loop keeps running)
 `main` on GitHub holds the merge; the Mac's checkout does not until this pull. Take the counts of
@@ -89,7 +115,7 @@ sequence against an independent transcription of PREREG §5, the lower bounds to
 A full run on a 28-day synthetic log takes about a minute here.
 
 ## Tooling (all in the Makefile)
-`make test` · `make status` (the morning check: heartbeat age, HALT, last row, today's spend vs
+`make test` · `make test-modes` (the six CI modes; one with `make test-mode MODE=...`) · `make status` (the morning check: heartbeat age, HALT, last row, today's spend vs
 the tripwire, sample day, last days of the stop-rule table, the exclusions file as day 28 will
 read it, newest proposal + MISSING flag, tail of propose.log) · `make health` (report §1-§3 on the sample; `make report --health` never worked)
 · `make report` (withholds §4-§7 on sample rows until 2026-10-23 21:40Z; `--unblind` is a look
@@ -144,9 +170,23 @@ and says so) · `make dash` · `make inference-smoke` · `make results` (day 28;
   rendered before is byte-identical); a row stamped after the clock closes no day of the stop-rule
   table; the dash shows the skipped-lines count and draws a day without rows as empty cells;
   propose.sh's path guard sees the forbidden tree through a symlinked HOME; the exclusions parser
-  takes the tab form or PREREG's two-space form (single spaces, a tab line without its four fields and a
-  first line that is not the header are refused, with file:line) and `make status` prints the parsed exclusions (or REFUSED)
-  every morning. A NaN confidence in the digest's filter is an ERRATA entry (the treatment).
+  takes the tab form or PREREG's two-space form (single spaces, a tab line without its four fields,
+  a fill% or jev-err% that is not a value, a reason that begins with a number standing apart, and a
+  first line that is neither the header nor a day are refused, with file:line; decision 7) and
+  `make status` prints the parsed exclusions (or REFUSED) every morning. A NaN confidence in the
+  digest's filter is an ERRATA entry (the treatment).
+
+- Found by the fourth round and its two fix rounds (2026-09-28), each fixed with a test that failed
+  before: the day-28 pending refusal waits for the last row stamped at or before the clock (a row
+  stamped after it no longer lifts it), and so do the health readers; report §1 sums token counts
+  without overflowing and prices only what the spend guard charges; `--since` in ISO week form
+  works; the spend HALT and the status screen name an uncounted total; propose.sh knows the
+  forbidden tree by identity (a case-only name, the firmlink, a bind mount), writes only under the
+  --root it checked, refuses a newline in --root or the cwd, and runs every python before `cd` isolated;
+  readers-diff survives a full disk, an ignored or repeated signal, and cleans up; the dash strip
+  draws a long outage, hours not yet begun, and a HALT hour as what they are, and a sum past a
+  float's range never stops the page; the loop plist is well-formed XML (comments only) and both
+  plists are read strictly in the suite; the outcomes rescue is bounded.
 
 ## Not changed on purpose (prereg-v2 notes)
 Every disagreement between the sealed documents and the code, in one table per document: ERRATA.md.
