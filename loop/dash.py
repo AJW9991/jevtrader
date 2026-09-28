@@ -156,7 +156,9 @@ def spend_by_day(rows, t0=None, over=None):
     """day label -> dollars: the input tokens the rows logged, at config.USD_PER_MTOK. A count past a
     float's range is left out (report._num). A day whose counts, each in range, sum past it is left out
     too, and its label goes on `over` (a list) when one is given, so the page can name it: until
-    2026-09-28 two rows of int(1e308) on one day raised OverflowError here and the page was not built."""
+    2026-09-28 two rows of int(1e308) on one day raised OverflowError here and the page was not built,
+    and until the evening of that day two float counts of 1e308 (or an int and a float) summed to inf
+    without raising, were charted as inf, named nowhere, and the page died drawing that bar."""
     c = collections.Counter()
     for r in rows:
         j = r.get("jev")
@@ -166,8 +168,12 @@ def spend_by_day(rows, t0=None, over=None):
     out, past = {}, []
     for d, t in c.items():
         try:
-            out[d] = t * config.USD_PER_MTOK / 1e6                           # the int sum becomes a float here
-        except OverflowError:
+            usd = t * config.USD_PER_MTOK / 1e6                              # an int sum becomes a float here
+        except OverflowError:                                                # an int sum past a float's range raises
+            usd = None
+        if report._num(usd):
+            out[d] = usd
+        else:                                                                # a float sum past it is inf, and raises nothing
             past.append(d)
     if over is not None:
         over.extend(sorted(past))

@@ -242,6 +242,32 @@ class Dash(unittest.TestCase):
         self.assertIn('<div class="tile crit"><div class="k">spend, whole log</div><div class="v">past range</div>', page)
         self.assertNotIn("$inf", page)                                                       # no dollar figure anywhere reads inf
 
+    def test_float_counts_that_sum_to_inf_are_not_charted_and_the_page_is_built(self):
+        # 2026-09-28 (round 4b): spend_by_day caught only the OverflowError of an int sum. Float counts, each
+        # passing report._num, sum to inf and raise nothing: it answered {day: inf}, named no day, and render
+        # died drawing that bar (OverflowError: cannot convert float infinity to integer)
+        def day(d, toks):
+            out = []
+            for m, tok in enumerate(toks):
+                r = dict(_row(20), tick_id=f"{d}T10{m:02d}00Z", ts_rx=f"{d[:4]}-{d[4:6]}-{d[6:]}T10:{m:02d}:00.100Z")
+                r["jev"] = dict(r["jev"], input_tokens=tok)
+                out.append(r)
+            return out
+        rows = day("20260922", [1e308, 1e308]) + day("20260923", [int(1e308), 1e308]) + day("20260924", [1000, 1000])
+        self.assertTrue(all(report._num(r["jev"]["input_tokens"]) for r in rows))           # each count is in range
+        over = []
+        self.assertEqual(dash.spend_by_day(rows, None, over), {"20260924": 2000 * config.USD_PER_MTOK / 1e6})
+        self.assertEqual(over, ["20260922", "20260923"])                                     # named, as an int sum's day is
+        self.assertEqual(report.health(rows, outcomes.join(rows))["usd"], math.inf)
+        page = dash.render(rows, outcomes.join(rows), now=datetime.datetime(2026, 9, 24, 12, 0, tzinfo=datetime.timezone.utc))
+        self.assertIn("<span class='badge crit'>2 day(s) not charted</span> 20260922, 20260923: the input tokens", page)
+        for d in ("20260922", "20260923"):
+            self.assertIn(f"title='{d}: input tokens summed past a float&#x27;s range, not charted'><div class='vbar' style='height:0%'>", page)
+        self.assertIn("title='20260924: $0.0001 of the $0.25 tripwire'", page)                 # the ordinary day keeps its bar
+        self.assertEqual(page.count("<td>past range</td>"), 2)                                # the per-day table
+        self.assertIn('<div class="tile crit"><div class="k">spend, whole log</div><div class="v">past range</div>', page)
+        self.assertNotIn("$inf", page)
+
     def test_skipped_log_lines_show_on_the_page_as_in_report_health(self):
         # the dash never passed the log's skipped lines to report.health, so its "skipped log lines"
         # text could not render: the one count of rows lost to torn lines was missing from the page
