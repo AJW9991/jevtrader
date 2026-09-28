@@ -228,8 +228,9 @@ class CycleTest(unittest.TestCase):
             self.assertEqual(cycle.forbidden(os.path.join(tree, "sub", "night")), tree)     # by its own name: the string match
             self.assertIsNone(cycle.forbidden(os.path.join(inside, "night")))               # the documented gap
         doc = " ".join(cycle.forbidden.__doc__.split())
-        self.assertIn("a second name for the tree itself or for one of its ancestors", doc)
-        self.assertIn("It does not know a second name for a directory inside the tree", doc)
+        self.assertIn("a second name that keeps its device and inode, for the tree itself or for one of its ancestors", doc)
+        self.assertIn("It does not know a name with a device of its own (an overlay,", doc)   # round-4c checker
+        self.assertIn("nor a second name for a directory inside the tree", doc)
 
     def test_usage_error_exits_2(self):
         for argv in ([], ["--dry"], ["--once", "--forever"], ["--bogus"]):

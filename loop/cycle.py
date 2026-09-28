@@ -106,13 +106,15 @@ def forbidden(repo=None):
     the guard must not depend on which spelling the shell used. Then by identity, since
     realpath does not unify every second name for one directory: each existing ancestor of
     the resolved path, the path itself included, is compared with each existing prefix by
-    (st_dev, st_ino). That knows the tree by a second name for the tree itself or for one of
-    its ancestors (on the Mac a case-only difference on case-insensitive APFS, or the
-    /System/Volumes/Data firmlink; a bind mount of the tree or of a directory above it). It
-    does not know a second name for a directory inside the tree (a bind mount of a
-    subdirectory, say): the path's ancestors are then that directory's, never the tree's,
-    and finding it would take a walk of the tree or the mount table. macOS has no bind
-    mounts without FUSE. That is a stat per prefix and per ancestor, never a walk of a tree;
+    (st_dev, st_ino). That knows the tree by a second name that keeps its device and inode,
+    for the tree itself or for one of its ancestors (on the Mac a case-only difference on
+    case-insensitive APFS, or the /System/Volumes/Data firmlink; on Linux a bind mount of the
+    tree or of a directory above it). It does not know a name with a device of its own (an
+    overlay, an NFS or SMB loopback mount, a FUSE mirror such as bindfs: the same files under
+    another st_dev), nor a second name for a directory inside the tree (a bind mount of a
+    subdirectory, say: the path's ancestors are then that directory's, never the tree's);
+    either would take a walk of the tree or the mount table. None of these is on the Mac as
+    set up (STEPS). That is a stat per prefix and per ancestor, never a walk of a tree;
     a prefix or an ancestor that does not exist or cannot be stat-ed is skipped by it (the
     string match above still applies)."""
     rp = os.path.realpath(repo or config.REPO)

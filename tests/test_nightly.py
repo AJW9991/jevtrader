@@ -1651,9 +1651,13 @@ class Capped(unittest.TestCase):
         # tests/test_cycle.py holds the docstring to the same claim and the behaviour to both.
         with open(os.path.join(REPO, "nightly", "propose.sh"), encoding="utf-8") as fh:
             words = " ".join(l.strip().lstrip("#").strip() for l in fh.read().splitlines() if l.lstrip().startswith("#"))
+        # The round-4c checker then mounted an overlay of the tree (the same files under another st_dev), which
+        # the identity check cannot know either: the header names that gap too
         for claim, said in (("a second name realpath keeps (a bind mount;", False),
-                            ("a second name realpath keeps for the tree itself or one of its ancestors", True),
-                            ("A second name for a directory inside the tree (a bind mount of a subdirectory) is not known", True)):
+                            ("a second name realpath keeps for the tree itself or one of its ancestors", False),
+                            ("a second name that keeps the device and inode of the tree or one of its ancestors", True),
+                            ("Not known: a name with a device of its own (an overlay,", True),
+                            ("or a second name for a directory inside the tree (a bind mount of a subdirectory)", True)):
             self.assertEqual(claim in words, said, claim)                           # the claim, not the whole header, on a failure
 
     def test_every_write_goes_under_the_root_the_guard_checked(self):

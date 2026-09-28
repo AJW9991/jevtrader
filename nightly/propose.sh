@@ -60,11 +60,12 @@ done
 # symlinked HOME or ~/Projects, a '..', '//' or '.' in it, or a --root that does not exist yet (its
 # existing part resolved, the rest normalized) cannot hide the tree, and it matches each prefix and
 # its realpath on a '/' boundary, then each existing prefix by (st_dev, st_ino) against the path's
-# existing ancestors, so a second name realpath keeps for the tree itself or one of its ancestors
-# (on the Mac a case-only difference on APFS, or the /System/Volumes/Data firmlink; a bind mount of
-# the tree or above it) cannot either. A second name for a directory inside the tree (a bind mount
-# of a subdirectory) is not known: that would take a walk of the tree or the mount table, and macOS
-# has no bind mounts without FUSE. Every write then goes under the --root as resolved, the path the
+# existing ancestors, so a second name that keeps the device and inode of the tree or one of its
+# ancestors (on the Mac a case-only difference on APFS, or the /System/Volumes/Data firmlink; on
+# Linux a bind mount of the tree or above it) cannot either. Not known: a name with a device of its
+# own (an overlay, an NFS or SMB loopback, a FUSE mirror such as bindfs), or a second name for a
+# directory inside the tree (a bind mount of a subdirectory); either would take a walk of the tree
+# or the mount table, and none is on the Mac as set up. Every write then goes under the --root as resolved, the path the
 # guard checked, never as typed. Its python runs isolated (-I: no working directory on the path, so
 # a cwd inside another tree is never imported) and writes no bytecode (-B), and must answer "ok" or
 # "forbidden ...": anything else, an empty answer included, is a guard that did not run (exit 3).
