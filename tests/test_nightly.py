@@ -288,18 +288,22 @@ class DigestTest(unittest.TestCase):
     def test_a_confidence_past_a_floats_range_neither_crashes_nor_changes_the_digest(self):
         # the same kind of jev/parse row as a list choice: an integer confidence of 10**400 passed the
         # >= 0.85 filter and float() raised OverflowError, so that date never got a proposal
-        base, _ = digest.build(DAY, self.log)
         rows = synthetic_log()
-        odd = dict(rows[7], absence="jev", columns={"a": None, "b": None})
+        odd = dict(rows[0], absence="jev", columns={"a": None, "b": None})    # minute 0: a buy the next 15 min contradicts
         odd["answers"] = dict(odd["answers"], b_action={"choice": "buy", "confidence": 10 ** 400,
                                                          "probabilities": {"buy": 1.0, "sell": 0.0, "hold": 0.0}})
-        rows[7] = odd
+        rows[0] = odd
         _write_log(self.log, rows)
-        text, _ = digest.build(DAY, self.log)
-        self.assertEqual(_table_rows(text), [("buy", 0.95, "down"), ("sell", 0.90, "up"), ("sell", 0.86, "up")])
+        text, _ = digest.build(DAY, self.log)                                  # reaches float(): raised before the guard
+        self.assertEqual(_table_rows(text), [("sell", 0.90, "up"), ("sell", 0.86, "up")])
         out = os.path.join(self.tmp, "d.md")
         with redirect_stdout(io.StringIO()):
             self.assertEqual(digest.main(["--date", "2026-09-22", "--log", self.log, "--out", out]), 0)
+
+    def test_the_policy_table_formats_a_confidence_past_a_floats_range(self):
+        self.assertEqual(policy_table._cell(("buy", 10 ** 400)), ("buy", "?"))
+        self.assertEqual(policy_table._cell(("sell", 0.8765)), ("sell", "0.88"))
+        self.assertEqual(policy_table._cell(("hold", True)), ("hold", "-"))
 
     def test_the_digest_of_the_fixture_day_is_the_bytes_main_wrote(self):
         # the digest's content is the treatment (CLAUDE.md): every byte of it must stay what the code on

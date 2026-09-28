@@ -195,7 +195,12 @@ def _cell(a):
     if a is None:
         return "-", "-"
     choice, conf = a
-    return str(choice), f"{conf:.2f}" if isinstance(conf, (int, float)) and not isinstance(conf, bool) else "-"
+    if not isinstance(conf, (int, float)) or isinstance(conf, bool):
+        return str(choice), "-"
+    try:
+        return str(choice), f"{conf:.2f}"
+    except OverflowError:                      # an int past a float's range: it raised after all 81 sends, and the
+        return str(choice), "?"                # table was left empty
 
 
 def render(date, cur_name, cur_sha, cands, cur_q, results, proposal_sha=None):
