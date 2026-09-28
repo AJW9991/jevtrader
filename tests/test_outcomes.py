@@ -95,6 +95,46 @@ class Join(unittest.TestCase):
         self.assertEqual(out2[rows[0]["tick_id"]]["mid_h"], 100.0)
         self.assertEqual(outcomes.join([_row(0, None, absence="feed")], H)[rows[0]["tick_id"]], outcomes.GAP)
 
+    def test_a_later_priced_twin_never_speaks_for_the_live_decision(self):
+        # 2026-09-28 (review): the live tick at :00.1 has no priced row within +-30 s of its t+15
+        # (that row was lost). A `make dry` 35 s into the same minute, or a double-fire, has its own
+        # window [t+15:05, t+16:05], which catches the t+16 row; before this fix that outcome replaced
+        # the live row's gap, so the decision was scored against a mid 16 minutes out, from another
+        # row's mid_t. The live row (rank 0) keeps its gap; a lock row (unpriced, rank 2) never wins.
+        rows = [_row(60 * m + 0.1, 100.0 + m) for m in range(21) if m != 15]
+        dry = dict(_row(35.0, 100.5), mode="dry")
+        rows.insert(1, dry)
+        out = outcomes.join(rows)
+        self.assertEqual(out[rows[0]["tick_id"]], outcomes.GAP)
+        self.assertEqual((outcomes.rank(rows[0]), outcomes.rank(dry)), (0, 1))
+        # the dry row FIRST in file order does not outrank the live row either
+        out = outcomes.join([dry] + [r for r in rows if r is not dry])
+        self.assertEqual(out[dry["tick_id"]], outcomes.GAP)
+        # and where the live row does have an outcome, the twin's is never the one filed
+        rows = [_row(60 * m + 0.1, 100.0 + m) for m in range(21)]
+        rows.insert(1, dict(_row(35.0, 100.5), mode="dry"))
+        self.assertEqual(outcomes.join(rows)[rows[0]["tick_id"]]["mid_h"], 115.0)
+        # two live priced rows in one minute: the first in file order speaks for the tick
+        rows = [_row(60 * m + 0.1, 100.0 + m) for m in range(21)]
+        rows.insert(1, _row(30.0, 100.5))
+        self.assertEqual(outcomes.join(rows)[rows[0]["tick_id"]]["mid_h"], 115.0)
+        self.assertEqual(outcomes.rank(_row(0, None, absence="lock")), 2)
+
+    def test_an_exact_tie_goes_to_the_earlier_row_in_whole_milliseconds(self):
+        # 18.652 s before and after t+900 from a t whose fraction is .137: the two float distances
+        # differ in the last bit and about a quarter of such ties went to the later row
+        b = _row(0.137, 100.0)
+        e = _row(900 - 18.652 + 0.137, 102.0)
+        l = _row(900 + 18.652 + 0.137, 103.0)
+        self.assertEqual(outcomes.join([b, e, l])[b["tick_id"]]["mid_h"], 102.0)
+        for k in range(200):                                          # many fractions, always the earlier
+            b = _row(0.001 * k, 100.0)
+            e, l = _row(900 - 7.777 + 0.001 * k, 102.0), _row(900 + 7.777 + 0.001 * k, 103.0)
+            self.assertEqual(outcomes.join([b, e, l])[b["tick_id"]]["mid_h"], 102.0, k)
+        times, mids = outcomes.priced_points([b, e, l])
+        self.assertEqual(outcomes.pick(times, outcomes.ts_epoch(b["ts_rx"])), 1)
+        self.assertIsNone(outcomes.pick(times, outcomes.ts_epoch(l["ts_rx"])))
+
     def test_gap_outcome_is_a_fresh_dict(self):
         out = outcomes.join([_row(0, 100.0)], H)
         out[next(iter(out))]["label"] = "x"

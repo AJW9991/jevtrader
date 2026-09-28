@@ -76,31 +76,67 @@ def outcome(mid_t, mid_h):
     return {"mid_h": mid_h, "ret_h_bps": r, "label": label(r), "absence": None}
 
 
+def _ms(x):
+    """Whole milliseconds: ts_rx carries three decimals, and a tie judged on binary float
+    distances went to the LATER row about a quarter of the time (2026-09-28, review)."""
+    return int(round(x * 1000.0))
+
+
+def priced_points(rows):
+    """(times, mids) of every row with a mid, sorted by ts_rx: the candidates of the join."""
+    pts = sorted(((t, r["mid"]) for r in rows
+                  if _num(r.get("mid")) and (t := ts_epoch(r.get("ts_rx"))) is not None),
+                 key=lambda p: p[0])                 # by time only: two rows can share a ts_rx
+    return [p[0] for p in pts], [p[1] for p in pts]
+
+
+def pick(times, t, horizon_s=config.HORIZON_S):
+    """The index in `times` (sorted epochs of the priced rows) of the row the join takes for a
+    decision at `t`: the one nearest t + h within [t + h - JOIN_TOL_S, t + h + JOIN_TOL_S], strictly
+    after t, ties (in whole milliseconds) to the earlier row; None when the window is empty. The one
+    rule, used by join() and by report.realised_horizon(), so the health line measures the horizon
+    the join actually realised."""
+    target = t + horizon_s
+    i, best, best_d = bisect.bisect_left(times, target - JOIN_TOL_S), None, None
+    while i < len(times) and times[i] <= target + JOIN_TOL_S:
+        d = abs(_ms(times[i]) - _ms(target))
+        if times[i] > t and (best is None or d < best_d):   # strict <: a tie keeps the earlier row
+            best, best_d = i, d
+        i += 1
+    return best
+
+
+def rank(r):
+    """Which row speaks for a tick_id when two share it (a launchd double-fire, a `make dry`
+    between two live ticks): the live decision first (mode live, absence null), then any other
+    priced row, then an unpriced one. A lower rank wins; equal ranks keep the FIRST row in file
+    order. Before 2026-09-28 a later priced row replaced an earlier row's gap, so a dry row
+    written 35 s into the minute could score the live decision against a mid up to t + 16 min
+    from its own, shifted window (SPEC §11: never a row outside it)."""
+    if not _num(r.get("mid")):
+        return 2
+    return 0 if r.get("mode") == "live" and r.get("absence") is None else 1
+
+
 def join(rows, horizon_s=config.HORIZON_S):
     """{tick_id: outcome}. For each row at t with a mid, the priced row whose ts_rx is
     nearest t+h, within [t+h-JOIN_TOL_S, t+h+JOIN_TOL_S] (ties: the earlier), gives
     mid_h; anything else is the GAP outcome. A row without a mid (absence before the
     feed) is a gap itself and never a candidate, so an absence row at t+h does not
-    hide the priced row one second behind it."""
-    pts = sorted(((t, r["mid"]) for r in rows
-                  if _num(r.get("mid")) and (t := ts_epoch(r.get("ts_rx"))) is not None),
-                 key=lambda p: p[0])                 # by time only: two rows can share a ts_rx
-    times = [p[0] for p in pts]
-    out = {}
+    hide the priced row one second behind it. Two rows with one tick_id: rank() says
+    which one's outcome is the tick's."""
+    times, mids = priced_points(rows)
+    out, ranks = {}, {}
     for r in rows:
         tid, t, mid_t = r.get("tick_id"), ts_epoch(r.get("ts_rx")), r.get("mid")
         o = dict(GAP)
         if t is not None and _num(mid_t):
-            target = t + horizon_s
-            i, best = bisect.bisect_left(times, target - JOIN_TOL_S), None
-            while i < len(times) and times[i] <= target + JOIN_TOL_S:
-                if times[i] > t and (best is None or abs(times[i] - target) < abs(times[best] - target)):
-                    best = i                         # strict <: a tie keeps the earlier row
-                i += 1
+            best = pick(times, t, horizon_s)
             if best is not None:
-                o = outcome(mid_t, pts[best][1])
-        if tid not in out or out[tid]["absence"] is not None:   # two rows one minute: keep the priced one
-            out[tid] = o
+                o = outcome(mid_t, mids[best])
+        k = rank(r)
+        if tid not in out or k < ranks[tid]:         # a better-ranked row speaks for the tick; equal keeps the first
+            out[tid], ranks[tid] = o, k
     return out
 
 
