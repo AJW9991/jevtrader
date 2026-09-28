@@ -1,6 +1,6 @@
 """loop/dash.py: the health page renders from a log, and can carry no H1/H2/pair/confidence number
 because every report.<name> it uses is on an allowlist of section 1-3 functions (PREREG §8.4)."""
-import ast, contextlib, io, os, re, shutil, tempfile, unittest
+import ast, contextlib, datetime, io, os, re, shutil, tempfile, unittest
 from unittest import mock
 
 from fixture_prereg import pin_prereg, text as prereg_text
@@ -111,6 +111,29 @@ class Dash(unittest.TestCase):
         self.assertEqual(dash._bin(5, 0), 4)
         self.assertEqual([dash._bin_state(n, 1000) for n in (0, 1, 9, 10, 49, 50, 199, 200, 499, 500, 1000)], [-1, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4])
         self.assertEqual(dash._bin_state(3, 0), 4)
+
+    def test_skipped_log_lines_show_on_the_page_as_in_report_health(self):
+        # the dash never passed the log's skipped lines to report.health, so its "skipped log lines"
+        # text could not render: the one count of rows lost to torn lines was missing from the page
+        now = datetime.datetime(2026, 9, 23, 10, 42, tzinfo=datetime.timezone.utc)
+        self.assertIn("skipped log lines 3", dash.render(self.rows, self.outs, now=now, bad=[(1, "x"), (5, "y"), (9, "z")]))
+        self.assertNotIn("skipped log lines", dash.render(self.rows, self.outs, now=now))
+
+    def test_a_calendar_day_without_a_row_is_drawn_empty_in_the_strip(self):
+        # the strip looped over days that HAVE rows, so a day the Mac was off vanished instead of
+        # showing as 24 empty cells; days after the clock are shown only if a row names them
+        rows = []
+        for day in ("20260923", "20260925"):                               # 2026-09-24 has no row at all
+            for m in range(3):
+                r = dict(_row(m))
+                r["tick_id"] = f"{day}T10{m:02d}00Z"
+                r["ts_rx"] = f"{day[:4]}-{day[4:6]}-{day[6:]}T10:{m:02d}:00.100Z"
+                rows.append(r)
+        now = datetime.datetime(2026, 9, 25, 12, 0, tzinfo=datetime.timezone.utc)
+        page = dash.render(rows, outcomes.join(rows), now=now)
+        self.assertIn("2026-09-24 &middot; <b>0</b>/1440", page)
+        self.assertEqual(dash._calendar_run(["20260923", "20260925", "20270101"], now), ["20260923", "20260924", "20260925", "20270101"])
+        self.assertEqual(dash._calendar_run([], now), [])
 
     def test_no_h1_h2_pair_or_confidence_number(self):
         page = dash.render(self.rows, self.outs, t0=report.tick_epoch("20260923T100000Z"))

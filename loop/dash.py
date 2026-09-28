@@ -313,12 +313,29 @@ def _short(day):
     return day[1:] if day.startswith("d") else day[6:]
 
 
-def render(rows, outs, t0=None, now=None, hb=None, halt=False, props=(), current=None, log=None):
+def _calendar_run(days, now):
+    """The strip's days: every calendar day from the first logged day to the last one up to `now`,
+    so a day with no row at all is drawn as 24 empty cells rather than left out (a day the Mac was
+    off is the gap the strip exists to show), plus any logged day after `now` (a row stamped in the
+    future: shown, not filled up to)."""
+    if not days:
+        return []
+    today = now.strftime("%Y%m%d")
+    past = [d for d in days if d <= today]
+    run = []
+    if past:
+        a = datetime.date(int(past[0][:4]), int(past[0][4:6]), int(past[0][6:]))
+        b = datetime.date(int(past[-1][:4]), int(past[-1][4:6]), int(past[-1][6:]))
+        run = [(a + datetime.timedelta(days=i)).strftime("%Y%m%d") for i in range((b - a).days + 1)]
+    return run + [d for d in days if d > today]
+
+
+def render(rows, outs, t0=None, now=None, hb=None, halt=False, props=(), current=None, log=None, bad=()):
     now = now or datetime.datetime.now(datetime.timezone.utc)
     sample = report.in_sample(rows, t0) if t0 is not None else rows
     last = max((report.tick_epoch(r["tick_id"]) for r in rows if isinstance(r.get("tick_id"), str)), default=None)
     h_all = report.health(rows, outs, now=now.timestamp())
-    h = report.health(sample, outs, t0=t0, last=last, now=now.timestamp())                # last: the sample's last day closes on rows after the cut
+    h = report.health(sample, outs, bad, t0=t0, last=last, now=now.timestamp())   # bad: the log's skipped lines, as report --health counts them                # last: the sample's last day closes on rows after the cut
     occ = report.occupancy(sample)
     rt = report.retest(sample)
     age = _age(hb, now)
@@ -333,6 +350,7 @@ def render(rows, outs, t0=None, now=None, hb=None, halt=False, props=(), current
     lat = latency_by_day(sample, t0)
     abs_day = absence_by_day(sample, t0)
     days_seen = sorted({d["day"] for d in h_all["days"]})
+    strip_days = _calendar_run(days_seen, now)
     hourly_c, absent_c = hourly(rows), absent(rows)
     sc = state_counts(sample)
     top_state = max(sc.values()) if sc else 0
@@ -410,7 +428,7 @@ def render(rows, outs, t0=None, now=None, hb=None, halt=False, props=(), current
                  + ("T0 days start at " + report._iso_minute(t0)[11:] + ". " if t0 is not None else "")
                  + "Days before T0 are labelled.</p>")
     strip = ["<div class='wrap'><div class='strip'><div class='lab'>day &middot; <b>ticks</b></div>"] + [f"<div class='hr'>{hh:02d}</div>" for hh in range(HOURS)]
-    for d in days_seen:
+    for d in strip_days:
         pre = t0 is not None and report.tick_epoch(d + "T000000Z") + 86400 <= t0
         lab = f"{d[:4]}-{d[4:6]}-{d[6:]}" + (" (pre-T0)" if pre else "")
         total = sum(hourly_c.get((d, hh), 0) for hh in range(HOURS))
@@ -585,7 +603,7 @@ def main(argv=None):
     hb_path = os.path.join(args.data, "heartbeat") if args.data else None       # None: config.HEARTBEAT / config.HALT
     halt_path = os.path.join(args.data, "HALT") if args.data else config.HALT
     page = render(rows, outs, t0=t0, hb=heartbeat(hb_path), halt=os.path.exists(halt_path), props=proposals(args.proposals),
-                  current=current_version(args.prompts), log=args.log)
+                  current=current_version(args.prompts), log=args.log, bad=bad)
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as fh:
         fh.write(page)
