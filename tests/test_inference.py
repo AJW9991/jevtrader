@@ -163,14 +163,23 @@ class DaysAndExclusions(unittest.TestCase):
         # a typo must never become a different day, or part of one (2026-09-28, pre-merge verifier):
         # the day is taken by the line's own separator, and anything left over is refused with path:line
         for bad in ("d1 6\t80.0\t0.0\tMac asleep", "\t20\t0.0\tday field left empty", "d06 d07\t80.0\t0.0\ttwo nights",
+                    "d1\t6\t80.0\t0.0\ta tab typed inside the day", "0" * 5000 + "6\t80.0\t0.0\tvery long",
                     "d1 6 80.0 0.0 one-space typo", "d٣\t80.0\t0.0\ta non-ASCII digit"):
             with open(p, "w", encoding="utf-8") as fh:
                 fh.write("day\tfill%\tjev-err%\treason\n" + bad + "\n")
             with self.assertRaisesRegex(ValueError, rf"^{re.escape(p)}:2: day "):
                 exclusions.read_exclusions(p)
+        for first in ("day06\t80.0\t0.0\tno header, a typo", "day 16  80.0  0.0  no header"):   # not the header: refused
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write(first + "\n")
+            with self.assertRaisesRegex(ValueError, rf"^{re.escape(p)}:1: day "):
+                exclusions.read_exclusions(p)
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write("DAY  Fill%  jev-err%  reason\nd02  90  0  ok\n")                  # the header in PREREG's form is skipped
+        self.assertEqual(exclusions.read_exclusions(p)[0], {2})
         with open(p, "wb") as fh:
             fh.write(b"day\tfill%\tjev-err%\treason\nd03\t90\t0\t\xff\n")
-        self.assertEqual(exclusions.status_line(p)[:60], f"exclusions: REFUSED, fix before day 28: {p}"[:60])
+        self.assertTrue(exclusions.status_line(p).startswith(f"exclusions: REFUSED, fix before day 28: {p}: not UTF-8"))
         self.assertTrue(exclusions.status_line(os.path.join(tmp, "none.tsv")).startswith("exclusions: none ("))
 
 

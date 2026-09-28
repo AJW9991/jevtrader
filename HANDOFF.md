@@ -139,7 +139,8 @@ and says so) · `make dash` · `make inference-smoke` · `make results` (day 28;
   rendered before is byte-identical); a row stamped after the clock closes no day of the stop-rule
   table; the dash shows the skipped-lines count and draws a day without rows as empty cells;
   propose.sh's path guard sees the forbidden tree through a symlinked HOME; the exclusions parser
-  takes PREREG's space-separated line and `make status` prints the parsed exclusions (or REFUSED)
+  takes the tab form or PREREG's two-space form (single spaces, a tab line without its four fields and a
+  first line that is not the header are refused, with file:line) and `make status` prints the parsed exclusions (or REFUSED)
   every morning. A NaN confidence in the digest's filter is an ERRATA entry (the treatment).
 
 ## Not changed on purpose (prereg-v2 notes)

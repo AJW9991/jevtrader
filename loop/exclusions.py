@@ -25,25 +25,37 @@ def read_exclusions(path):
     except UnicodeDecodeError as e:
         raise ValueError(f"{path}: not UTF-8 ({e.reason} at byte {e.start})") from None
     for i, line in enumerate(raws):
-        if not line.strip() or (i == 0 and line.lower().startswith("day")):
+        if not line.strip() or (i == 0 and _is_header(line)):
             continue
         tok = _day_field(line)
         num = tok[1:] if tok[:1] in "dD" else tok
-        if not (num.isascii() and num.isdigit()) or not 1 <= int(num) <= N_DAYS:
+        if not (num.isascii() and num.isdigit() and len(num) <= 3) or not 1 <= int(num) <= N_DAYS:
             raise ValueError(f"{path}:{i + 1}: day {tok!r} is not d01..d{N_DAYS:02d} (the line: {line!r})")
         days.add(int(num))
         lines.append(line)
     return days, lines
 
 
+HEADER = ["day", "fill%", "jev-err%", "reason"]
+
+
+def _is_header(line):
+    """Only the header itself is skipped (tab- or two-space-separated): a first line that merely starts
+    with 'day' ('day06 ...', a typo) is a data line, and refused, not silently dropped."""
+    return [f.strip().lower() for f in re.split(r"\t| {2,}", line.strip())] == HEADER
+
+
 def _day_field(line):
     """The day field by the file's own separator: before the first tab when the line has one; else
     before the first run of two or more spaces (as PREREG §8.3 prints the line). A line of single
-    spaces is ambiguous ('d1 6 80.0 0.0' is d1 or a typo for d16) and is returned whole, as is
-    anything else, so the caller refuses it: a typo such as 'd1 6' or 'd06 d07' must never become
-    a different day, or part of one, at day 28."""
-    if "\t" in line:
-        return line.split("\t", 1)[0].strip()
+    spaces is ambiguous ('d1 6 80.0 0.0' is d1 or a typo for d16) and is returned whole, as is a
+    tab line without exactly four fields, so the caller refuses it. One typo cannot be caught: in the
+    two-space form 'd1  6  80.0 ...' (meant d16) reads as d01, because a reason may itself hold two
+    spaces. make status prints the parsed days every morning, and the day-28 output recomputes stop
+    rule 3 beside them, so such a line shows as a listed day the rule judged fine."""
+    if "\t" in line:                                   # the tab form has exactly the header's four fields: a tab
+        fields = line.split("\t")                       # typed inside the day ('d1<TAB>6<TAB>...') makes five
+        return fields[0].strip() if len(fields) == len(HEADER) else line.strip()
     parts = re.split(r" {2,}", line.strip(), maxsplit=1)
     return parts[0] if len(parts) == 2 else line.strip()
 
