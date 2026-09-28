@@ -1,0 +1,42 @@
+# jev-paper-loop ("JevTrader") — working rules for any Claude session
+
+A paper-only, forward-only measurement: does a nightly rewrite of one typed question make a
+fast model (Jev, TypeSafe System One) decide better than the rule its thresholds imply?
+Three arms once a minute on Coinbase SOL-USD (A frozen v1, B the rewritten CURRENT, C the
+no-model rule), a nightly Claude proposal, a person promotes. Read `PROTOCOL.md` (the eleven
+conditions), `PREREG.md` (sealed `prereg-v1`, T0 2026-09-25 21:40Z, sample ends 2026-10-23
+21:40Z), `SPEC.md` (what a row means), `CONTRACT.md` (module interfaces), `STEPS.md` (what a
+person installs), and `HANDOFF.md` (where the last session left off).
+
+## What must not change during the sample (until 2026-10-23 21:40Z)
+- `SPEC.md` (every row carries its sha), `prompts/` (only `bin/promote`, run by Alex, writes
+  there), `nightly/PROMPT.md` and the digest's content (the treatment under H1), every
+  threshold in `loop/config.py`, the state alphabet, arm C's rule, the H1/H2 definitions.
+- Anything that alters what an existing row means. Additive tooling, tests, guards that only
+  prevent a crash or a wrong row, report lines, the dashboard: fine.
+- Nobody reads report §4–§7 (H1, H2, pairs, calibration) before day 28. The day-14 look is
+  `python3 -m loop.report --health --t0 20260925T214000Z` and nothing else.
+
+## Where things run
+- The loop and the nightly run on Alex's Mac under launchd (`launchd/*.plist`, hand-installed).
+  `data/` (the decision log, ledger, heartbeat, dash) and `logs/` live only there and are
+  gitignored; a cloud or other checkout has code, docs, fixtures and tests, not data.
+- In a checkout without `data/`: `make test` (287 tests, offline, ~8 s) is the whole gate;
+  `make dry` needs the network (three public GETs); `make report`/`make dash` need the log.
+- Nothing here sends to api.typesafe.ai except `loop/jev.py::ask`; the ledger row comes first;
+  `data/HALT` stops sends; a 401/403 writes it. Never run `make run` outside the Mac.
+- Never touch `~/Projects/crypto-trading-system` or its mirror (path guard, exit 3).
+
+## Acts that are Alex's, not Claude's
+`bin/promote`; installing or booting out a plist; a line in `data/exclusions.tsv` (stop rule 3,
+T0-anchored day `dNN`); clearing `data/HALT`; pmset or any system setting; spending decisions.
+Put such decisions to him as options.
+
+## Conventions
+- Python 3.14 (`/opt/homebrew/bin/python3` on the Mac), standard library only, `unittest`.
+- Every change with a test; `make test` green before a commit; one concern per commit; commit
+  messages say what and why in plain prose. Tests never read the live `prompts/`
+  (`tests/fixture_prompts.pin_v1`).
+- Report every Jev-side finding by its table, not its wording (Jev reads "volatility is calm"
+  as "not violent": `proposals/2026-09-25.review.md`).
+- Fan-outs (reviewers, verifiers) run on Opus; the main loop and synthesis on the session model.
