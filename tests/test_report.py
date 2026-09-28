@@ -20,7 +20,7 @@ horizon, and this fixture used to pin that); m 7..9 flat; m 10..19 down; m 22..2
 gap (past the log). Blocks (no --t0) are anchored at 10:00: k0 = m 0..14, k1 = m 15..29,
 k2 = m 30..41.
 """
-import contextlib, datetime, io, json, math, os, shutil, tempfile, unittest
+import contextlib, datetime, io, json, math, os, shutil, sys, tempfile, unittest
 from unittest import mock
 
 from fixture_prereg import pin_prereg
@@ -1211,6 +1211,37 @@ class PerDay(unittest.TestCase):
         self.assertNotIn("    d02 ", out)
         self.assertRegex(out, r"    d03 .*partial \(--since\), not judged")                 # 2026-09-27 21:40 .. 09-28 21:40
         self.assertIn("BAD days 0", out)
+
+    def test_since_in_iso_week_form_is_the_same_day_not_a_traceback(self):
+        # main() validates --since with date.fromisoformat, which from 3.11 on also takes an ISO week date
+        # ('2026-W40-1' is 2026-09-28); render() rebuilt the epoch from the raw argument and tick_epoch refused
+        # '2026W401T000000Z': a traceback, exit 1, where 8fa0a19's parent printed. It now cuts at the validated day.
+        if sys.version_info < (3, 11):
+            self.skipTest("date.fromisoformat takes a week date from 3.11 on")
+        t0 = report.tick_epoch("20260925T214000Z")
+        rows = []
+        for m in range(0, 4 * 1440 + 60, 20):                          # d01..d04, then an hour of d05, a row every 20 min
+            r = dict(_row(7))
+            e = t0 + 60 * m
+            r["tick_id"] = report._tick_of(e)
+            r["ts_rx"] = datetime.datetime.fromtimestamp(e, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.100Z")
+            rows.append(r)
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        self.enterContext(mock.patch.object(config, "HALT", os.path.join(tmp, "no-HALT")))
+        log = os.path.join(tmp, "since.jsonl")
+        _write(log, rows, garbage=False)
+        outs = {}
+        for since in ("2026-09-28", "20260928", "2026-W40-1", "2026W401", "2026-W40"):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+                code = report.main(["--log", log, "--health", "--t0", "20260925T214000Z", "--since", since], now=t0 + 5 * 86400)
+            self.assertEqual(code, 0, since)
+            outs[since] = buf.getvalue().replace(f", since {since}", ", since <day>", 1)
+        want = outs["2026-09-28"]
+        self.assertRegex(want, r"    d03 .*partial \(--since\), not judged")
+        self.assertNotIn("    d02 ", want)
+        for since, out in outs.items():
+            self.assertEqual(out, want, since)
 
     def test_a_row_stamped_after_the_clock_closes_no_day(self):
         # a forward clock step (then back) leaves a row stamped in the future; `last` took it, so every

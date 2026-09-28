@@ -915,7 +915,8 @@ def render(rows, bad=(), log=None, since=None, missing=False, t0=None, outs=None
     health_only: sections 1-3 only (PREREG §8.4); 4-7 are neither computed nor printed, so the
     blind look cannot show an H1 or H2 number by accident."""
     outs = outcomes.join(rows) if outs is None else outs
-    since_ep = tick_epoch(since.replace("-", "") + "T000000Z") if since else None
+    since_ep = tick_epoch(_since(since) + "T000000Z") if since else None   # the day main() validated: fromisoformat
+                                                                          # also takes a week date (2026-W40-1) from 3.11 on
     secs = (health(rows, outs, bad, t0, last, now, since_ep), occupancy(rows), retest(rows))
     if not health_only:
         secs += (agreement(rows), table(rows, outs, t0, last), h2(rows, outs, t0), calibration(rows, outs))
