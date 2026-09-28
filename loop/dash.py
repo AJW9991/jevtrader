@@ -15,7 +15,7 @@ or confidence number can appear by accident; tests/test_dash.py holds every `rep
 in this file to an allowlist.
 Standard library only; the page carries no script and loads nothing from the network, so
 it can be opened from a file and shared without reaching for anything."""
-import argparse, collections, datetime, glob, html, os, re, sys
+import argparse, collections, datetime, glob, html, math, os, re, sys
 
 from . import config, outcomes, report, state
 
@@ -359,11 +359,15 @@ def _vbars(items, top, label_every=1):
     """Vertical bars, CSS only: items = [(label, value, title, crit)], heights as a share of `top`. The
     share is taken before the percent, and a value that is no finite number draws no bar: 100 * v was
     inf for a latency p95 of 1e308 (a value report._num accepts), and until the evening of 2026-09-28
-    the page died on it. Each caller's `top` is at least its largest value (latency) or a fixed dollar
-    amount no finite day's spend can overflow against (spend), so the share is a finite number."""
+    the page died on it. The share is then held to [0, 1] and a share that is no finite number draws no
+    bar either: a negative value (a foreign or hand-edited log; the loop measures latency with a
+    monotonic clock) made 100 * (v / top) -inf, or v / top inf when the top itself was negative
+    (round-4c checker), and the page died the same way; a top that is not above zero draws no bar at
+    all. The title still gives the value."""
     out = ["<div class='vb'>"]
     for i, (lab, v, title, crit) in enumerate(items):
-        h = max(2, int(round(100 * (v / top)))) if top and report._num(v) else 0
+        share = v / top if report._num(v) and report._num(top) and top > 0 else None
+        h = max(2, int(round(100 * min(share, 1.0)))) if share is not None and math.isfinite(share) and share >= 0 else 0
         out.append(f"<div class='vbc' title='{_esc(title)}'><div class='vbar{' crit' if crit else ''}' style='height:{h}%'></div>"
                    f"<div class='vbl'>{_esc(lab) if i % label_every == 0 else ''}</div></div>")
     out.append("</div>")

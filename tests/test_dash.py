@@ -280,6 +280,12 @@ class Dash(unittest.TestCase):
         self.assertIn("<div class='vbc' title='20260924: p95 120 ms, mean 120 ms, n 1'><div class='vbar' style='height:2%'>", page)
         self.assertIn("height:100%", dash._vbars([("x", 1e308, "", False)], 1e308))
         self.assertEqual(dash._vbars([("x", float("inf"), "", False), ("y", None, "", False)], 1.0).count("height:0%"), 2)   # no number, no bar
+        # a negative value (a foreign log) or a negative top: no bar, never a crash (round-4c checker); a zero
+        # keeps the 2% stub it always drew, and a value past the top is held to the top
+        self.assertEqual(dash._vbars([("x", -1e307, "", False)], 1.0).count("height:0%"), 1)
+        self.assertEqual(dash._vbars([("x", -1e300, "", False), ("y", -1e-10, "", False)], -1e-10).count("height:0%"), 2)
+        self.assertIn("height:2%", dash._vbars([("x", 0.0, "", False)], 5.0))
+        self.assertIn("height:100%", dash._vbars([("x", 7.0, "", False)], 5.0))
 
     def test_skipped_log_lines_show_on_the_page_as_in_report_health(self):
         # the dash never passed the log's skipped lines to report.health, so its "skipped log lines"
