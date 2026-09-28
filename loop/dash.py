@@ -721,7 +721,9 @@ def main(argv=None):
     page = render(rows, outs, t0=t0, hb=heartbeat(hb_path), halt=os.path.exists(halt_path), props=proposals(args.proposals),
                   current=current_version(args.prompts), log=args.log, bad=bad)
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
-    with open(args.out, "w", encoding="utf-8") as fh:
+    # errors="replace": a path that is not UTF-8 (Linux; APFS names are UTF-8) reaches the page as a lone
+    # surrogate and stopped the write; each such character is written as '?' instead (the pre-merge check, 2026-09-28)
+    with open(args.out, "w", encoding="utf-8", errors="replace") as fh:
         fh.write(page)
     sys.stdout.write(f"{args.out}\t{len(rows)} rows, {len(bad)} skipped\n")
     return 0

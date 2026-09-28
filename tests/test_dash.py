@@ -301,6 +301,22 @@ class Dash(unittest.TestCase):
         page = dash.render(rows, outcomes.join(rows), now=datetime.datetime(2026, 9, 23, 12, 0, tzinfo=datetime.timezone.utc))
         self.assertIn("1 day(s) not charted</span> 20260923", page)
 
+    def test_a_log_path_that_is_not_utf8_still_gives_a_page(self):
+        # the pre-merge check: a --log whose name is not UTF-8 (Linux only) reached the page as a lone surrogate,
+        # the write raised UnicodeEncodeError and loop.dash exited 1 (non-fatal in propose.sh, but no page)
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        odd = os.path.join(os.fsencode(tmp), b"n\xffx")
+        try:
+            os.mkdir(odd)
+        except OSError as e:                                             # a filesystem that takes only UTF-8 names
+            self.skipTest(f"cannot make a directory whose name is not UTF-8 here: {e}")
+        out = os.path.join(tmp, "dash.html")
+        with mock.patch.object(config, "HALT", os.path.join(tmp, "no-HALT")), contextlib.redirect_stdout(io.StringIO()):
+            dash.main(["--log", os.fsdecode(os.path.join(odd, b"decisions.jsonl")), "--out", out,
+                       "--data", os.path.join(tmp, "data"), "--proposals", os.path.join(tmp, "props")])
+        with open(out, encoding="utf-8") as fh:
+            self.assertIn("n?x/decisions.jsonl", fh.read())                # the path, its odd byte written as '?'
+
     def test_a_latency_near_a_floats_limit_draws_a_full_bar_and_the_page_is_built(self):
         # 2026-09-28 (round 4b): a bar's height was 100 * v / top, and 100 * v is inf for a p95 of 1e308 (a
         # latency_ms that passes report._num), so render died on "cannot convert float infinity to integer"
