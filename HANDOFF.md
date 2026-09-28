@@ -25,8 +25,12 @@ state; whichever session ends last pushes.
   under both trees.
 - **Nights.** 2026-09-27 08:30Z (digest of 09-26, 606 ticks): `claude -p` produced nothing and was
   killed at the 2700 s cap (logs/claude-2026-09-26.err: "exceeded 2700 s awake; killed";
-  claude-2026-09-26.txt empty). No proposal exists for 2026-09-26; cause unknown (that call ran
-  with cwd = the repo, the day after CLAUDE.md was written there). 2026-09-28 08:30Z (digest of
+  claude-2026-09-26.txt empty). No proposal exists for 2026-09-26. Cause narrowed, not found: the CLI's
+  own transcript of that call (~/.claude/projects/-Users-alexanderward-Projects-jev-paper-loop/1cb1f730*.jsonl)
+  shows the prompt dequeued at 08:30:07Z and the user turn assembled only at 09:15:06Z, when the cap's
+  SIGTERM landed — a 45 min stall BEFORE prompt assembly; the repo was clean at 5d23fbb with no CLAUDE.md,
+  so the repo CLAUDE.md is ruled out. Note for the write-up: every pre-pull night's call ran with cwd = the
+  repo, so its context carried the CLI's git status and the five latest commit subjects; from 09-29 it does not. 2026-09-28 08:30Z (digest of
   09-27, 1435 ticks): exit 0 after 75 s; `proposals/2026-09-27.{json,md}` (committed): cand_0
   differs from CURRENT on 7 of 81 states, cand_1 on 9; both tighten `buy` on `trend pumping, vol
   normal` (the digest's top disagreements were 1.00-confidence buys there that went down). Not
