@@ -8,7 +8,8 @@ Written 2026-09-28 by Claude (Fable 5.1) in a CLOUD session on branch `claude/co
 - The Mac's loop is untouched by this session (no `data/` here). Sample: `prereg-v1`, T0
   2026-09-25 21:40Z, ends 2026-10-23 21:40Z; day 3 of 28 on 2026-09-28. Arm B is v2 since
   2026-09-26 22:21Z. Spend ≈ $0.05 to date.
-- This branch (`git log origin/main..`): 76 commits, `make test` green (446 tests) under 3.11-3.13 here and 3.12-3.14 in CI
+- This branch (`git log origin/main..`): 76 commits, `make test` green (469 tests) under 3.11-3.13 here, and in CI on Linux 3.11-3.14 and macOS 3.14; the
+  suite also passes shuffled, with warnings as errors and under a C locale
   (`.github/workflows/test.yml`, every push). Five Opus reviews (tick/send, book+outcomes+report, inference, nightly,
   dash+docs) found no defect on the normal path; every fix below is a guard, a report line, a
   test or tooling. Nothing frozen changed: SPEC, PREREG, PROTOCOL, prompts/, PROMPT.md, the
@@ -86,7 +87,9 @@ and says so) · `make dash` · `make inference-smoke` · `make results` (day 28;
 
 ## Watch
 - Report §1 per-day table: d28 now closes; a NO LIVE ROWS day is a decision (above).
-- Each morning: `make status`. The MISSING flag means the nightly's slot passed with no proposal.
+- Each morning: `make status`. The MISSING flag means the nightly's slot passed with no proposal;
+  it waits until 11Z, because from 2026-11-01 (CST) the night starts 09:30Z and its call may run
+  45 min, to 10:15Z.
 - The Mac must stay on AC, lid open.
 
 ## What the branch changes on the tick, the send and the readers
@@ -113,6 +116,12 @@ and says so) · `make dash` · `make inference-smoke` · `make results` (day 28;
   changes for rare replies (a null token count is now an answered row; a bool or non-finite
   field is now jev/parse; a NaN or zero candle is now a feed absence; the watchdog at the
   columns stage is now jev/watchdog) are SPEC §2/§3/§9/§12 errata for after the sample.
+
+- nightly/capped.py: the capped claude call runs in its own process group, and the cap ends the
+  whole group (a helper the CLI forked no longer outlives it); SIGTERM, SIGINT and SIGHUP sent to
+  capped are passed on to that group. The one cost: if capped itself were SIGKILLed (a bootout
+  whose SIGTERM went unanswered for launchd's 20 s), the call would outlive it, where launchd's
+  group kill used to take both. Exit codes are unchanged.
 
 ## Not changed on purpose (prereg-v2 notes)
 Every disagreement between the sealed documents and the code, in one table per document: ERRATA.md.

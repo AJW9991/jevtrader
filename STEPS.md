@@ -128,7 +128,7 @@ writes no ledger row. The tests mock `urllib.request.urlopen`; nothing under
 cd ~/Projects/jev-paper-loop && make test
 ```
 
-The same thing by hand (191 tests at integration, 2026-09-24; 446 by 2026-09-28, also run by CI on every push (Linux and macOS)):
+The same thing by hand (191 tests at integration, 2026-09-24; 469 by 2026-09-28, also run by CI on every push (Linux and macOS)):
 
 ```bash
 cd ~/Projects/jev-paper-loop && /opt/homebrew/bin/python3 -m unittest discover -s tests -v 2>&1 | tail -3
