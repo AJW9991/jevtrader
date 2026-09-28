@@ -1,0 +1,85 @@
+#!/opt/homebrew/bin/python3
+"""bin/readers-diff -- one decision log read by two code trees: what the newer reading changes.
+
+    python3 bin/readers-diff OLD_TREE NEW_TREE [--log data/decisions.jsonl]
+
+A tree is a directory holding loop/ (for instance `git archive origin/main loop | tar -x -C
+/tmp/old`, and the checkout itself as NEW_TREE). Each tree reads the log with its own
+outcomes.load and outcomes.join, in a subprocess of this interpreter, and this prints counts
+and tick_ids only: the rows each tree read, the lines each skipped and the whole rows the
+newer reader kept back from a torn line, the priced tick_ids with more than one row, the
+live answered rows with both columns null, and the ticks whose joined outcome differs. Never
+a return, a PnL or a statistic (CLAUDE.md: no section 4-7 look), and never a write. It
+exists for HANDOFF.md's counts before a merge: if every count is 0, the merge changes no
+existing reading of the log. Exit 0 when both trees read the log, 2 when one cannot.
+"""
+import argparse, json, os, subprocess, sys
+
+PROBE = r'''
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from loop import outcomes
+bad = []
+rows = outcomes.load(sys.argv[2], bad)
+outs = outcomes.join(rows)
+priced = {}
+for r in rows:
+    if r.get("mid") is not None:
+        priced[r["tick_id"]] = priced.get(r["tick_id"], 0) + 1
+def argmax(r, arm):
+    return ((r.get("columns") or {}).get(arm) or {}).get("argmax")
+nullcols = sum(1 for r in rows if r.get("mode") == "live" and r.get("absence") is None
+               and argmax(r, "a") is None and argmax(r, "b") is None)
+print(json.dumps({"rows": len(rows), "skipped": len(bad), "kept": sum(1 for b in bad if "kept" in str(b[1])),
+                  "outs": {t: [o.get("mid_h"), o.get("ret_h_bps"), o.get("label"), o.get("absence")] for t, o in outs.items()},
+                  "dup_priced": sorted(t for t, n in priced.items() if n > 1), "nullcols_live": nullcols}))
+'''
+
+SHOWN = 10
+
+
+def read_with(tree, log):
+    """The probe's dict for one tree, or (None, stderr) when the tree cannot read the log."""
+    if not os.path.isdir(os.path.join(tree, "loop")):
+        return None, f"{tree} holds no loop/ directory"
+    p = subprocess.run([sys.executable, "-c", PROBE, os.path.abspath(tree), log], capture_output=True, text=True)
+    if p.returncode != 0:
+        return None, p.stderr.strip().splitlines()[-1] if p.stderr.strip() else f"exit {p.returncode}"
+    return json.loads(p.stdout), None
+
+
+def lines(old, new):
+    """The report's lines from the two probes' dicts (counts and tick_ids only)."""
+    differ = [t for t in sorted(set(old["outs"]) | set(new["outs"])) if old["outs"].get(t) != new["outs"].get(t)]
+    head = lambda xs: (" " + " ".join(xs[:SHOWN]) + (" ..." if len(xs) > SHOWN else "")) if xs else ""
+    return [
+        f"rows read: old {old['rows']} / new {new['rows']}" + ("" if old["rows"] == new["rows"] else "  (a whole row glued onto a torn line is read by the new tree only)"),
+        f"lines skipped: old {old['skipped']} / new {new['skipped']}; whole rows kept back from a torn line by the new tree: {new['kept']}",
+        f"priced tick_ids with more than one row: {len(new['dup_priced'])}" + head(new["dup_priced"]),
+        f"live answered rows with both columns null (book._intent): {new['nullcols_live']}",
+        f"ticks whose joined outcome differs old vs new: {len(differ)}" + head(differ),
+    ]
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="python3 bin/readers-diff", description=__doc__.split("\n\n")[1])
+    ap.add_argument("old", metavar="OLD_TREE")
+    ap.add_argument("new", metavar="NEW_TREE")
+    ap.add_argument("--log", default="data/decisions.jsonl")
+    args = ap.parse_args(argv)
+    if not os.path.exists(args.log):
+        sys.stderr.write(f"readers-diff: no log at {args.log}\n")
+        return 2
+    read = {}
+    for name, tree in (("old", args.old), ("new", args.new)):
+        read[name], why = read_with(tree, args.log)
+        if why:
+            sys.stderr.write(f"readers-diff: the {name} tree {tree} cannot read {args.log}: {why}\n")
+            return 2
+    sys.stdout.write(f"log {args.log}: read by old {os.path.abspath(args.old)} and new {os.path.abspath(args.new)}\n")
+    sys.stdout.write("\n".join(lines(read["old"], read["new"])) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
