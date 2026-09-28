@@ -85,6 +85,9 @@ class CycleTest(unittest.TestCase):
             fh.write("In force from: `2026-09-24`  Signed: `test`\n")
         self.enterContext(mock.patch.object(config, "PROTOCOL", self.protocol))
         self.prompts_root = pin_v1(self)                        # never the live prompts/: CURRENT moves with bin/promote
+        # main() clears _SIG on entry, not on exit: a SIGTERM test leaves term True, and a later test
+        # that calls write_row directly would then raise _Stop. Each test starts clear and leaves it so.
+        self.enterContext(mock.patch.dict(cycle._SIG, critical=False, term=False))
         self.urlopen = self.enterContext(mock.patch("urllib.request.urlopen",
                                                     side_effect=AssertionError("urlopen was reached")))
         self.snapshot = self.enterContext(mock.patch.object(feed, "snapshot", return_value=SNAP))
@@ -955,6 +958,23 @@ class CycleTest(unittest.TestCase):
             self.assertEqual(cycle.main(["--dry", "--forever"]), 0)
         self.assertEqual([round(x, 6) for x in self.sleeps], [11.0, 58.7, 58.7])   # each wait absorbs the tick
         self.assertEqual([r["tick_id"] for r in self.rows()], ["20260924T022900Z", "20260924T023000Z"])
+
+    def test_a_sigterm_test_leaves_no_pending_stop_for_the_next_test(self):
+        # 2026-09-28 (review): the SIGTERM tests leave _SIG["term"] True (main clears it on entry only),
+        # and in a shuffled order a later test calling write_row directly raised _Stop. Run the pair
+        # as the runner would, SIGTERM first: the direct write must land.
+        suite = unittest.TestSuite([CycleTest("test_sigterm_during_the_write_finishes_the_row_and_exits_0"),
+                                    CycleTest("test_a_log_that_is_writable_but_not_readable_still_gets_its_row")])
+        result = unittest.TextTestRunner(stream=io.StringIO(), verbosity=0).run(suite)
+        self.assertEqual((result.testsRun, result.errors, result.failures), (2, [], []))
+        self.assertEqual(cycle._SIG, {"critical": False, "term": False})
+        # what the leak did: a stop left pending makes write_row write its row and then raise _Stop
+        # (setUp's patch.dict puts _SIG back after this test, as after every other)
+        cycle._SIG["term"] = True
+        os.makedirs(self.data, exist_ok=True)
+        with self.assertRaises(cycle._Stop):
+            cycle.write_row(cycle.new_row(TS_RX, "dry"))
+        self.assertEqual(len(self.rows()), 1)
 
     def test_sigterm_after_a_tick_in_forever_exits_0_after_that_tick(self):
         # The fake sleep advances the clock, as a real one does: _sleep_to_boundary loops

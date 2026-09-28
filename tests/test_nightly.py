@@ -576,6 +576,7 @@ class PromoteTest(unittest.TestCase):
         self.prop = os.path.join(self.tmp, "2026-09-22.json")
         with open(self.prop, "w") as fh:
             json.dump({"candidates": [CAND, {**CAND, "instructions": "Second candidate."}]}, fh)
+        self.enterContext(mock.patch.object(sys, "path", list(sys.path)))   # bin/promote inserts REPO at import
         self.promote = _load_promote()
         self.git = self.enterContext(mock.patch.object(self.promote.subprocess, "run"))
         self.status, self.tags = "", "prereg-v1\n"                   # a clean tree, PREREG sealed
@@ -670,6 +671,16 @@ class PromoteTest(unittest.TestCase):
             self.assertEqual(sorted(os.listdir(self.root)), ["CURRENT", "v1.json"])
             self.assertEqual(prompts.current(self.root), "v1")
         self.assertEqual(self.git.call_args.args[0], ["git", "tag", "-l", "prereg-v1"])
+
+    def test_loading_promote_leaves_sys_path_as_it_was(self):
+        # bin/promote does sys.path.insert(0, REPO) at import, and setUp loads it for every test: the
+        # suite used to end with a dozen extra REPO entries on sys.path. Run two tests as the runner would.
+        before = list(sys.path)
+        suite = unittest.TestSuite([PromoteTest("test_no_table_warns_and_proceeds"), PromoteTest("test_no_tty_refuses")])
+        result = unittest.TextTestRunner(stream=io.StringIO(), verbosity=0).run(suite)
+        self.assertEqual((result.testsRun, result.errors, result.failures), (2, [], []))
+        self.assertEqual(sys.path, before)
+        self.assertEqual(sys.path[0], self.promote.REPO)                   # setUp's own load inserted it: into the copy
 
     def test_promote_is_executable_as_the_contract_runs_it(self):
         # CONTRACT §5 and STEPS.md run `bin/promote proposals/<date>.json <k>` by path

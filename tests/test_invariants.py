@@ -48,12 +48,20 @@ def knobs(seed):
     return k
 
 
-_TMP = tempfile.TemporaryDirectory()
+_TMP = None                                       # the module's temp dir, made in setUpModule
 _LOGS, _FILES, _JOINS = {}, {}, {}
+
+
+def setUpModule():
+    # made here, not at import: a runner that interleaves modules (a shuffled order) tears this module
+    # down and sets it up again, and the second round must find its directory and its files
+    global _TMP
+    _TMP = tempfile.TemporaryDirectory()
 
 
 def tearDownModule():
     _TMP.cleanup()
+    _FILES.clear()                                # their paths were in the directory just removed
 
 
 def case(seed):
