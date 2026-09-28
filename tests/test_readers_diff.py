@@ -150,7 +150,10 @@ class ReadersDiff(unittest.TestCase):
         mod = self._module()
         tmpdir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, tmpdir, ignore_errors=True)
-        before = signal.getsignal(signal.SIGTERM)
+
+        def unguarded(signum, frame):                                     # in place of the default action, which would end
+            raise AssertionError("readers-diff installed no SIGTERM handler")   # the whole test run, not fail this test
+        self.addCleanup(signal.signal, signal.SIGTERM, signal.signal(signal.SIGTERM, unguarded))
 
         def killed(tree, log):
             os.kill(os.getpid(), signal.SIGTERM)                          # delivered at once to this process
@@ -160,7 +163,7 @@ class ReadersDiff(unittest.TestCase):
                 mod.main([REPO, REPO, "--log", self.log])
         self.assertEqual(cm.exception.code, 128 + signal.SIGTERM)
         self.assertEqual(os.listdir(tmpdir), [])
-        self.assertEqual(signal.getsignal(signal.SIGTERM), before)       # the handler is put back
+        self.assertIs(signal.getsignal(signal.SIGTERM), unguarded)       # the handler is put back, whatever it was
 
     def test_a_copy_that_cannot_be_written_is_a_message(self):
         mod = self._module()
