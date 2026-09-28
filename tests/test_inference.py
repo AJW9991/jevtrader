@@ -1,9 +1,9 @@
 """loop/inference.py: the pre-registered draw, the guard that refuses the sample before day 28,
 exclusions by T0-anchored day, and an end-to-end run on a synthetic log and on --pre-t0."""
-import contextlib, datetime, io, os, random, tempfile, unittest
+import contextlib, datetime, io, math, os, random, tempfile, unittest
 from unittest import mock
 
-from loop import inference, outcomes, report, rules
+from loop import book, inference, outcomes, report, rules
 from test_report import _row, _write
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -60,6 +60,14 @@ def _edge_rows(blocks=16, b_trades=True, a_sell=None, b_conf=0.9, lean0=0.3, lea
                             down=round(0.5 - lean / 2, 6), a=a, b=b, conf_b=b_conf))
     rows += [_at(start + 900 * blocks + 60 * m, mid=100.0 + 0.5 * blocks, mode="dry") for m in (0, 1)]
     return rows
+
+
+def _same(tc, got, want):
+    """assertEqual for a 2,688-long series without difflib's quadratic diff: the first index that differs."""
+    if got != want:
+        i = next((i for i, (g, w) in enumerate(zip(got, want)) if g != w), min(len(got), len(want)))
+        tc.fail(f"lengths {len(got)} vs {len(want)}; first difference at [{i}]: "
+                f"{got[i] if i < len(got) else '-'!r} vs {want[i] if i < len(want) else '-'!r}")
 
 
 def _exclusions(path, days=()):
@@ -433,7 +441,7 @@ class ExcludedDays(unittest.TestCase):
             s = inference.h1_series(one, o1, x, y, T0)
             for key in ("ticks", "mean_tick", "trades_x", "trades_y", "forced_x", "forced_y", "dis_blocks", "mean_dis", "gap_blocks"):
                 self.assertEqual(e[key], s[key], (x, y, key))
-            self.assertEqual(e["series"], [(k, v) for k, v in s["series"] if inference.day_of_block(k) != 2])
+            _same(self, e["series"], [(k, v) for k, v in s["series"] if inference.day_of_block(k) != 2])
             self.assertEqual(e["days"], 27)
         full = inference.h1_series(both, ob, "b", "c", T0)                  # the same log with nothing excluded counts day 2
         self.assertEqual((full["trades_x"], full["forced_x"]), (32 + 8, 2 + 2 + 1))
@@ -509,6 +517,13 @@ class PerDay(unittest.TestCase):
         self.assertNotIn(4, inference.h2(report.in_sample(rows, T0), outs, T0, excluded={4}, resamples=20)["per_day"])
 
 
+def _end_rows():
+    """Live rows every minute from 09:30 to 10:15 on the sample's last day (T0 + 28 d = 10:00): the
+    last two blocks' first rows (09:30, 09:45) and every t + h they need, the last one past the end."""
+    lean = lambda e: 0.5 + 0.1 * ((e // 60) % 4)                      # a varying up15, so r is defined
+    return _minutes(END - 30 * 60, END + 16 * 60, up=lean, mid=lambda e: 100.0 + ((e // 60) % 7) * 0.01)
+
+
 class Pending(unittest.TestCase):
     """The clock lifts at T0 + 28 d, but the last block's unit needs the row at t + 900 s +- 30 s:
     a run in between would count that outcome as a gap and drop the unit for good."""
@@ -519,8 +534,7 @@ class Pending(unittest.TestCase):
         cls.ex = os.path.join(cls.tmp, "exclusions.tsv")
         with open(cls.ex, "w") as fh:
             fh.write("day\tfill%\tjev-err%\treason\n")
-        lean = lambda e: 0.5 + 0.1 * ((e // 60) % 4)                  # a varying up15, so r is defined
-        cls.rows = _minutes(END - 30 * 60, END + 16 * 60, up=lean, mid=lambda e: 100.0 + ((e // 60) % 7) * 0.01)
+        cls.rows = _end_rows()
         cls.stopped = os.path.join(cls.tmp, "stopped.jsonl")              # the log as it stands at 10:00:00: last row 09:59
         _write(cls.stopped, [r for r in cls.rows if report.tick_epoch(r["tick_id"]) < END], garbage=False)
         cls.full = os.path.join(cls.tmp, "full.jsonl")                    # every t + h written (the last row 10:15)
@@ -563,6 +577,137 @@ class Pending(unittest.TestCase):
             if r["tick_id"] == "20261021T094500Z":
                 r["answers"] = dict(r["answers"], up15={"type": "noul"})    # dropped as "noul" whatever comes
         self.assertEqual(inference.pending_units(nonoul, report.in_sample(nonoul, T0), outs, T0), [])
+
+
+def _block_sums(d, anchor=T0, n_blocks=2688):
+    """PREREG §3 from book.paired's own output: S_k = the sum of d_t over block k, 0.0 where empty."""
+    S = [0.0] * n_blocks
+    for t, v in d:
+        S[int((report.tick_epoch(t) - anchor) // 900)] += v
+    return S
+
+
+class Pinned(unittest.TestCase):
+    """What each statistic IS, not only its length and label: the H1 series against book.paired at
+    the primary cell, B - A's sign and value, H2's units, its Pearson on 12-decimal leans, the
+    degenerate case, void, the join past the sample's end, and the clock at the end."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp()
+
+        def load(rows):
+            path = os.path.join(cls.tmp, f"{len(os.listdir(cls.tmp))}.jsonl")
+            _write(path, rows, garbage=False)
+            rows = outcomes.load(path, [])
+            return path, report.in_sample(rows, T0), outcomes.join(rows)
+
+        # B trades at confidence 0.45: argmax buys and sells, c50 would hold; A sells at minute 5
+        cls.log, cls.rows, cls.outs = load(_edge_rows(b_conf=0.45, a_sell=5))
+        cls.ex = _exclusions(os.path.join(cls.tmp, "none.tsv"))
+
+    def test_h1_series_is_book_paired_b_minus_c_at_argmax_and_0_bps_summed_per_block(self):
+        self.assertEqual(inference.config.FEE_BPS_PRIMARY, 0.0)
+        want = _block_sums(book.paired(self.rows, self.outs, "b", "c", "argmax", 0.0))
+        got = inference.h1_series(self.rows, self.outs, "b", "c", T0)
+        _same(self, got["series"], list(enumerate(want)))
+        self.assertGreater(sum(want), 0.0)                                  # B minus C: B wins these blocks
+        self.assertNotEqual(want, _block_sums(book.paired(self.rows, self.outs, "c", "b", "argmax", 0.0)))
+        self.assertNotEqual(want, _block_sums(book.paired(self.rows, self.outs, "b", "c", "c50", 0.0)))    # the column matters here
+        self.assertNotEqual(want, _block_sums(book.paired(self.rows, self.outs, "b", "c", "argmax", 120.0)))  # and so does the fee
+        a = inference.h1_series(self.rows, self.outs, "a", "c", T0)
+        _same(self, a["series"], list(enumerate(_block_sums(book.paired(self.rows, self.outs, "a", "c", "argmax", 0.0)))))
+
+    def test_b_minus_a_is_b_minus_a_and_its_mean_is_pinned(self):
+        # per block B makes 1.38 q and A 0.48 q USD on the same entry (q = 1000 / ask), so B - A is
+        # 0.9 q USD = 9000 / (100.01 + 0.5 j) bps of the 1,000 USD notional, over 16 of 2,688 blocks
+        closed = sum(9000.0 / (100.01 + 0.5 * j) for j in range(16)) / 2688
+        ba = inference.h1(self.rows, self.outs, T0, resamples=20)[2]
+        self.assertEqual((ba["pair"], ba["lower"], ba["reject"]), ("B - A", None, None))   # a point estimate, never tested
+        self.assertAlmostEqual(ba["mean"], closed, places=9)
+        self.assertAlmostEqual(ba["mean"], 0.5165563466, places=9)          # the same number, pasted
+        self.assertEqual(ba["mean"], sum(_block_sums(book.paired(self.rows, self.outs, "b", "a", "argmax", 0.0))) / 2688)
+        code, out, err = _main(["--sample", "--log", self.log, "--t0", T0S, "--now", "2026-10-21T10:00", "--resamples", "20",
+                                "--exclusions", self.ex])
+        self.assertEqual(code, 0, err)
+        self.assertIn("  stop rule 2: mean S_k(B-A) = 0.5166 -> does not fire", out)
+
+    def test_h2_units_are_report_h2_units_on_the_kept_days(self):
+        live = sorted((r for r in self.rows if report._live(r)), key=lambda r: r["tick_id"])
+        units, _, _ = report.h2_units(live, self.outs, T0)
+        self.assertEqual(inference.h2(self.rows, self.outs, T0, resamples=20)["units"], [(u["k"], u["lean"], u["ret"]) for u in units])
+        self.assertEqual(len(units), 16)
+        self.assertEqual(inference.h2(self.rows, self.outs, T0, excluded={1}, resamples=20)["units"], [])
+
+    def test_h2_is_pearson_on_the_units_and_its_bootstrap_is_pearsons(self):
+        h = inference.h2(self.rows, self.outs, T0, resamples=200)
+        xs, ys = [x for _, x, _ in h["units"]], [y for _, _, y in h["units"]]
+        self.assertEqual(h["r"], report.pearson(xs, ys))
+        self.assertNotEqual(report.pearson(xs, ys), report.spearman(xs, ys))   # so a Spearman in its place shows
+        ps = list(zip(xs, ys))
+        self.assertEqual(h["lower"], inference.bootstrap(ps, inference.pearson_pairs, resamples=200)["lower"])
+        spear = inference.bootstrap(ps, lambda q: report.spearman([x for x, _ in q], [y for _, y in q]), resamples=200)
+        self.assertNotEqual(h["lower"], spear["lower"])
+
+    def test_leans_are_rounded_to_12_decimals_before_anything(self):
+        # four units whose leans differ only in the 13th decimal: one lean at 12 decimals, so
+        # "no variance in lean" (a 15-decimal rounding would see four and compute an r)
+        rows = []
+        for j in range(4):
+            rows += _minutes(T0 + 900 * j, T0 + 900 * (j + 1), mid=100.0 + j * j, up=0.55 + j * 1e-13, down=0.45)
+        rows += [_at(T0 + 3600 + 60 * m, mid=110.0, mode="dry") for m in (0, 1)]
+        loaded = outcomes.load(self._write(rows), [])
+        h = inference.h2(report.in_sample(loaded, T0), outcomes.join(loaded), T0, resamples=20)
+        self.assertEqual({x for _, x, _ in h["units"]}, {0.1})
+        self.assertEqual(len(h["units"]), 4)
+        self.assertEqual((h["degenerate"], h["lower"], h["reject"]), ("no variance in lean", None, False))
+
+    def _write(self, rows):
+        path = os.path.join(self.tmp, f"w{len(os.listdir(self.tmp))}.jsonl")
+        _write(path, rows, garbage=False)
+        return path
+
+    def test_the_degenerate_cases_are_recorded_not_bootstrapped(self):
+        flat_ret = []
+        for j in range(4):                                                   # the mid never moves: every ret is 0
+            flat_ret += _minutes(T0 + 900 * j, T0 + 900 * (j + 1), up=0.5 + 0.05 * j, down=0.4)
+        flat_ret += [_at(T0 + 3600 + 60 * m, mode="dry") for m in (0, 1)]
+        path = self._write(flat_ret)
+        with mock.patch.object(inference, "bootstrap", side_effect=AssertionError("a degenerate H2 is not bootstrapped")):
+            h = inference.h2(report.in_sample(outcomes.load(path, []), T0), outcomes.join(outcomes.load(path, [])), T0, resamples=20)
+        self.assertEqual((h["n"], h["degenerate"], h["lower"], h["reject"]), (4, "no variance in ret", None, False))
+        code, out, err = _main(["--sample", "--log", path, "--t0", T0S, "--now", "2026-10-21T10:00", "--resamples", "20",
+                                "--exclusions", self.ex])
+        self.assertEqual(code, 0, err)
+        self.assertIn("n units 4 (blocks with a live row 4; dropped none): not supported: no variance in ret (PREREG §5 degenerate case)", out)
+
+    def test_a_unit_whose_t_plus_h_is_after_the_sample_end_gets_its_outcome(self):
+        rows = _minutes(END - 15 * 60, END + 2 * 60, mid=lambda e: 100.0 + (e - END) / 6000.0)   # 09:45 .. 10:01; 10:00 is past the end
+        path = self._write(rows)
+        all_rows = outcomes.load(path, [])
+        scope = report.in_sample(all_rows, T0)
+        self.assertEqual(max(r["tick_id"] for r in scope), "20261021T095900Z")
+        h = inference.h2(scope, outcomes.join(all_rows), T0, resamples=20)
+        self.assertEqual([(k, round(y, 9)) for k, _, y in h["units"]], [(2687, round(1e4 * math.log(100.0 / 99.85), 9))])
+        code, out, err = _main(["--sample", "--log", path, "--t0", T0S, "--now", "2026-10-21T10:02", "--resamples", "20",
+                                "--exclusions", self.ex])                    # and the run itself joins over the whole log
+        self.assertEqual(code, 0, err)
+        self.assertIn("  n units 1 (blocks with a live row 1; dropped none)", out)
+
+    def test_the_clock_refuses_at_end_minus_one_minute_and_lifts_at_the_end(self):
+        stopped = self._write([r for r in _end_rows() if report.tick_epoch(r["tick_id"]) < END])
+        full = self._write(_end_rows())
+        args = ["--sample", "--t0", T0S, "--resamples", "20", "--exclusions", self.ex]
+        with mock.patch.object(outcomes, "load", side_effect=AssertionError("the log was opened")):
+            code, out, err = _main(args + ["--log", full, "--now", "2026-10-21T09:59"])
+        self.assertEqual((code, out), (3, ""))
+        self.assertIn("refusing to look: the sample ends 2026-10-21T10:00Z and it is 2026-10-21T09:59Z", err)
+        code, out, err = _main(args + ["--log", full, "--now", "2026-10-21T10:00"])                    # the log has the t + h rows
+        self.assertEqual(code, 0, err)
+        code, out, err = _main(args + ["--log", stopped, "--now", "2026-10-21T10:00"])                 # it does not: refused ...
+        self.assertEqual(code, 3, err)
+        code, out, err = _main(args + ["--log", stopped, "--now", "2026-10-21T10:00", "--accept-pending"])   # ... unless it stopped
+        self.assertEqual(code, 0, err)
 
 
 if __name__ == "__main__":
