@@ -154,50 +154,68 @@ def load(path, bad=None):
             if not line.strip():
                 continue
             try:
-                found = [json.loads(line)]
+                r = json.loads(line)
             except ValueError as e:
                 # A torn line (a crash or a full disk mid-write) with the next whole row appended onto
                 # it: the tail from the last row start parses on its own, and that row was written in
                 # full, so it is kept and only the torn head is the skip; when the head parses too the
-                # line is two whole rows that lost their newline, and both are kept (2026-09-28;
+                # line is whole rows that lost their newlines, and every one is kept (2026-09-28;
                 # cycle.write_row now also starts a fresh line after a torn one, so this recovers the
-                # older cases).
+                # older cases). One skip entry per line, saying what was kept and what was not a row.
                 found = _glued(line)
+                kept = [x for x in found if _not_row(x) is None]
                 if bad is not None:
-                    bad.append((n, f"json: {e}" + _GLUED_NOTE[len(found)]))
-                if not found:
-                    continue
-            for r in found:
-                if not (isinstance(r, dict) and isinstance(r.get("tick_id"), str)
-                        and isinstance(r.get("ts_rx"), str)):
-                    if bad is not None:
-                        bad.append((n, "not a row: needs tick_id and ts_rx"))
-                    continue
-                if not _TICK.match(r["tick_id"]) or _tick_ok(r["tick_id"]) is None or ts_epoch(r["ts_rx"]) is None:
-                    if bad is not None:                # a string that is not a minute would crash every reader's clock
-                        bad.append((n, "not a row: tick_id is not YYYYMMDDTHHMMSSZ or ts_rx is not a time"))
-                    continue
-                rows.append(r)
+                    extra = len(found) - len(kept)
+                    bad.append((n, f"json: {e}" + _glued_note(len(kept))
+                                + (f"; {extra} parsed object(s) on it not a row" if extra else "")))
+                rows.extend(kept)
+                continue
+            why = _not_row(r)
+            if why is not None:
+                if bad is not None:
+                    bad.append((n, why))
+                continue
+            rows.append(r)
     return rows
 
 
-_GLUED_NOTE = {0: "", 1: "; the whole row appended onto the torn line is kept",
-               2: "; two whole rows on one line (a lost newline), both kept"}
+def _not_row(r):
+    """None when `r` is a row a reader's clock can use; else the reason it is not one."""
+    if not (isinstance(r, dict) and isinstance(r.get("tick_id"), str) and isinstance(r.get("ts_rx"), str)):
+        return "not a row: needs tick_id and ts_rx"
+    if not _TICK.match(r["tick_id"]) or _tick_ok(r["tick_id"]) is None or ts_epoch(r["ts_rx"]) is None:
+        return "not a row: tick_id is not YYYYMMDDTHHMMSSZ or ts_rx is not a time"   # a string that is not a minute would crash every reader's clock
+    return None
+
+
+def _glued_note(k):
+    """What a glued line's skip entry says was kept (bin/readers-diff counts the lines saying "kept")."""
+    if k == 0:
+        return ""
+    if k == 1:
+        return "; the whole row appended onto the torn line is kept"
+    if k == 2:
+        return "; two whole rows on one line (a lost newline), both kept"
+    return f"; {k} whole rows on one line (lost newlines), all kept"
 
 
 def _glued(line):
-    """The JSON objects on a line that is not one: the tail from the last row start when it parses
-    (a whole row appended onto a torn line), preceded by the head when that parses as well (a whole
-    row that lost only its newline); else nothing. Each is then read as a row only if it is one."""
-    i = line.rfind(ROW_START)
-    if i <= 0:
-        return []
-    try:
-        tail = json.loads(line[i:])
-    except ValueError:
-        return []
-    try:
-        head = json.loads(line[:i])
-    except ValueError:
-        return [tail]
-    return [head, tail]
+    """The JSON values on a line that is not one, in order: split at row starts from the right,
+    each piece from a row start to the next parsed piece, stopping at the first that does not parse
+    (the torn row, or a row start inside a nested object); the head before the leftmost piece is
+    taken too when it parses whole (a row that lost only its newline). Iterative, so a line of any
+    number of glued rows costs no recursion. A piece is a row only if _not_row says so."""
+    out, end = [], len(line)
+    while True:
+        i = line.rfind(ROW_START, 0, end)
+        if i <= 0:
+            return out
+        try:
+            out.insert(0, json.loads(line[i:end]))
+        except ValueError:
+            return out
+        end = i
+        try:
+            return [json.loads(line[:end])] + out
+        except ValueError:
+            pass

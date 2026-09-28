@@ -207,8 +207,8 @@ class Load(unittest.TestCase):
         bad = []
         rows = outcomes.load(p, bad)
         self.assertEqual([r["tick_id"] for r in rows], [a["tick_id"]])
-        self.assertEqual([n for n, _ in bad], [2, 3, 3])              # line 3: the json fault, then the rescued tail is not a row
-        self.assertIn("not a row", bad[2][1])
+        self.assertEqual([n for n, _ in bad], [2, 3])                 # one entry a line: line 3's names both rescued objects not rows
+        self.assertIn("2 parsed object(s) on it not a row", bad[1][1])
 
     def test_two_whole_rows_that_lost_their_newline_are_both_kept(self):
         # the older writer could lose exactly the newline between two whole rows (a crash after the
@@ -231,8 +231,50 @@ class Load(unittest.TestCase):
         bad = []
         rows = outcomes.load(p, bad)
         self.assertEqual([r["tick_id"] for r in rows], [b["tick_id"]])
-        self.assertEqual([n for n, _ in bad], [1, 1])
-        self.assertIn("not a row: needs tick_id", bad[1][1])
+        self.assertEqual([n for n, _ in bad], [1])                   # one entry for the line, naming both
+        self.assertIn("the whole row appended onto the torn line is kept; 1 parsed object(s) on it not a row", bad[0][1])
+
+    def test_any_number_of_whole_rows_on_one_line_are_all_read_in_order(self):
+        # three whole rows that lost two newlines; a torn head before two whole rows; objects that parse
+        # but are not rows: every whole row is read once, in order, and each line is ONE skip entry
+        p = os.path.join(tempfile.mkdtemp(), "d.jsonl")
+        rs = [_row(60 * k, 100.0 + k) for k in range(6)]
+        j = lambda r: json.dumps(r, separators=(",", ":"))
+        with open(p, "w") as fh:
+            fh.write(j(rs[0]) + j(rs[1]) + j(rs[2]) + "\n")                # 3 whole rows, no newlines between
+            fh.write(j(rs[3])[:50] + j(rs[4]) + j(rs[5]) + "\n")           # torn, then 2 whole rows
+            fh.write('{"v":1}{"v":1}\n')                                    # two objects, neither a row
+        bad = []
+        rows = outcomes.load(p, bad)
+        self.assertEqual(rows, [rs[0], rs[1], rs[2], rs[4], rs[5]])
+        self.assertEqual([n for n, _ in bad], [1, 2, 3])
+        self.assertIn("3 whole rows on one line (lost newlines), all kept", bad[0][1])
+        self.assertIn("two whole rows on one line (a lost newline), both kept", bad[1][1])
+        self.assertNotIn("kept", bad[2][1])
+        self.assertIn("2 parsed object(s) on it not a row", bad[2][1])
+
+    def test_a_row_start_inside_a_row_never_yields_a_wrong_row(self):
+        # a nested object whose first key is "v" (answers are stored verbatim) puts a row start inside
+        # a row; glued after a torn line the split lands inside it, the piece does not parse, and the
+        # row is lost -- never read as some other row
+        p = os.path.join(tempfile.mkdtemp(), "d.jsonl")
+        a, b = _row(0, 100.0), dict(_row(60, 101.0), answers={"x": {"v": 1}})
+        with open(p, "w") as fh:
+            fh.write(json.dumps(a, separators=(",", ":"))[:30] + json.dumps(b, separators=(",", ":")) + "\n")
+        bad = []
+        rows = outcomes.load(p, bad)
+        self.assertEqual(rows, [])
+        self.assertEqual(len(bad), 1)
+        with open(p, "w") as fh:                                           # on a line of its own it is read
+            fh.write(json.dumps(b, separators=(",", ":")) + "\n")
+        self.assertEqual(outcomes.load(p), [b])
+
+    def test_a_long_line_of_glued_rows_costs_no_recursion(self):
+        p = os.path.join(tempfile.mkdtemp(), "d.jsonl")
+        rs = [_row(60 * k, 100.0) for k in range(1500)]
+        with open(p, "w") as fh:
+            fh.write("".join(json.dumps(r, separators=(",", ":")) for r in rs) + "\n")
+        self.assertEqual(len(outcomes.load(p)), 1500)
 
     def test_missing_file_raises(self):
         with self.assertRaises(OSError):
