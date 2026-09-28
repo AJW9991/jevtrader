@@ -351,8 +351,8 @@ def occupancy(rows):
     adjs = [r["adj"] for r in rows if isinstance(r.get("adj"), dict)]
     share, flags, lines = {}, [], []
     for d in state.DIMS:
-        c = collections.Counter(a.get(d) for a in adjs)
-        n = sum(c.values())
+        c = collections.Counter(a.get(d) if isinstance(a.get(d), str) else "?" for a in adjs)   # a non-string (a list, None)
+        n = sum(c.values())                                                                    # is OUTSIDE-ALPHABET, never a crash
         parts = []
         for w in state.ALPHABET[d]:
             p = _rate(c.get(w, 0), n)
