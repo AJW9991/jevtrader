@@ -1212,6 +1212,68 @@ class PerDay(unittest.TestCase):
         self.assertRegex(out, r"    d03 .*partial \(--since\), not judged")                 # 2026-09-27 21:40 .. 09-28 21:40
         self.assertIn("BAD days 0", out)
 
+    def _since_view(self, t0s, since, make):
+        """report --health --t0 t0s --since `since` at T0 + 5 d on d01..d04 and an hour of d05, a row every
+        5 min (every row's t + 15 min is in the log, so fill is 100% where nothing else is set); make(r, e)
+        edits the row at epoch e. Returns the output and the listed per-day lines by label."""
+        t0 = report._t0(t0s)
+        rows = []
+        for m in range(0, 4 * 1440 + 60, 5):
+            e = t0 + 60 * m
+            r = dict(_row(7), tick_id=report._tick_of(e),
+                     ts_rx=datetime.datetime.fromtimestamp(e, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.100Z"))
+            rows.append(make(r, e))
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        log = os.path.join(tmp, "since.jsonl")
+        _write(log, rows, garbage=False)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()), \
+                mock.patch.object(config, "HALT", os.path.join(tmp, "no-HALT")):
+            self.assertEqual(report.main(["--log", log, "--health", "--t0", t0s, "--since", since], now=t0 + 5 * 86400), 0)
+        out = buf.getvalue()
+        return out, {l.split()[0]: l for l in out.splitlines() if l.startswith("    d") and l[5:7].isdigit()}
+
+    def test_the_since_day_is_not_judged_bad_on_its_part(self):
+        # d03 is 2026-09-27 21:40 .. 09-28 21:40; after the cut at 09-28 00:00 every tenth row is a jev
+        # error, 10% > 5%: judged on that part it would read BAD (jev-err), a false stop-rule-3 count
+        cut, end = report.tick_epoch("20260928T000000Z"), report.tick_epoch("20260928T214000Z")
+        n = [0]
+
+        def make(r, e):
+            if cut <= e < end:
+                n[0] += 1
+                if n[0] % 10 == 0:
+                    return dict(_row(15), tick_id=r["tick_id"], ts_rx=r["ts_rx"])   # absence "jev", http-5xx
+            return r
+        out, days = self._since_view("20260925T214000Z", "2026-09-28", make)
+        self.assertEqual(n[0], 260)                                             # 21 h 40 min of rows, 26 errors among them
+        self.assertIn("  10.0%  20260927T214000Z..20260928T214000Z  partial (--since), not judged", days["d03"])
+        self.assertIn("BAD days 0;", out)
+        self.assertNotIn("BAD (", out)
+
+    def test_the_since_day_is_not_flagged_no_live_rows_on_its_part(self):
+        # d03 after the cut is HALT absences only: judged on that part it would read NO LIVE ROWS and be
+        # counted for Alex's exclusion call, when the part before the cut had live rows the view left out
+        cut, end = report.tick_epoch("20260928T000000Z"), report.tick_epoch("20260928T214000Z")
+
+        def make(r, e):
+            if cut <= e < end:
+                r = dict(r, absence="halt", answers=None, columns={"a": None, "b": None})
+            return r
+        out, days = self._since_view("20260925T214000Z", "2026-09-28", make)
+        self.assertIn("20260927T214000Z..20260928T214000Z  partial (--since), not judged", days["d03"])
+        self.assertNotIn("NO LIVE ROWS", days["d03"])
+        self.assertNotIn("NO LIVE ROWS on", out)
+
+    def test_a_since_on_a_day_boundary_cuts_no_day(self):
+        # T0 on a UTC midnight: --since 2026-09-28 is exactly d03's start, so d02 ended at the cut (not
+        # listed) and d03 is whole (judged, not partial); the boundary comparisons are <= and <
+        out, days = self._since_view("2026-09-26T00:00", "2026-09-28", lambda r, e: r)
+        self.assertEqual(sorted(days), ["d03", "d04", "d05"])
+        self.assertTrue(days["d03"].endswith("  20260928T000000Z..20260929T000000Z"), days["d03"])   # closed, whole, no flag
+        self.assertNotIn("partial", out.split("per day from T0", 1)[1])
+        self.assertIn("BAD days 0;", out)
+
     def test_since_in_iso_week_form_is_the_same_day_not_a_traceback(self):
         # main() validates --since with date.fromisoformat, which from 3.11 on also takes an ISO week date
         # ('2026-W40-1' is 2026-09-28); render() rebuilt the epoch from the raw argument and tick_epoch refused
