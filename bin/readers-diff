@@ -53,7 +53,7 @@ def read_with(tree, log):
     if not os.path.isfile(os.path.join(tree, "loop", "outcomes.py")):
         return None, f"{tree}/loop holds no outcomes.py"
     p = subprocess.run([sys.executable, "-I", "-B", "-c", PROBE, os.path.abspath(tree), os.path.abspath(log)],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")   # any locale, any path
     if p.returncode != 0:
         return None, p.stderr.strip().splitlines()[-1] if p.stderr.strip() else f"exit {p.returncode}"
     return json.loads(p.stdout), None
