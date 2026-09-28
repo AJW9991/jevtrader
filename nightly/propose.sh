@@ -88,14 +88,19 @@ realpath_py() {   # the path as os.path.realpath spells it, or nothing (the call
 # a symlink, can lead anywhere).
 NL=$'\n'
 case "$ROOT" in *"$NL"*) echo "propose: --root contains a newline; refusing" >&2; exit 3 ;; esac
-case "$ROOT" in /*) ;; *) ROOT="$(pwd -P)/$ROOT" ;; esac        # absolute now: the guard and every write see one path
+# The working directory too: `$(pwd -P)` drops a trailing newline from its name, and the guard (and
+# a relative --root) would get the sibling without it. It is taken as realpath_py spells it, which
+# is nothing for a name with a newline or a cwd that cannot be resolved (removed, say): refused.
+CWD_REAL="$(realpath_py .)"
+[ -n "$CWD_REAL" ] || { echo "propose: cannot resolve the working directory (or its name has a newline); refusing" >&2; exit 3; }
+case "$ROOT" in /*) ;; *) ROOT="$CWD_REAL/$ROOT" ;; esac        # absolute now: the guard and every write see one path
 ROOT_REAL="$(realpath_py "$ROOT")"
 [ -n "$ROOT_REAL" ] || { echo "propose: cannot resolve --root $ROOT; refusing" >&2; exit 3; }
 REPO_REAL="$(realpath_py "$REPO")"
 [ -n "$REPO_REAL" ] || { echo "propose: cannot resolve the repo $REPO; refusing" >&2; exit 3; }
 guard_path "$REPO" repo
 guard_path "$ROOT_REAL" root
-guard_path "$(pwd -P)" cwd
+guard_path "$CWD_REAL" cwd
 # Every write goes where the guard looked. As typed, a '..' after a directory that does not exist
 # (popped by realpath, so not what the guard saw) would be created by `mkdir -p` on the way there.
 ROOT="$ROOT_REAL"

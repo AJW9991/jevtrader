@@ -1553,7 +1553,7 @@ class Capped(unittest.TestCase):
         at = lambda frag: [i for i, l in enumerate(code) if frag in l]
         trap = at("trap on_exit EXIT")
         self.assertEqual(len(trap), 1)
-        self.assertGreater(trap[0], at("guard_path \"$(pwd -P)\" cwd")[0])
+        self.assertGreater(trap[0], at('guard_path "$CWD_REAL" cwd')[0])
         self.assertGreater(trap[0], at('mkdir -p "$LOGS"')[0])
         self.assertLess(trap[0], at('[ -x "$PY" ] || fail')[0])
         self.assertTrue(all(i > trap[0] for i in at('fail "')), "a FAIL before the trap would skip the dash")
@@ -1577,8 +1577,14 @@ class Capped(unittest.TestCase):
         with open(os.path.join(REPO, "nightly", "propose.sh"), encoding="utf-8") as fh:
             code = [l for l in fh.read().splitlines() if not l.lstrip().startswith("#")]
         self.assertEqual([l for l in code if l.startswith("guard_path ")],
-                         ['guard_path "$REPO" repo', 'guard_path "$ROOT_REAL" root', 'guard_path "$(pwd -P)" cwd'])
+                         ['guard_path "$REPO" repo', 'guard_path "$ROOT_REAL" root', 'guard_path "$CWD_REAL" cwd'])
         self.assertLess(code.index('ROOT_REAL="$(realpath_py "$ROOT")"'), code.index('guard_path "$ROOT_REAL" root'))
+        # the cwd as realpath_py spells it, refused when empty, for the guard and a relative --root alike
+        rel = [l for l in code if l.startswith('case "$ROOT" in /*) ;; *) ROOT=')]
+        self.assertEqual(len(rel), 1)
+        self.assertIn('ROOT="$CWD_REAL/$ROOT"', rel[0])
+        self.assertLess(code.index('CWD_REAL="$(realpath_py .)"'), code.index(rel[0]))
+        self.assertTrue(code[code.index('CWD_REAL="$(realpath_py .)"') + 1].startswith('[ -n "$CWD_REAL" ] || {'))
         self.assertTrue(any('"$PY" -I -B -c' in l and "cycle.forbidden" in l for l in code))   # isolated, no bytecode
         self.assertTrue(any("cycle.forbidden(sys.argv[2])" in l for l in code))          # the same guard as the tick's
         env = _sh_env(self)                                      # the guard reads $HOME: the forbidden prefix is under the run's HOME
@@ -1686,6 +1692,30 @@ class Capped(unittest.TestCase):
         self.assertEqual(os.listdir(os.path.join(forbidden, "d\n")), [])
         self.assertEqual(os.listdir(elsewhere), [])
         self.assertFalse(os.path.exists(os.path.join(env["HOME"], "a\nb")))
+
+    def test_a_working_directory_whose_name_ends_in_a_newline_is_refused(self):
+        # The cwd was taken as `$(pwd -P)`, which strips trailing newlines, for the cwd guard and for a
+        # relative --root (round-4 checker): started from <tree>/d<newline>, with <tree>/d a symlink out
+        # of the tree, the guard checked the symlink's target and the dry night ran from inside the
+        # tree; and a relative --root from <home>/c<newline> was written under <home>/c's target, not
+        # the directory named. The cwd is now taken as realpath_py spells it, which refuses a newline.
+        env = _sh_env(self)
+        forbidden = os.path.join(env["HOME"], "Projects", "crypto-trading-system")   # the forbidden tree, under the run's HOME
+        elsewhere = os.path.join(env["HOME"], "elsewhere")
+        os.makedirs(os.path.join(forbidden, "d\n"))
+        os.makedirs(elsewhere)
+        os.symlink(elsewhere, os.path.join(forbidden, "d"))                   # "d" leads out of the tree, "d\n" does not
+        os.makedirs(os.path.join(env["HOME"], "c\n"))
+        os.symlink(elsewhere, os.path.join(env["HOME"], "c"))                 # "c" leads elsewhere, "c\n" is itself
+        for cwd, root in ((os.path.join(forbidden, "d\n"), os.path.join(env["HOME"], "root2")),   # the cwd is inside the tree
+                          (os.path.join(env["HOME"], "c\n"), "rel")):                            # a relative --root
+            r = subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--dry", "--date", "2026-09-22",
+                                "--root", root], capture_output=True, text=True, timeout=120, env=env, cwd=cwd)
+            self.assertEqual(r.returncode, 3, (cwd, r.stderr))
+            self.assertIn("propose: cannot resolve the working directory (or its name has a newline); refusing", r.stderr)
+            self.assertEqual(os.listdir(cwd), [], cwd)                        # nothing written where it was started
+        self.assertFalse(os.path.exists(os.path.join(env["HOME"], "root2")))
+        self.assertEqual(os.listdir(elsewhere), [])                           # nor under a sibling's target
 
     def test_the_guard_never_imports_the_working_directory_and_refuses_when_it_cannot_answer(self):
         # 2026-09-28 (second pre-merge pass): the guard's python had the cwd on sys.path, after the repo
