@@ -474,6 +474,41 @@ class ExcludedDays(unittest.TestCase):
         self.assertIn("  descriptive: the trend word (no model): units r(lean, trend) undefined (no variance in trend)", out)
 
 
+class PerDay(unittest.TestCase):
+    """Each kept day's live blocks and units, and a kept day with no live row flagged, rows or not."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp()
+        cls.log = os.path.join(cls.tmp, "no-day-2.jsonl")        # 16 blocks on d01, none on d02 (no row at all), 4 on d03
+        _write(cls.log, _edge_rows() + _edge_rows(blocks=4, day=3), garbage=False)
+        cls.ex = _exclusions(os.path.join(cls.tmp, "ex.tsv"), [4])
+
+    def test_every_kept_day_is_listed_and_a_day_without_live_rows_is_flagged(self):
+        code, out, err = _main(["--sample", "--log", self.log, "--t0", T0S, "--now", "2026-10-21T10:00", "--resamples", "40",
+                                "--exclusions", self.ex])
+        self.assertEqual(code, 0, err)
+        lines = out.splitlines()
+        self.assertIn("per kept day (descriptive): blocks holding a live row, of 96, and the H2 units the day gave", lines)
+        self.assertIn("  d01  16/96 blocks  16 units", lines)
+        self.assertIn("  d02   0/96 blocks   0 units  no live rows: stop rule 3 is undefined (fill 0/0);"
+                      " the exclusion is Alex's call (PREREG §8.3)", lines)
+        self.assertIn("  d03   4/96 blocks   4 units", lines)
+        self.assertFalse(any(l.startswith("  d04 ") for l in lines))     # excluded: not a kept day
+        days = [l for l in lines if l[:3] == "  d" and l[3:5].isdigit() and "/96 blocks" in l]
+        self.assertEqual(len(days), 27)
+        self.assertEqual(sum(1 for l in days if inference.NO_LIVE_ROWS in l), 25)   # d02 and d05 .. d28
+
+    def test_per_day_counts_blocks_with_a_live_row_and_units_apart(self):
+        rows = outcomes.load(self.log, [])
+        outs = outcomes.join(rows)
+        extra = _at(T0 + 900 * 20, up=None)                           # d01 block 20: a live row, no unit (a noul missing)
+        h = inference.h2(report.in_sample(rows + [extra], T0), outs, T0, resamples=20)
+        self.assertEqual((h["per_day"][1], h["per_day"][2], h["per_day"][3]), ([17, 16], [0, 0], [4, 4]))
+        self.assertEqual(sorted(h["per_day"]), list(range(1, 29)))
+        self.assertNotIn(4, inference.h2(report.in_sample(rows, T0), outs, T0, excluded={4}, resamples=20)["per_day"])
+
+
 class Pending(unittest.TestCase):
     """The clock lifts at T0 + 28 d, but the last block's unit needs the row at t + 900 s +- 30 s:
     a run in between would count that outcome as a gap and drop the unit for good."""

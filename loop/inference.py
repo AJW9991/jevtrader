@@ -223,7 +223,13 @@ def h2(rows, outs, anchor, excluded=(), resamples=RESAMPLES, n_blocks=BLOCKS_PER
     r = report.pearson(xs, ys) if ps else None
     rho = report.spearman(xs, ys) if ps else None
     bs = bootstrap(ps, pearson_pairs, resamples=resamples) if ps and degenerate is None else None
-    return {"n": len(ps), "blocks_with_row": len(firsts), "dropped": dict(drop), "r": r, "rho": rho, "degenerate": degenerate,
+    per_day = {d: [0, 0] for d in range(1, -(-n_blocks // BLOCKS_PER_DAY) + 1) if d not in excluded}   # every kept day, rows or not
+    for k in firsts:
+        if 0 <= k < n_blocks and day_of_block(k) in per_day:
+            per_day[day_of_block(k)][0] += 1
+    for u in units:
+        per_day[day_of_block(u["k"])][1] += 1
+    return {"n": len(ps), "blocks_with_row": len(firsts), "dropped": dict(drop), "r": r, "rho": rho, "degenerate": degenerate, "per_day": per_day,
             "lower": bs["lower"] if bs else None, "reject": bs["reject"] if bs else False,
             "units": [(u["k"], u["lean"], u["ret"]) for u in units],
             "side_units": report._h2_stats(units), "side_every": report._h2_stats(every), "dropped_every": drop_every}
@@ -302,6 +308,22 @@ def _f(x, nd=4):
 def _iso_second(epoch):
     """epoch -> 'YYYY-MM-DDTHH:MM:SSZ', rounded UP to the second (a wait-until time is never early)."""
     return datetime.datetime.fromtimestamp(math.ceil(epoch), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+NO_LIVE_ROWS = ("no live rows: stop rule 3 is undefined (fill 0/0); the exclusion is Alex's call (PREREG §8.3)")
+
+
+def day_lines(per_day):
+    """Per kept day (T0-anchored dNN): how many of its 96 blocks hold a live row and how many H2
+    units it gave. Descriptive; a kept day with no live row at all is flagged, because its fill
+    is 0/0 and stop rule 3 cannot judge it: excluding it is a person's act, never this code's."""
+    lines = [f"per kept day (descriptive): blocks holding a live row, of {BLOCKS_PER_DAY}, and the H2 units the day gave"]
+    for d in sorted(per_day):
+        blocks, units = per_day[d]
+        lines.append(f"  d{d:02d} {blocks:>3}/{BLOCKS_PER_DAY} blocks {units:>3} units" + (f"  {NO_LIVE_ROWS}" if blocks == 0 else ""))
+    if not per_day:
+        lines.append("  no kept day")
+    return lines
 
 
 def reading(h1s, h2s, void=False, pre_t0=False):
@@ -412,6 +434,9 @@ def render(mode, t0, now, log, log_sha, n_rows, excluded, excl_lines, kept_days,
     lines.append("")
     lines.extend(reading(h1s, h2s, void, mode == "pre-t0"))
     lines.append("")
+    if mode == "sample":
+        lines.extend(day_lines(h2s["per_day"]))
+        lines.append("")
     lines.append("data/exclusions.tsv, verbatim:" if excl_lines else "data/exclusions.tsv: absent or empty")
     lines.extend("  " + l for l in excl_lines)
     return "\n".join(lines) + "\n"
