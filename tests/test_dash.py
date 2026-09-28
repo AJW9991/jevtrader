@@ -15,6 +15,59 @@ ALLOWED_REPORT = {"health", "days_table", "occupancy", "retest", "in_sample", "t
 ALLOWED_IMPORTS = {"config", "outcomes", "report", "state"}
 
 
+BANNED_CALLS = {"getattr", "vars", "__import__", "eval", "exec", "globals", "locals", "setattr", "delattr"}
+
+
+def assert_health_only(tc, path, allowed_report, allowed_imports):
+    """The static guard both health-only modules pass: every `report.<name>` and every name imported
+    from loop.report is on the allowlist and never aliased; no other loop module is imported by any
+    spelling (relative, absolute, `import loop.x`, `from loop import x as y`); no getattr/vars/
+    __import__/eval/importlib or __dict__/__globals__ that could reach a name the scan cannot see."""
+    with open(path) as fh:
+        tree = ast.parse(fh.read())
+    used = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) and n.value.id == "report"}
+    tc.assertLessEqual(used, allowed_report, used - allowed_report)
+    for n in ast.walk(tree):
+        if isinstance(n, ast.ImportFrom):
+            mod = n.module or ""
+            if n.level or mod == "loop" or mod.startswith("loop."):
+                tc.assertTrue(all(a.asname is None for a in n.names), ast.dump(n))
+                if n.level and not mod or mod == "loop":                  # from . import x / from loop import x
+                    tc.assertLessEqual({a.name for a in n.names}, allowed_imports, ast.dump(n))
+                elif mod in ("report", "loop.report") or mod.endswith(".report"):
+                    tc.assertLessEqual({a.name for a in n.names}, allowed_report, ast.dump(n))
+                else:
+                    tc.fail(f"{path}: imports {ast.dump(n)}")
+        if isinstance(n, ast.Import):
+            tc.assertFalse(any(a.name == "loop" or a.name.startswith("loop.") or a.name == "importlib" for a in n.names), ast.dump(n))
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name):
+            tc.assertNotIn(n.func.id, BANNED_CALLS, f"{path}: {n.func.id}() could reach a banned name")
+        if isinstance(n, ast.Attribute):
+            tc.assertNotIn(n.attr, {"__dict__", "__globals__", "__builtins__", "import_module"}, f"{path}: {n.attr}")
+    names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+    tc.assertFalse(names & {"book", "inference", "rules", "jev", "importlib"})
+
+
+class _Tripwire(Exception):
+    pass
+
+
+def _trip(*a, **k):
+    raise _Tripwire("a health page reached the measurement")
+
+
+def runtime_health_only(tc, fn):
+    """Runs `fn` with every function that computes an H1, H2, pair or calibration number replaced by a
+    tripwire: the page or screen must render without touching one, whatever the static scan missed."""
+    from loop import book
+    with mock.patch.object(report, "table", _trip), mock.patch.object(report, "h2", _trip), \
+            mock.patch.object(report, "calibration", _trip), mock.patch.object(report, "agreement", _trip), \
+            mock.patch.object(report, "_h2_pair", _trip), mock.patch.object(report, "h2_units", _trip), \
+            mock.patch.object(report, "_cell", _trip), mock.patch.object(report, "_blocks", _trip), \
+            mock.patch.object(book, "replay", _trip), mock.patch.object(book, "paired", _trip):
+        return fn()
+
+
 class Dash(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -61,18 +114,24 @@ class Dash(unittest.TestCase):
         body = page.split("<div class='foot'>")[0]                 # the footer NAMES what the page cannot carry
         for banned in ("H1", "H2", "pair B-C", "mean_S", "Pearson", "Brier", "calibration", "c99", "noultail", "pbuy", "confidence table"):
             self.assertNotIn(banned, body)
-        # every report.<name> in the source is on the allowlist, and only these modules are imported from loop
-        with open(os.path.join(REPO, "loop", "dash.py")) as fh:
-            tree = ast.parse(fh.read())
-        used = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) and n.value.id == "report"}
-        self.assertLessEqual(used, ALLOWED_REPORT, used - ALLOWED_REPORT)
-        for n in ast.walk(tree):
-            if isinstance(n, ast.ImportFrom) and n.level:
-                self.assertLessEqual({a.name for a in n.names}, ALLOWED_IMPORTS)
-            if isinstance(n, ast.Import):
-                self.assertFalse(any(a.name.startswith("loop") for a in n.names))
-        names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
-        self.assertFalse(names & {"book", "inference", "rules", "jev", "cycle"})
+        # statically: every report.<name> and every import is on the allowlist, by any spelling; and at
+        # run time: the page renders on an answered log with every measurement function tripwired
+        assert_health_only(self, os.path.join(REPO, "loop", "dash.py"), ALLOWED_REPORT, ALLOWED_IMPORTS)
+        import datetime
+        now = datetime.datetime(2026, 9, 23, 10, 42, tzinfo=datetime.timezone.utc)
+        props = dash.proposals(os.path.join(REPO, "proposals"))
+        args = dict(t0=report.tick_epoch("20260923T100000Z"), now=now, props=props, hb="2026-09-23T10:41:00.000Z")
+        page2 = runtime_health_only(self, lambda: dash.render(self.rows, self.outs, **args))
+        self.assertEqual(page2, dash.render(self.rows, self.outs, **args))         # the same page, tripwired or not
+        # the guard itself catches the spellings a substring scan missed
+        for src in ("from . import report as _rp\n", "from loop.report import table\n", "from loop import inference\n",
+                    "import loop.report as r\n", "x = getattr(report, 'tab' + 'le')\n", "import importlib\n",
+                    "y = vars(report)['h2']\n", "z = report.__dict__\n"):
+            p = os.path.join(self.tmp, "mutant.py")
+            with open(p, "w") as fh:
+                fh.write("from . import config, outcomes, report, state\n" + src)
+            with self.assertRaises(AssertionError, msg=src):
+                assert_health_only(self, p, ALLOWED_REPORT, ALLOWED_IMPORTS)
 
     def test_t0_from_prereg_and_the_sample_cut(self):
         with open(os.path.join(REPO, "PREREG.md")) as fh:

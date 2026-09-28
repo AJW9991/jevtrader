@@ -264,6 +264,14 @@ class LiveLog(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("NOT the pre-registered run (resamples R != 10000)", out)
 
+    def test_a_hard_link_to_the_live_log_is_the_live_log(self):
+        link = os.path.join(self.tmp, "linked.jsonl")
+        os.link(self.log, link)
+        with mock.patch.object(outcomes, "load", side_effect=AssertionError("the log was opened")):
+            code, out, err = self._run(["--sample", "--resamples", "1000", "--log", link])
+        self.assertEqual((code, out), (3, ""))
+        self.assertIn("runs the pre-registered 10000 resamples only", err)
+
     def test_a_copy_of_the_log_is_not_the_live_log(self):
         code, out, err = _main(["--sample", "--log", self.log, "--resamples", "50", "--exclusions", self.ex], now=AFTER_SEALED_END)
         self.assertEqual(code, 0, err)

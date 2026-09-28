@@ -498,6 +498,10 @@ def main(argv=None, now=None):
     if args.resamples < 1:
         ap.error(f"--resamples wants a positive count, got {args.resamples}")
     live_log = os.path.realpath(args.log) == os.path.realpath(config.DECISIONS)   # the launchd log, not a copy or a fixture
+    try:                                                                            # (a hard link to it is it: samefile)
+        live_log = live_log or os.path.samefile(args.log, config.DECISIONS)
+    except OSError:
+        pass
     if args.sample and live_log and args.resamples != RESAMPLES:
         sys.stderr.write(f"inference: refusing: --sample on the live log {config.DECISIONS} runs the pre-registered"
                          f" {RESAMPLES} resamples only, got --resamples {args.resamples} (PREREG §4-§5)\n")

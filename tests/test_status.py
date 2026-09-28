@@ -5,6 +5,7 @@ import contextlib, datetime, io, os, tempfile, unittest
 from unittest import mock
 
 from loop import config, dash, outcomes, report, status
+from test_dash import ALLOWED_IMPORTS, ALLOWED_REPORT, assert_health_only, runtime_health_only
 from test_report import _row, _write
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -67,6 +68,26 @@ class Status(unittest.TestCase):
         self.assertIn("sample: ended 2026-10-21T10:00Z", self._render("2026-10-22T10:42"))
         self.assertIn("sample: no T0", self._render("2026-09-23T10:42", t0=None))
 
+    def test_the_per_day_table_is_the_samples_and_names_a_day_without_live_rows(self):
+        # 2026-09-28 (verifier): `make status` ran days_table on the whole uncut log, so a pre-T0 day
+        # with poor fill counted as BAD and a closed sample day with no row at all read "ok"
+        t0 = report.tick_epoch("20260925T214000Z")
+        rows = []
+        for m in range(-1440, 4 * 1440, 1):
+            day = m // 1440 + 1
+            if day == 2 or (day == 0 and m % 20):                       # d02: no rows; d00: a row every 20 min
+                continue
+            r = dict(_row(7))
+            e = t0 + 60 * m
+            r["tick_id"], r["ts_rx"] = report._tick_of(e), datetime.datetime.fromtimestamp(e, UTC).strftime("%Y-%m-%dT%H:%M:%S.100Z")
+            rows.append(r)
+        outs = outcomes.join(rows)
+        text = status.render(rows, outs, t0, _now("2026-09-29T22:00"), "2026-09-29T21:39:00.100Z", self.halt, self.log, self.props, self.plog, "v2")
+        self.assertIn("per day (last 3 of 4; BAD days so far 0; NO LIVE ROWS 1: d02 (fill 0/0; the exclusion is Alex's call)):", text)
+        self.assertIn("  d02       ticks     0 (  0.0%)  live     0  fill    n/a  pend    0  skip   0  jev-err    n/a  NO LIVE ROWS", text)
+        self.assertNotIn("d00", text)                                    # the day before T0 is not the sample's
+        self.assertIn("STOPPED? no heartbeat (data/heartbeat absent or empty", status.render(rows, outs, t0, _now("2026-09-29T22:00"), None, self.halt, self.log, self.props, self.plog, "v2"))
+
     def test_nightly_lines_and_the_missing_slot(self):
         # at 12Z yesterday's (09-22) table exists: nothing missing; at 12Z on 09-24 the 09-23 one is missing
         text = self._render("2026-09-23T12:00")
@@ -100,12 +121,12 @@ class Status(unittest.TestCase):
         text = self._render("2026-09-23T10:42")
         for banned in ("H1 statistic", "H2 statistic", "pair B-C", "mean_S", "Pearson", "Brier", "calibration", "c99", "noultail", "pbuy", "confidence"):
             self.assertNotIn(banned, text)
-        with open(os.path.join(REPO, "loop", "status.py")) as fh:
-            src = fh.read()
-        code = "\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
-        for banned in ("report.table", "report.h2", "report.calibration", "report.agreement", "report.render", "book.", "paired(", "replay(", "inference."):
-            self.assertNotIn(banned, code)
-        self.assertEqual([l for l in code.splitlines() if "import" in l and ("book" in l or "inference" in l)], [])
+        # the same static guard as the dash (plus cycle for the spend guard and dash for its readers),
+        # and the screen renders on an answered log with every measurement function tripwired
+        assert_health_only(self, os.path.join(REPO, "loop", "status.py"), ALLOWED_REPORT | {"days_table", "_pc", "SAMPLE_DAYS"},
+                           ALLOWED_IMPORTS | {"cycle", "dash"})
+        text2 = runtime_health_only(self, lambda: self._render("2026-09-23T10:42"))
+        self.assertEqual(text2, text)
 
 
 if __name__ == "__main__":

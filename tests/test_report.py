@@ -906,10 +906,16 @@ class Withheld(unittest.TestCase):
         with self.assertRaises(SystemExit) as cm:
             self._run(["--log", self.log, "--health", "--sample", "--prereg", self.unsealed], None)
         self.assertEqual(cm.exception.code, 2)
-        # unsealed PREREG: nothing is withheld (there is no sample yet)
+        # --prereg pointed at an unsealed file does NOT lift the withholding: it reads the repo's own
+        # PREREG, which is sealed (a pointer at another file is not a look; --unblind is the one way)
         code, out, err = self._run(["--log", self.log, "--prereg", self.unsealed], self.T0 + 10 * 86400)
-        self.assertNotIn("WITHHELD", out)
-        self.assertIn("pair B-C", out)
+        self.assertIn("WITHHELD", out)
+        self.assertNotIn("pair B-C", out)
+        # NO LIVE ROWS is a sample-day reading: a calendar day (no --t0) of dry rows is not flagged as one
+        dry = [dict(_row(m)) for m in range(5)]
+        h = report.health(dry + [dict(_row(30), tick_id="20260925T100000Z", ts_rx="2026-09-25T10:00:00.100Z")], outcomes.join(dry))
+        self.assertEqual(h["empty_days"], [])
+        self.assertNotIn("NO LIVE ROWS", "\n".join(h["lines"]))
 
 
 class PerDay(unittest.TestCase):

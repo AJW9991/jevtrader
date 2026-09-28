@@ -308,8 +308,9 @@ def days_table(rows, outs, t0=None, last=None):
         is_open = last is None or end + config.HORIZON_S + outcomes.JOIN_TOL_S > last   # its last row can still fill
         fill, err = _rate(x["filled"], x["live"]), _rate(x["errors"], x["attempted"])
         is_bad = not is_open and ((fill is not None and fill < BAD_FILL) or (err is not None and err > BAD_JEV_ERR))
-        is_empty = not is_open and x["live"] == 0 and x["pending"] == 0   # closed, and no live row reached its t + h: no
-                                                                    # row at all, or a day of absences (HALT, feed) or dry rows
+        in_sample_day = span is not None and 1 <= int(d[1:]) <= SAMPLE_DAYS   # only a day the exclusions file could name
+        is_empty = in_sample_day and not is_open and x["live"] == 0 and x["pending"] == 0   # closed, and no live row reached
+                                                                    # its t + h: no row at all, or absences (HALT, feed) or dry rows only
         why = []
         if fill is not None and fill < BAD_FILL:
             why.append("fill")
@@ -910,6 +911,8 @@ def main(argv=None, now=None):
         ap.error(f"--t0 wants YYYY-MM-DDTHH:MM (UTC) or a tick_id, got {args.t0!r}")
     from . import dash                                               # here, not at the top: dash imports report
     sealed = dash.read_t0(args.prereg)                               # PREREG §11's T0, None before sealing
+    sealed_repo = dash.read_t0(None)                                 # the withholding reads the REPO's PREREG whatever
+                                                                     # --prereg says: a pointer at another file is not a look
     if args.sample:
         if args.t0:
             ap.error("--sample reads T0 from PREREG.md; do not pass --t0 with it")
@@ -928,7 +931,7 @@ def main(argv=None, now=None):
         rows = in_sample(rows, t0)                                   # cut BEFORE any replay: every arm starts flat at T0
     withheld, health_only = None, args.health
     if not health_only:
-        withheld = withheld_until(rows, sealed, now)
+        withheld = withheld_until(rows, sealed_repo, now)
         if withheld is not None and args.unblind:
             sys.stderr.write(f"report: --unblind: sections {HEALTH_N + 1}-{len(TITLES)} printed on sample rows before"
                              f" {_iso_minute(withheld)}; this is a look (PREREG §8.4)\n")

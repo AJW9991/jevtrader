@@ -25,7 +25,7 @@ NIGHTLY_DONE_UTC_H = 10             # 03:30 America/Chicago is 08:30Z in summer 
 def _age_line(hb, now):
     age = dash._age(hb, now)
     if hb is None:
-        return "STOPPED? no heartbeat (data/heartbeat absent: the loop has never run here, or the plist is not loaded)"
+        return "STOPPED? no heartbeat (data/heartbeat absent or empty: the loop has never run here, or the plist is not loaded)"
     if age is None:
         return f"STOPPED? heartbeat unreadable: {hb!r}"
     if age > STALE_S:
@@ -83,13 +83,18 @@ def _sample_line(t0, now):
 
 
 def _days_lines(rows, outs, t0):
+    """The sample's per-day table (rows cut to [T0, T0 + 28 d) with the whole log's last tick, as the
+    dash and `make health` do), so a pre-T0 or post-sample day never counts as BAD here."""
     if not rows:
         return ["per day: no rows"]
-    d = report.days_table(rows, outs, t0)
+    last = max((report.tick_epoch(r["tick_id"]) for r in rows if isinstance(r.get("tick_id"), str)), default=None)
+    scope = report.in_sample(rows, t0) if t0 is not None else rows
+    d = report.days_table(scope, outs, t0, last)
     shown = d["days"][-DAYS_SHOWN:]
-    out = [f"per day (last {len(shown)} of {len(d['days'])}; BAD days so far {len(d['bad'])}" + (": " + ", ".join(d["bad"]) if d["bad"] else "") + "):"]
+    out = [f"per day (last {len(shown)} of {len(d['days'])}; BAD days so far {len(d['bad'])}" + (": " + ", ".join(d["bad"]) if d["bad"] else "")
+           + (f"; NO LIVE ROWS {len(d['empty'])}: " + ", ".join(d["empty"]) + " (fill 0/0; the exclusion is Alex's call)" if d["empty"] else "") + "):"]
     for x in shown:
-        flag = f"BAD ({', '.join(x['why'])})" if x["bad"] else "open" if x["open"] else "ok"
+        flag = f"BAD ({', '.join(x['why'])})" if x["bad"] else "NO LIVE ROWS" if x.get("empty") else "open" if x["open"] else "ok"
         out.append(f"  {x['day']:<9} ticks {x['ticks']:>5} ({report._pc(x['cov']):>6})  live {x['live']:>5}  fill {report._pc(x['fill']):>6}"
                    f"  pend {x['pending']:>4}  skip {x['skips']:>3}  jev-err {report._pc(x['jev_err']):>6}  {flag}")
     return out
