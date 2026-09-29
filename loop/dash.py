@@ -15,12 +15,19 @@ or confidence number can appear by accident; tests/test_dash.py holds every `rep
 in this file to an allowlist.
 Standard library only; the page carries no script and loads nothing from the network, so
 it can be opened from a file and shared without reaching for anything."""
-import argparse, collections, datetime, glob, html, math, os, re, sys
+import argparse, collections, datetime, glob, hashlib, html, math, os, re, sys
 
 from . import config, outcomes, report, state
 
 T0_RE = re.compile(r"T0 \(first tick_id of day 1\): `(\d{8}T\d{6}Z)`")   # PREREG §11's sealed line
 PREREG_PATH = os.path.join(config.REPO, "PREREG.md")   # the repository's PREREG, read at call time (tests pin a fixture)
+# ---- PREREG-v2 §12 and the v2 spec sha: what the v2 withholding reads (report, status, dash; inference later) ----
+PREREG_V2_PATH = os.path.join(config.REPO, "PREREG-v2.md")   # the repository's PREREG-v2, read at call time (tests pin a fixture)
+T0_V2_RE = re.compile(r"T0_v2: `([^`\n]*)`")                  # §12's field line: T_first_v2: `...`   T0_v2: `...`   Sealed by: ...
+BLANK_RE = re.compile(r"_*")                                  # an unfilled field is underscores (or nothing)
+TICK_RE = re.compile(r"\d{8}T\d{4}00Z")                        # a filled T0_v2 is a tick_id: a minute boundary (§2)
+V1_SPEC_SHA = "5d4f355e181739ae2a65a6496ecddf195d9dde7c7668c7606c19d795c5254ca7"   # sha256 of `git show prereg-v1:SPEC.md`:
+                                                              # the spec_sha every v1 sample row carries (PREREG-v2 §10)
 PROPOSAL_HEAD = re.compile(r"requests: (\d+), answered: (\d+), errors: (\d+)")
 PROPOSAL_NAME = re.compile(r"^(cand_\d+)\n")
 PROPOSAL_COUNTS = re.compile(r"^differs from CURRENT on (\d+) of (\d+) answered states; from rule_c on (\d+) of (\d+)", re.M)
@@ -71,6 +78,38 @@ def read_t0(prereg=None):
     except OSError:
         return None
     return report.tick_epoch(m.group(1)) if m else None
+
+
+def read_t0_v2(prereg=None):
+    """PREREG-v2.md §12's T0_v2 as epoch seconds, or None while the field is blank (underscores) or the file or
+    the field is absent. A filled field that is not a tick_id on a minute boundary ('20261024T220000Z') raises
+    ValueError: a malformed seal must be loud, never read as unsealed. Read at call time from `prereg` or the
+    repository's own PREREG-v2.md (PREREG_V2_PATH), whatever a reader's --prereg or --t0 say (§9.5)."""
+    try:
+        with open(prereg or PREREG_V2_PATH, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return None
+    sec = re.search(r"^## 12\..*?(?=^## |\Z)", text, re.M | re.S)          # §12 only: the field is filled there
+    m = T0_V2_RE.search(sec.group(0)) if sec else None
+    if m is None or BLANK_RE.fullmatch(m.group(1).strip()):
+        return None
+    v = m.group(1).strip()
+    if not TICK_RE.fullmatch(v):
+        raise ValueError(f"PREREG-v2 §12's T0_v2 {v!r} is not a tick_id on a minute boundary (YYYYMMDDTHHMM00Z)")
+    return report.tick_epoch(v)
+
+
+def v2_spec_sha(spec=None):
+    """The spec_sha every v2 row carries: sha256 of this tree's SPEC.md (config.SPEC, as cycle.spec_sha reads it),
+    or None while that is still v1's SPEC (V1_SPEC_SHA: SPEC v2 not written yet, so no row is v2 by its sha) or
+    the file is absent."""
+    try:
+        with open(spec or config.SPEC, "rb") as fh:
+            sha = hashlib.sha256(fh.read()).hexdigest()
+    except OSError:
+        return None
+    return None if sha == V1_SPEC_SHA else sha
 
 
 def heartbeat(path=None):

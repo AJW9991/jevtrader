@@ -23,6 +23,30 @@ def text(t0=SEALED_T0):
             + LINE.format(t0=t0 or "________________", by="tests/fixture_prereg.py" if t0 else "________"))
 
 
+LINE_V2 = "T_first_v2: `{tf}`   T0_v2: `{t0}`   Sealed by: `{by}`   on: `{on}`\n"
+
+
+def text_v2(t0=None):
+    """A PREREG-v2.md body: a title, a §12 heading and its field line, T0_v2 underscores when t0 is None (blank)."""
+    return ("# PREREG-v2 (test fixture, tests/fixture_prereg.py)\n\n## 12. Fields filled after the draft tag\n\n"
+            + LINE_V2.format(tf="________" if t0 is None else "20261023T220000Z", t0=t0 or "________",
+                             by="________" if t0 is None else "tests/fixture_prereg.py", on="________")
+            + "\n## 13. The tags\n\nT0_v2: `20990101T000000Z` (outside §12: never read)\n")
+
+
+def pin_prereg_v2(tc, t0=None, spec_sha="spec-v2-fixture"):
+    """The v2 twin of pin_prereg: a temp PREREG-v2.md whose §12 carries `t0` (a tick_id, or None: blank), patched
+    in as dash.PREREG_V2_PATH, and dash.v2_spec_sha patched to return `spec_sha`, so no test depends on the
+    repository's §12 (filled at sealing) or on whether this tree's SPEC.md is v1's or v2's. Returns the path."""
+    enter = tc.enterClassContext if isinstance(tc, type) else tc.enterContext
+    path = os.path.join(enter(tempfile.TemporaryDirectory()), "PREREG-v2.md")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text_v2(t0))
+    enter(mock.patch.object(dash, "PREREG_V2_PATH", path))
+    enter(mock.patch.object(dash, "v2_spec_sha", lambda spec=None: spec_sha))
+    return path
+
+
 def pin_prereg(tc, t0=SEALED_T0):
     enter = tc.enterClassContext if isinstance(tc, type) else tc.enterContext
     path = os.path.join(enter(tempfile.TemporaryDirectory()), "PREREG.md")
