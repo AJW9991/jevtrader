@@ -358,6 +358,26 @@ No p-values in `make report`. Inference lives in PREREG.md and is run once: `loo
 sealed sample, whatever `--now`, `--t0` or `--prereg` say (a copy of the live log is the live
 log), and `--pre-t0` cuts at the repository's seal too (2026-09-28).
 
+**PREREG-v2 (without `--log`).** `loop.report` reads every product's store (`config.store(p)` for
+`p` in `config.PRODUCTS`) and prints the same seven sections over them: §1–§3 per product and
+pooled (HALT once, each `data/PAUSE.<PRODUCT>`, each product's T0_v2-anchored day table; stop rule 3
+recomputed from the log, which governs, beside `data/exclusions-v2.tsv` verbatim with every
+disagreement named; PREREG-v2 §9.4's void once every product's d28 has closed); §4 A's argmax vs
+`rule_c` and arm D's Agreement(p, v) with denominators, null counts and PREREG-v2 §6's readings;
+§5 the paired book at the minute cadence (B − C) and at each `config.CADENCES` through
+`book.at_cadence(rows, c, T0)`, each product replayed from flat at T0 over every row, excluded
+days included, its excluded days' blocks dropped after, per product and pooled over the time
+block, `gap_blocks` per cadence, trades/day per arm and product, D − B and D − C at argmax only;
+§6–§7 per product. Every product's days close on the latest tick any product's log has reached.
+PREREG-v2's withholding sits beside v1's in both forms: T0_v2 is read from the repository's
+PREREG-v2.md §12 (`dash.read_t0_v2`) whatever the flags say, and §4–§7 are withheld while the
+clock is before T0_v2 + 28 d and a row read is in [T0_v2, T0_v2 + 28 d); while §12's T0_v2 is blank
+(or malformed) they are withheld over every row carrying the v2 `spec_sha` (`dash.v2_spec_sha`).
+`--unblind` is a look: `loop/looks.py` appends (UTC, argv, HEAD) to `data/looks.tsv` before
+anything withheld is printed, and a look it cannot record is refused (exit 2). `--sample` without
+`--log` reads T0_v2 from §12. `make status` and the dash show every store, HALT (REPO/data) and
+each PAUSE, and the pending prompt version on its own line; still health only.
+
 ## 5. Nightly
 
 `nightly/digest.py [--date YYYY-MM-DD]` → `data/digest-<date>.md`: one summary
