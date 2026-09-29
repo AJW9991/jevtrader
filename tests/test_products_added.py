@@ -26,9 +26,7 @@ LEFT_OUT = {
     "test_nightly": "22 s of shell runs; what it reads of PRODUCTS today (bin/promote builds every product) passed"
                     " with three by hand at S1; the stage that makes the nightly per product takes it in or says why not",
 }
-# per candidate: (TICK_P, (a10, a90), thin fallback) -- illustrative, not the probe's
-STAND_IN = {"ETH-USD": (0.01, (1, 3), False), "XRP-USD": (0.0001, (1, 5), True), "DOGE-USD": (0.00001, (1, 4), False),
-            "AVAX-USD": (0.01, (2, 6), False), "LINK-USD": (0.001, (1, 4), True), "ADA-USD": (0.0001, (1, 4), False)}
+from fixture_products import STAND_IN          # per candidate: (TICK_P, (a10, a90), thin fallback) -- illustrative
 BOOT = r"""
 import json, sys, unittest
 tests, repo, spec = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])

@@ -1,6 +1,7 @@
 """A seeded synthetic decision log in the shape loop/cycle.py writes, for tests and benchmarks.
 
-    python3 tests/synth.py --days 28 --seed 1 --out FILE [--t0 20260925T214000Z] [--stress]
+    python3 tests/synth.py --days 28 --seed 1 --out FILE [--t0 20260925T214000Z] [--stress] [--era v2] [--cadence-s 60]
+    python3 tests/synth.py --products all --era v2 --out DATA_DIR ...    (one log per product, where config.store puts it)
 
 Not a test module (unittest discovers test*.py only). Tests import it as the suite imports
 fixture_prompts (`from synth import generate, write`, tests/ being on sys.path under
@@ -19,7 +20,9 @@ feed, state and prompts, a jev/parse refused at the columns keeps its answer and
 The features are consistent with the words (adj = state.adjectives(features)) and computed from
 a random-walk price path with a 300-minute pre-roll by the definitions of SPEC §4 (rolling sums,
 not candles; nothing reads them back but the adjectives). The prompt shas are sha256 of
-"synthetic prompt vN" (never the live prompts/); spec_sha is the sha of this repo's SPEC.md.
+"synthetic prompt vN" (never the live prompts/); spec_sha is prereg-v1's SPEC sha on a v1-era row and
+this repo's SPEC.md on a v2-era row (knob era). generate_products(seed, products) gives one Log per
+product on one shared tick grid; write_products(data, logs) puts each where config.store would.
 
 Knobs (generate(seed, **knobs); KNOBS holds the defaults, which make a 28-day log look like the
 live one; STRESS turns every oddity up so a 1-day log carries several of each):
@@ -67,6 +70,22 @@ live one; STRESS turns every oddity up so a 1-day log carries several of each):
   a_noise           arm A's answer differs from rule_c with this probability (v1 restates it)
   p_tail            a direction noul in the measured tail (>= 0.99)
   p_drift           model_answered is not MODEL (drift); p_shared_key: the brain's key answered
+  product           the row's product (default SOL-USD, the v1 stream): its base leads the state string,
+                    its liq words are read in its own half-ticks (config.TICK_P), its book sits on its
+                    tick grid; a product other than SOL-USD draws its own price path (mid0 from MIDS
+                    unless given) and consumes SOL's market draws first, so its fires, holes, HALT
+                    stretches and feed bursts are SOL's for the same seed (generate_products)
+  era               "v1" (default): the rows v1's loop wrote (A = v1, no table_sha, columns a and b);
+                    "v2": the rows the v2 tree writes (PREREG-v2 §10): A asks the frozen v2 wording,
+                    CURRENT starts at v2 and promotions_h move it to v3, v4, ...; the row carries
+                    table_sha and columns.d, the CURRENT version's table answer for the state (the
+                    version's policy, which B's live answer follows up to retest_noise)
+  p_d_null          (v2) a tick whose table read failed: table_sha and columns.d null on that row
+  no_table          (v2) versions with no table: table_sha and columns.d null on every row asking them
+  cadence_s         seconds between the synthetic loop's fires (a multiple of 60 dividing 86,400;
+                    default 60): the grid is T0-anchored, the rows carry it as cadence_s, and a
+                    28-day multi-product log at 900 s is small enough for a test
+The v1 era's rows carry prereg-v1's SPEC sha (dash.V1_SPEC_SHA), the v2 era's this tree's SPEC.md.
 Every probability is per row (or per minute for the *_per_day rates). The same seed and knobs
 give the same bytes. generate(..., encode=False) skips the bytes (Log.data is None) and gives the
 same rows about twice as fast; tests that do not read the file use it.
@@ -79,7 +98,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO not in sys.path:                     # run as a script: tests/ is sys.path[0], loop/ is not
     sys.path.insert(0, REPO)
 
-from loop import config, rules, state        # noqa: E402
+from loop import config, dash, rules, state  # noqa: E402
 
 CHOICES = rules.CHOICES
 WINDOW = config.WINDOW_MIN                   # 300
@@ -106,7 +125,17 @@ KNOBS = {
     "p_foreign": 0.0, "foreign_words": FOREIGN,
     "promotions_h": (24.7, 302.0), "retest_noise": 0.02, "policy_change": 0.3,
     "a_noise": 0.005, "p_tail": 0.001, "p_drift": 0.0, "p_shared_key": 0.0,
+    "product": config.PRODUCT, "era": "v1", "p_d_null": 0.0, "no_table": (), "cadence_s": config.CADENCE_S,
 }
+MIDS = {"SOL-USD": 200.0, "ETH-USD": 4000.0, "XRP-USD": 2.5, "DOGE-USD": 0.25, "AVAX-USD": 30.0, "LINK-USD": 20.0,
+        "ADA-USD": 0.8}                        # a product's mid0 when none is given (MID_ELSE for any other)
+MID_ELSE = 100.0
+ERAS = ("v1", "v2")
+# the knobs drawn before the first row (the market, the fires, the holes, HALT and the feed bursts): one set for
+# every product of generate_products, so the products share one tick grid and one Mac
+GRID_KNOBS = ("t0", "days", "pre_hours", "post_minutes", "cadence_s", "interval_hours", "phase", "jitter_ms",
+              "quantum_ms", "p_late", "trend_rate", "burst_rate", "holes_per_day", "hole_median", "hole_max",
+              "halts_per_day", "halt_minutes", "feed_bursts_per_day")
 
 STRESS = {
     "pre_hours": 2.0, "pre_dry_hours": 0.5, "pre_dry_keep": 0.5, "trend_rate": 0.01, "burst_rate": 0.004,
@@ -155,19 +184,33 @@ def prompt_sha(version):
     return hashlib.sha256(f"synthetic prompt {version}".encode()).hexdigest()
 
 
-def new_row(ts_ms, mode, spec):
-    """cycle.new_row: every key present, in its order, everything not filled null."""
+def table_sha(version, product):
+    return hashlib.sha256(f"synthetic table {version} {product}".encode()).hexdigest()
+
+
+def new_row(ts_ms, mode, spec, era="v1", product=config.PRODUCT, cadence_s=config.CADENCE_S):
+    """cycle.new_row: every key present, in its order, everything not filled null. A v1-era row has v1's
+    shape (no table_sha, columns a and b); a v2-era row the v2 tree's (table_sha after prompt_b_sha, columns.d)."""
     ts = _iso_ms(ts_ms)
-    return {"v": 1, "tick_id": _tick(ts), "ts_rx": ts, "mode": mode,
-            "venue": config.VENUE, "product": config.PRODUCT,
-            "cadence_s": config.CADENCE_S, "horizon_s": config.HORIZON_S,
-            "bid": None, "bid_size": None, "ask": None, "ask_size": None, "mid": None,
-            "book_time": None, "feed_age_s": None,
-            "features": None, "adj": None, "state": None, "spec_sha": spec,
-            "prompt_a": None, "prompt_a_sha": None, "prompt_b": None, "prompt_b_sha": None,
-            "model_requested": config.MODEL, "model_answered": None, "drift": False,
-            "jev": {"latency_ms": None, "input_tokens": None, "error": None, "key_path": None},
-            "answers": None, "rule_c": None, "columns": {"a": None, "b": None}, "absence": None}
+    row = {"v": 1, "tick_id": _tick(ts), "ts_rx": ts, "mode": mode,
+           "venue": config.VENUE, "product": product,
+           "cadence_s": cadence_s, "horizon_s": config.HORIZON_S,
+           "bid": None, "bid_size": None, "ask": None, "ask_size": None, "mid": None,
+           "book_time": None, "feed_age_s": None,
+           "features": None, "adj": None, "state": None, "spec_sha": spec,
+           "prompt_a": None, "prompt_a_sha": None, "prompt_b": None, "prompt_b_sha": None,
+           "model_requested": config.MODEL, "model_answered": None, "drift": False,
+           "jev": {"latency_ms": None, "input_tokens": None, "error": None, "key_path": None},
+           "answers": None, "rule_c": None, "columns": {"a": None, "b": None}, "absence": None}
+    if era == "v1":
+        return row
+    out = {}
+    for k, v in row.items():
+        out[k] = v
+        if k == "prompt_b_sha":
+            out["table_sha"] = None
+    out["columns"] = {"a": None, "b": None, "d": None}
+    return out
 
 
 # ---- the market: a price path and the SPEC §4 features on it, per minute --------------------------
@@ -219,14 +262,18 @@ class _Market:
     def close(self, i):
         return math.exp(self.lp[i])
 
-    def features(self, i, bid, ask, bid_size, ask_size):
+    def features(self, i, bid, ask, bid_size, ask_size, halftick_k=1.0):
+        """halftick_k: the product's half-tick over SOL's, in bps at mid0, so the fill noise past the half-spread
+        (and a thin draw) is the same number of the product's half-ticks as SOL's (1.0 for SOL, left out)."""
         rng, k = self.rng, self.k
         mid = (bid + ask) / 2.0                                         # state.features' own expression
         spread_bps = 1e4 * (ask - bid) / mid
         short = rng.random() < k["p_short"]
-        fill = 1e4 * (ask - mid) / mid + rng.expovariate(2.0)
+        extra = rng.expovariate(2.0)
+        fill = 1e4 * (ask - mid) / mid + (extra if halftick_k == 1.0 else extra * halftick_k)
         if rng.random() < k["p_thin"]:
-            fill += rng.uniform(4.0, 10.0)
+            thin = rng.uniform(4.0, 10.0)
+            fill += thin if halftick_k == 1.0 else thin * halftick_k
         n = WINDOW - 15
         s1, s2 = self.s1[i], self.s2[i]
         sd = math.sqrt(max(0.0, (s2 - s1 * s1 / n) / (n - 1)))
@@ -303,11 +350,11 @@ def _columns(ans, arm):
     return dict(_COLS[key])
 
 
-def _state_string(adj):
-    """state.state_string, once per state (its digit scan was a fifth of the generator's time)."""
-    key = _key(adj)
+def _state_string(adj, base=state.BASE):
+    """state.state_string, once per state and base (its digit scan was a fifth of the generator's time)."""
+    key = (base,) + _key(adj)
     if key not in _STATES:
-        _STATES[key] = state.state_string(adj)
+        _STATES[key] = state.state_string(adj, base)
     return _STATES[key]
 
 
@@ -318,6 +365,18 @@ def generate(seed=1, encode=True, **over):
     if unknown:
         raise TypeError(f"unknown knobs: {sorted(unknown)}")
     k = dict(KNOBS, **over)
+    product, era, cad = k["product"], k["era"], k["cadence_s"]
+    if era not in ERAS:
+        raise ValueError(f"era {era!r} not in {ERAS}")
+    if isinstance(cad, bool) or not isinstance(cad, int) or cad <= 0 or cad % 60 or 86400 % cad:
+        raise ValueError(f"cadence_s {cad!r} is not a multiple of 60 s dividing a day")
+    if cad != 60 and k["interval_hours"]:
+        raise ValueError("cadence_s other than 60 with interval_hours: the old ~61 s grid is a one-minute loop's")
+    sol = product == config.PRODUCT
+    if not sol and "mid0" not in over:
+        k["mid0"] = MIDS.get(product, MID_ELSE)
+    tick = config.TICK_P[product]                            # a product must have its tick (tests add products to config)
+    base = config.base(product)
     rng = random.Random(seed)
     t0 = _epoch_of_tick(k["t0"])
     start = (t0 - int(round(k["pre_hours"] * 3600))) // 60 * 60
@@ -325,7 +384,13 @@ def generate(seed=1, encode=True, **over):
     n_min = max(0, (end - start) // 60)
     start_min, pre = start // 60, WINDOW + 16
     mk = _Market(rng, k, n_min + pre + 1)
-    spec = _spec_sha()
+    if not sol:                                             # SOL's market draws are taken (so the fires, holes and HALT
+        mk = _Market(random.Random(f"{seed}/{product}"), k, n_min + pre + 1)   # stretches below are SOL's) and the
+                                                                               # product walks its own path on its own rng
+    spec = dash.V1_SPEC_SHA if era == "v1" else _spec_sha()
+    size_k = 1.0 if sol else MIDS["SOL-USD"] / k["mid0"]   # a side's size in base units: SOL's USD depth at this price
+    halftick_k = 1.0 if sol else (tick / 2 / k["mid0"]) / (0.005 / MIDS["SOL-USD"])   # SOL's fill noise, in this
+                                                                                     # product's half-ticks
     events = {"rows": 0, "absence": {}, "lock_dup": 0, "dry_dup": 0, "live_dup": 0, "torn": 0, "glued": 0, "tail": 0,
               "foreign": 0, "drift": 0, "shared_key": 0, "holes": 0, "skips": 0, "late": 0}
 
@@ -338,6 +403,8 @@ def generate(seed=1, encode=True, **over):
         ms += 61000 + rng.randint(-60, 60)
     first = -(-max(ms, grid_end * 1000) // 60000) if fires else start_min
     for m in range(first, end // 60):
+        if cad != 60 and (m * 60 - t0) % cad:
+            continue                                        # the cadence knob: one fire every cad s from T0
         if k["phase"] == "wild":
             off = rng.randrange(0, 60000)
         else:
@@ -355,9 +422,10 @@ def generate(seed=1, encode=True, **over):
     def t0_day(minute):
         return (minute * 60 - t0) // 86400 + 1
 
-    versions = [("v1", -math.inf)] + [(f"v{j + 2}", t0 + h * 3600) for j, h in enumerate(sorted(k["promotions_h"]))]
+    first_v = 1 if era == "v1" else 2                       # v2: CURRENT is v2 at T0_v2 (PREREG-v2 §1), A's own wording
+    versions = [(f"v{first_v}", -math.inf)] + [(f"v{j + first_v + 1}", t0 + h * 3600) for j, h in enumerate(sorted(k["promotions_h"]))]
     policies = {}
-    for j, (v, _) in enumerate(versions[1:], 2):
+    for j, (v, _) in enumerate(versions[1:] if era == "v1" else versions, 2):   # vN's policy is the same in both eras
         prng = random.Random(seed * 1009 + j)
         pol = {}
         for adj in state.all_states():
@@ -366,7 +434,7 @@ def generate(seed=1, encode=True, **over):
         policies[v] = pol
 
     def version_at(sec):
-        v = "v1"
+        v = versions[0][0]
         for name, since in versions:
             if sec >= since:
                 v = name
@@ -374,10 +442,15 @@ def generate(seed=1, encode=True, **over):
 
     def feed_part(row, i, sec_ms):
         c = mk.close(i)
-        s = _weighted(rng, k["spread_cents"])
-        bid = round(c - s / 200.0, 2)
-        ask = round(bid + s / 100.0, 2)
-        bs, az = round(rng.uniform(0.5, 300.0), 3), round(rng.uniform(0.5, 300.0), 3)
+        s = _weighted(rng, k["spread_cents"])               # the spread in ticks (cents on SOL's 1c grid)
+        if sol:
+            bid = round(c - s / 200.0, 2)
+            ask = round(bid + s / 100.0, 2)
+        else:
+            nd = max(0, -math.floor(math.log10(tick) + 1e-9))
+            bid = round(round((c - s * tick / 2) / tick) * tick, nd)
+            ask = round(bid + s * tick, nd)
+        bs, az = round(rng.uniform(0.5, 300.0) * size_k, 3), round(rng.uniform(0.5, 300.0) * size_k, 3)
         age = (sec_ms % 60000) / 1000.0 + (60.0 if rng.random() < 0.01 else 0.0)
         row.update(bid=bid, bid_size=bs, ask=ask, ask_size=az,             # the venue's clock: microseconds, a hair before ours
                    book_time=row["ts_rx"][:20] + "%06dZ" % rng.randrange(1 + 1000 * (sec_ms % 1000)),
@@ -385,27 +458,31 @@ def generate(seed=1, encode=True, **over):
         return bid, ask, bs, az
 
     def state_part(row, i, bid, ask, bs, az, foreign=False):
-        feat = mk.features(i, bid, ask, bs, az)
-        adj = state.adjectives(feat)
+        feat = mk.features(i, bid, ask, bs, az, halftick_k)
+        adj = state.adjectives(feat, product)
         rule = state.rule_c(adj)
-        s = _state_string(adj)
+        s = _state_string(adj, base)
         if foreign:                                         # never written by the tick: state.py refuses the word
             d = rng.choice(state.DIMS)
             adj = dict(adj, **{d: rng.choice(k["foreign_words"])})
-            s = "%s: liquidity %s, flow %s, trend %s, vol %s" % (state.BASE, adj["liq"], adj["flow"], adj["trend"], adj["vol"])
+            s = "%s: liquidity %s, flow %s, trend %s, vol %s" % (base, adj["liq"], adj["flow"], adj["trend"], adj["vol"])
             events["foreign"] += 1
         row.update(mid=feat["mid"], features=feat, adj=adj, state=s, rule_c=rule)
         return adj, rule
 
     def prompts_part(row, sec):
         v = version_at(sec)
-        row.update(prompt_a="v1", prompt_a_sha=prompt_sha("v1"), prompt_b=v, prompt_b_sha=prompt_sha(v))
+        a = "v1" if era == "v1" else config.FROZEN_A
+        row.update(prompt_a=a, prompt_a_sha=prompt_sha(a), prompt_b=v, prompt_b_sha=prompt_sha(v))
+        if era == "v2":                                     # cycle reads the table at the prompts step, before HALT
+            row["table_sha"] = None if v in k["no_table"] else table_sha(v, product)
         return v
 
     def answer(adj, rule, bver):
-        a = rule if rng.random() >= k["a_noise"] else rng.choice([c for c in CHOICES if c != rule])
+        amean = rule if era == "v1" else policies[config.FROZEN_A].get(_key(adj), rule)   # v1's A restates rule_c
+        a = amean if rng.random() >= k["a_noise"] else rng.choice([c for c in CHOICES if c != amean])
         ca = round(rng.uniform(0.86, 0.99), 2)
-        if bver == "v1":                                    # the same question twice: the model's own noise
+        if bver == versions[0][0]:                          # the same question twice: the model's own noise
             b = a if rng.random() >= k["retest_noise"] else rng.choice([c for c in CHOICES if c != a])
             cb = round(min(0.99, max(0.5, ca + rng.uniform(-0.02, 0.02))), 2)
         else:
@@ -436,7 +513,7 @@ def generate(seed=1, encode=True, **over):
 
     def build(ms_, minute, mode, kind, foreign=False):
         """One row at ts_rx = ms_ of `kind`: ok | feed | feed-state | guard | halt | jev | lock."""
-        row = new_row(ms_, mode, spec)
+        row = new_row(ms_, mode, spec, era, product, cad)
         i = minute - start_min + pre
         sec = ms_ / 1000.0
         if kind == "lock" or kind == "feed":
@@ -475,6 +552,11 @@ def generate(seed=1, encode=True, **over):
         row["jev"].update(latency_ms=lat, input_tokens=tok, key_path=key)
         row.update(answers=ans, model_answered=model, drift=model != config.MODEL)
         row["columns"] = {"a": _columns(ans, "a"), "b": _columns(ans, "b")}
+        if era == "v2":                                     # arm D: the CURRENT version's table, looked up by the state
+            if k["p_d_null"] and rng.random() < k["p_d_null"]:
+                row["table_sha"] = None                     # the table read failed on this tick: D alone holds
+            d = None if row["table_sha"] is None else policies[bver].get(_key(adj), rule)
+            row["columns"]["d"] = d
         return row
 
     records = []                                            # (row, fate) in file order
@@ -564,6 +646,41 @@ def write(path, log):
     return path
 
 
+def generate_products(seed=1, products=None, encode=True, per_product=None, **knobs):
+    """{product: Log} for `products` (default config.PRODUCTS), one generate() each with the same seed and `knobs`,
+    so they share one tick grid: the fires, holes (the Mac asleep), HALT stretches and feed bursts are drawn
+    before any product-specific draw. Each walks its own price path and draws its own row-level noise. SOL-USD's
+    Log is byte for byte generate(seed, **knobs). per_product: {product: knobs} on top of `knobs` for that product
+    alone (empty_days, absence_days, p_jev, ...); a knob in GRID_KNOBS there is refused, it would move the grid."""
+    products = tuple(config.PRODUCTS if products is None else products)
+    per_product = per_product or {}
+    for p, kn in per_product.items():
+        if p not in products:
+            raise ValueError(f"per_product names {p!r}, not one of {products}")
+        grid = sorted(set(kn) & set(GRID_KNOBS))
+        if grid:
+            raise ValueError(f"per_product[{p!r}] sets {grid}: the grid is shared, set them for every product")
+    if "product" in knobs:
+        raise TypeError("product is set per Log by generate_products")
+    return {p: generate(seed, encode, **dict(knobs, product=p, **per_product.get(p, {}))) for p in products}
+
+
+def store_path(data, product):
+    """Where config.store(product).decisions sits under the data dir `data`: data/decisions.jsonl for SOL-USD,
+    data/<PRODUCT>/decisions.jsonl otherwise (tests/test_invariants holds the two to each other)."""
+    return os.path.join(data, "decisions.jsonl") if product == config.PRODUCT else os.path.join(data, product, "decisions.jsonl")
+
+
+def write_products(data, logs):
+    """Each Log of generate_products written where the loop would: {product: path}."""
+    out = {}
+    for p, log in logs.items():
+        path = store_path(data, p)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        out[p] = write(path, log)
+    return out
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="python3 tests/synth.py", description="a seeded synthetic decision log (JSONL)")
     ap.add_argument("--days", type=float, default=KNOBS["days"])
@@ -573,9 +690,23 @@ def main(argv=None):
     ap.add_argument("--pre-hours", type=float, default=KNOBS["pre_hours"])
     ap.add_argument("--post-minutes", type=int, default=KNOBS["post_minutes"])
     ap.add_argument("--stress", action="store_true", help="the STRESS knobs: every oddity turned up")
+    ap.add_argument("--era", choices=ERAS, default=KNOBS["era"], help="v1's rows (default) or the v2 tree's (table_sha, columns.d)")
+    ap.add_argument("--cadence-s", type=int, default=KNOBS["cadence_s"], help="seconds between fires (a multiple of 60)")
+    ap.add_argument("--products", default=None, help="comma-separated products of config.PRODUCTS (or 'all'): with --out a DATA"
+                    " directory, each log written where config.store would put it under it")
     a = ap.parse_args(argv)
     knobs = dict(STRESS) if a.stress else {}
-    knobs.update(days=a.days, t0=a.t0, pre_hours=a.pre_hours, post_minutes=a.post_minutes)
+    knobs.update(days=a.days, t0=a.t0, pre_hours=a.pre_hours, post_minutes=a.post_minutes, era=a.era, cadence_s=a.cadence_s)
+    if a.products:
+        products = tuple(config.PRODUCTS) if a.products == "all" else tuple(a.products.split(","))
+        bad = [p for p in products if p not in config.PRODUCTS]
+        if bad:
+            ap.error(f"--products: {bad} not in config.PRODUCTS {tuple(config.PRODUCTS)}")
+        logs = generate_products(a.seed, products, **knobs)
+        paths = write_products(a.out, logs)
+        for p in products:
+            sys.stdout.write(f"{paths[p]}\t{len(logs[p].rows)} rows, {len(logs[p].data)} bytes\n")
+        return 0
     log = generate(a.seed, **knobs)
     write(a.out, log)
     e = log.events

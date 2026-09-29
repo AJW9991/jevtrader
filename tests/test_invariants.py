@@ -18,6 +18,7 @@ from unittest import mock
 
 import synth
 from fixture_prereg import pin_prereg
+from fixture_products import add_products
 from fixture_prompts import pin_v1
 from loop import book, config, cycle, dash, inference, outcomes, report, rules, state, status
 from test_dash import runtime_health_only
@@ -232,20 +233,108 @@ def ref_h2(sample, outs, t0=None):
 # ---- the generator itself -----------------------------------------------------------------------------
 class Generator(unittest.TestCase):
     def test_rows_have_the_writers_shape(self):
-        # synth writes v1-era rows (A = v1, one product): the writer's shape less the two keys v2 added,
-        # table_sha and columns.d (PREREG-v2 §10), which arrive with synth's products (the tests bullet there)
-        keys = [k for k in cycle.new_row("2026-09-25T21:40:00.100Z", "live") if k != "table_sha"]
-        jev = list(cycle.new_row("2026-09-25T21:40:00.100Z", "live")["jev"])
-        for seed in (1, 5):
-            for r in case(seed).rows:
-                self.assertEqual(list(r), keys)                                      # every key, in cycle.new_row's order
+        # a v1-era row (the default) is what v1's loop wrote: the v2 writer's shape less table_sha and columns.d;
+        # a v2-era row is the v2 writer's whole shape (PREREG-v2 §10), on every product
+        full = cycle.new_row("2026-09-25T21:40:00.100Z", "live")
+        jev = list(full["jev"])
+        eras = {"v1": ([k for k in full if k != "table_sha"], ["a", "b"]), "v2": (list(full), list(full["columns"]))}
+        self.assertEqual(eras["v2"][1], ["a", "b", "d"])
+        logs = [("v1", config.PRODUCT, case(seed).rows) for seed in (1, 5)]
+        products = add_products(self)
+        for p, log in synth.generate_products(4, products, encode=False, **dict(knobs(4), days=0.3, era="v2")).items():
+            logs.append(("v2", p, log.rows))
+        for era, p, rows in logs:
+            keys, cols = eras[era]
+            for r in rows:
+                self.assertEqual(list(r), keys, (era, p))                            # every key, in cycle.new_row's order
                 self.assertEqual(list(r["jev"]), jev)
+                self.assertEqual(list(r["columns"]), cols, (era, p))
                 self.assertEqual(r["tick_id"], cycle.tick_id(r["ts_rx"]))
+                self.assertEqual(r["product"], p)
                 if r["answers"] is not None and r["absence"] is None:
-                    self.assertEqual(r["columns"], {"a": rules.for_arm(r["answers"], "a"), "b": rules.for_arm(r["answers"], "b")})
+                    self.assertEqual({a: r["columns"][a] for a in "ab"},
+                                     {"a": rules.for_arm(r["answers"], "a"), "b": rules.for_arm(r["answers"], "b")})
                 if isinstance(r["adj"], dict) and all(r["adj"][d] in state.ALPHABET[d] for d in state.DIMS):
-                    self.assertEqual((r["state"], r["rule_c"]), (state.state_string(r["adj"]), state.rule_c(r["adj"])))
-                    self.assertEqual(r["adj"], state.adjectives(r["features"]))
+                    self.assertEqual((r["state"], r["rule_c"]),
+                                     (state.state_string(r["adj"], config.base(p)), state.rule_c(r["adj"])))
+                    self.assertEqual(r["adj"], state.adjectives(r["features"], p))
+
+    def test_v2_era_rows_carry_the_frozen_a_the_table_and_its_answer(self):
+        # PREREG-v2 §1/§10: A asks the frozen v2 wording; CURRENT is v2 at T0 and moves at each promotion; table_sha
+        # is set at the prompts step (so a HALT row carries it) and columns.d is the version's table answer for the
+        # state: one answer per (version, state), whatever B's live answer was
+        products = add_products(self)
+        logs = synth.generate_products(7, products, encode=False,
+                                       **dict(knobs(7), days=0.5, era="v2", promotions_h=(3.0,), no_table=("v3",), p_d_null=0.05))
+        for p, log in logs.items():
+            table, versions, nulls = {}, set(), 0
+            for r in log.rows:
+                self.assertEqual(r["spec_sha"], synth._spec_sha())                   # the v2 tree's SPEC (v1 rows: prereg-v1's)
+                if r["prompt_a"] is None:
+                    continue
+                self.assertEqual((r["prompt_a"], r["prompt_a_sha"]), ("v2", synth.prompt_sha("v2")))
+                versions.add(r["prompt_b"])
+                if r["prompt_b"] == "v3":
+                    self.assertIsNone(r["table_sha"])
+                    self.assertIsNone(r["columns"]["d"])
+                if r["absence"] is None and r["mode"] == "live" and r["answers"] is not None:
+                    d = r["columns"]["d"]
+                    if d is None:
+                        nulls += r["prompt_b"] != "v3"
+                        continue
+                    self.assertEqual(r["table_sha"], synth.table_sha(r["prompt_b"], p))
+                    self.assertIn(d, ("buy", "sell", "hold"))
+                    self.assertEqual(table.setdefault((r["prompt_b"], r["state"]), d), d)
+            self.assertEqual(versions, {"v2", "v3"}, p)
+            self.assertGreater(nulls, 0, p)                                           # p_d_null: a failed table read
+        self.assertTrue(all(r["prompt_a"] == "v1" and r["spec_sha"] == dash.V1_SPEC_SHA
+                            for r in case(1).rows if r["prompt_a"] is not None))
+
+    def test_products_share_one_tick_grid_and_sol_is_the_one_product_log(self):
+        products = add_products(self)
+        kn = dict(knobs(2), days=0.4, torn_tail=False)
+        logs = synth.generate_products(2, products, **kn)
+        self.assertEqual(logs[config.PRODUCT].data, synth.generate(2, **kn).data)    # SOL byte for byte
+        grids = {p: {r["tick_id"] for r in log.rows} for p, log in logs.items()}
+        union = set().union(*grids.values())
+        for p, g in grids.items():
+            self.assertGreater(len(g), 0.9 * len(union), p)                           # isolated skips differ, holes do not
+            rows = [r for r in logs[p].rows if isinstance(r.get("state"), str) and r["absence"] != "guard"]
+            self.assertTrue(all(r["state"].startswith(config.base(p) + ": ") for r in rows), p)
+            tick = config.TICK_P[p]
+            for r in rows[:200]:
+                self.assertAlmostEqual(r["bid"] / tick, round(r["bid"] / tick), places=6, msg=p)   # the book on its grid
+        mids = {p: next(r["mid"] for r in log.rows if r["mid"]) for p, log in logs.items()}
+        self.assertEqual(len(set(mids.values())), len(products))
+        # a per-product knob moves that product alone; a grid knob there is refused
+        one = synth.generate_products(2, products, per_product={products[1]: {"empty_days": (1,)}}, **dict(kn, days=1.2))
+        d01 = lambda rows: [r for r in rows if 0 <= report.tick_epoch(r["tick_id"]) - T0 < 86400]
+        self.assertEqual(d01(one[products[1]].rows), [])
+        self.assertTrue(d01(one[config.PRODUCT].rows))
+        with self.assertRaises(ValueError):
+            synth.generate_products(2, products, per_product={products[1]: {"holes_per_day": 9.0}}, **kn)
+
+    def test_the_cadence_knob(self):
+        log = synth.generate(3, days=1.0, cadence_s=900, pre_hours=2.0, promotions_h=())
+        self.assertTrue(log.rows)
+        for r in log.rows:
+            self.assertEqual((report.tick_epoch(r["tick_id"]) - T0) % 900, 0)
+            self.assertEqual(r["cadence_s"], 900)
+        self.assertLess(len(log.rows), 1.2 * (26 * 4))
+        for bad in (0, 90, 7200 * 7, 61, True):
+            with self.assertRaises(ValueError, msg=bad):
+                synth.generate(3, days=0.1, cadence_s=bad)
+        with self.assertRaises(ValueError):
+            synth.generate(3, days=0.1, cadence_s=900, interval_hours=1.0)
+
+    def test_write_products_puts_each_log_where_config_store_does(self):
+        products = add_products(self)
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(config, "DATA", d), \
+                mock.patch.object(config, "DECISIONS", os.path.join(d, "decisions.jsonl")):
+            paths = synth.write_products(d, synth.generate_products(3, products, days=0.05, pre_hours=0.5))
+            for p in products:
+                self.assertEqual(paths[p], config.store(p).decisions)
+                self.assertTrue(outcomes.load(paths[p], []))
 
     def test_the_same_seed_gives_the_same_bytes(self):
         a = synth.generate(4, **dict(knobs(4), days=0.1))
