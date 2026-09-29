@@ -1,0 +1,211 @@
+#!/opt/homebrew/bin/python3
+"""bin/fill1k-quantiles -- where a decision log's fill1k_bps sits, in bps and in half-ticks.
+
+    bin/fill1k-quantiles --log PATH --t0 YYYYMMDDTHHMMSSZ --until YYYYMMDDTHHMMSSZ [--tick 0.01] [--product-base SOL]
+
+Reads the log one line at a time (one JSON object per line; a line that does not parse, the
+torn last line of a log the loop is still appending to included, is skipped and counted) and
+keeps the live rows, mode "live" and absence null, with t0 <= tick_id < until (half-open;
+tick_id is fixed-width, so the comparison is on the strings). A row that names a product
+whose base is not --product-base is counted and left out. From each kept row it reads
+features.fill1k_bps, features.fill1k_short and features.mid, and nothing else from the
+features: never a field the model wrote, never anything joined to a later tick (the sample
+is blind until 2026-10-23; tests/test_fill1k_quantiles.py scans this file for the words).
+
+Prints, one fact per line, deterministic: the row counts; the nearest-rank p10, p50, p90,
+p99 and max of fill1k_bps over the live rows that are not fill1k_short; the same of
+h = fill1k_bps * mid / (1e4 * tick / 2), the fill cost in half-tick units (at a level-1 fill
+it is the spread in ticks); the integer atoms a10 = round(p10 of h) and a90 = round(p90 of h),
+halves rounded up; and the occupancy of the three liq words under the h-rule (PREREG-v2 §3,
+as revised 2026-09-29):
+    deep    iff h < a10 + 0.5
+    thin    iff h > a90 + 0.5, or fill1k_short
+    normal  otherwise
+deep is tested before thin, as loop/state.py::_band does, so a row both could claim is deep.
+If thin then holds less than 3 % of the rows, the rule is applied once more with thin iff
+h > a90 - 0.5, and the output says so. Each word's share is printed with whether all three
+lie in [3 %, 90 %]. Shares are over the live rows in the window that carry a usable reading
+(fill1k_short rows count as thin there, though no quantile sees them).
+
+Writes nothing, sends nothing, imports nothing from loop/. Exit 0 with the report, 2 on a
+usage error, a log that cannot be read, or no usable row in the window.
+"""
+import argparse, json, math, re, sys
+
+TICK_ID = re.compile(r"^\d{8}T\d{6}Z$")
+PCTS = (10, 50, 90, 99)
+OCC_LO_PCT, OCC_HI_PCT = 3, 90          # every word within [3 %, 90 %] (PREREG-v2 §2, as revised)
+DEEP, NORMAL, THIN = "deep", "normal", "thin"
+
+
+def nearest_rank(values, p):
+    """sorted[ceil(p*N/100) - 1] with integer arithmetic, as loop/state.py::_nearest_rank."""
+    s = sorted(values)
+    return s[(p * len(s) + 99) // 100 - 1]
+
+
+def summary(values):
+    """{"p10", "p50", "p90", "p99", "max"} of a non-empty list."""
+    out = {f"p{p}": nearest_rank(values, p) for p in PCTS}
+    out["max"] = max(values)
+    return out
+
+
+def half_ticks(fill_bps, mid, tick):
+    """h: the fill cost in units of half a tick (1e4 * tick / 2 is half a tick in bps of a unit mid)."""
+    return fill_bps * mid / (1e4 * tick / 2)
+
+
+def atom(x):
+    """The nearest integer, halves up (2.5 -> 3): the prereg's 'round', stated so no reader guesses."""
+    return math.floor(x + 0.5)
+
+
+def _word(h, deep_below, thin_above):
+    return DEEP if h < deep_below else THIN if h > thin_above else NORMAL
+
+
+def occupancy(hs, n_short, lo_pct=OCC_LO_PCT, hi_pct=OCC_HI_PCT):
+    """The h-rule over the h values of the rows that are not short plus n_short short rows.
+    Returns a10, a90, the two cuts, the counts per word, whether the thin fallback ran (and
+    thin's count before it), and whether every share lies in [lo_pct %, hi_pct %]."""
+    q = summary(hs)
+    a10, a90 = atom(q["p10"]), atom(q["p90"])
+    deep_below, thin_above = a10 + 0.5, a90 + 0.5
+    n = len(hs) + n_short
+
+    def count(thin_cut):
+        c = {DEEP: 0, NORMAL: 0, THIN: n_short}
+        for h in hs:
+            c[_word(h, deep_below, thin_cut)] += 1
+        return c
+    counts, fallback, thin_before = count(thin_above), False, None
+    if counts[THIN] * 100 < lo_pct * n:
+        fallback, thin_before = True, counts[THIN]
+        thin_above = a90 - 0.5
+        counts = count(thin_above)
+    within = all(lo_pct * n <= counts[w] * 100 <= hi_pct * n for w in (DEEP, NORMAL, THIN))
+    return {"a10": a10, "a90": a90, "deep_below": deep_below, "thin_above": thin_above, "n": n,
+            "counts": counts, "fallback": fallback, "thin_before": thin_before, "within": within}
+
+
+def _finite(x):
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+
+
+def read_log(fh, t0, until, base):
+    """Counts and the (fill1k_bps, mid) pairs of the kept rows, from a binary file object."""
+    c = {"unparsable": 0, "parsed": 0, "not_live": 0, "outside": 0, "other_product": 0,
+         "live": 0, "short": 0, "unusable": 0}
+    pairs = []
+    for raw in fh:
+        if not raw.strip():
+            continue
+        try:
+            row = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError, RecursionError):
+            c["unparsable"] += 1
+            continue
+        if not isinstance(row, dict):
+            c["unparsable"] += 1
+            continue
+        c["parsed"] += 1
+        if row.get("mode") != "live" or row.get("absence") is not None:
+            c["not_live"] += 1
+            continue
+        tid = row.get("tick_id")
+        if not (isinstance(tid, str) and TICK_ID.match(tid) and t0 <= tid < until):
+            c["outside"] += 1
+            continue
+        product = row.get("product")
+        if isinstance(product, str) and product.split("-")[0] != base:
+            c["other_product"] += 1
+            continue
+        c["live"] += 1
+        feat = row.get("features")
+        feat = feat if isinstance(feat, dict) else {}
+        if feat.get("fill1k_short") is True:
+            c["short"] += 1
+            continue
+        fill, mid = feat.get("fill1k_bps"), feat.get("mid")
+        if not (_finite(fill) and fill >= 0 and _finite(mid) and mid > 0):
+            c["unusable"] += 1
+            continue
+        pairs.append((float(fill), float(mid)))
+    return c, pairs
+
+
+def _f(x):
+    return f"{x:.4f}"
+
+
+def _share(k, n):
+    return f"{k}/{n} {100.0 * k / n:.2f}%"
+
+
+def report(path, t0, until, tick, base, c, pairs):
+    """The printed lines. Quantile and word lines only when a usable row exists."""
+    out = [f"log: {path}",
+           f"window: {t0} <= tick_id < {until}",
+           f"product_base: {base}",
+           f"tick: {tick!r}",
+           f"lines_unparsable: {c['unparsable']}",
+           f"rows_parsed: {c['parsed']}",
+           f"rows_not_live: {c['not_live']}",
+           f"live_rows_outside_window: {c['outside']}",
+           f"live_rows_other_product: {c['other_product']}",
+           f"live_rows: {c['live']}",
+           f"short_rows_excluded: {c['short']}",
+           f"unusable_rows_excluded: {c['unusable']}",
+           f"quantile_rows: {len(pairs)}"]
+    if not pairs:
+        return out
+    fills = [f for f, _ in pairs]
+    hs = [half_ticks(f, m, tick) for f, m in pairs]
+    for name, vals in (("fill1k_bps", fills), ("h", hs)):
+        q = summary(vals)
+        out += [f"{name}_{k}: {_f(q[k])}" for k in ("p10", "p50", "p90", "p99", "max")]
+    occ = occupancy(hs, c["short"])
+    out += [f"a10: {occ['a10']}", f"a90: {occ['a90']}",
+            f"rule: deep iff h < {occ['deep_below']:.1f}; thin iff h > {occ['thin_above']:.1f} or fill1k_short;"
+            " normal otherwise"]
+    if occ["fallback"]:
+        out.append(f"thin_fallback: yes (thin held {_share(occ['thin_before'], occ['n'])} < {OCC_LO_PCT}% under"
+                   f" h > {occ['a90'] + 0.5:.1f}; applied once: thin iff h > {occ['thin_above']:.1f})")
+    else:
+        out.append("thin_fallback: no")
+    out += [f"{w}: {_share(occ['counts'][w], occ['n'])}" for w in (DEEP, NORMAL, THIN)]
+    out.append(f"every_word_within_{OCC_LO_PCT}_{OCC_HI_PCT}: {'yes' if occ['within'] else 'no'}")
+    return out
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="bin/fill1k-quantiles", description=__doc__.split("\n\n")[1])
+    ap.add_argument("--log", required=True)
+    ap.add_argument("--t0", required=True, metavar="YYYYMMDDTHHMMSSZ")
+    ap.add_argument("--until", required=True, metavar="YYYYMMDDTHHMMSSZ")
+    ap.add_argument("--tick", type=float, default=0.01)
+    ap.add_argument("--product-base", default="SOL")
+    args = ap.parse_args(argv)
+    for name in ("t0", "until"):
+        if not TICK_ID.match(getattr(args, name)):
+            ap.error(f"--{name} must look like 20260925T214000Z")
+    if not args.t0 < args.until:
+        ap.error("--t0 must be before --until")
+    if not (math.isfinite(args.tick) and args.tick > 0):
+        ap.error("--tick must be a positive number")
+    try:
+        with open(args.log, "rb") as fh:
+            c, pairs = read_log(fh, args.t0, args.until, args.product_base)
+    except OSError as e:
+        sys.stderr.write(f"fill1k-quantiles: cannot read {args.log}: {e.strerror or e}\n")
+        return 2
+    sys.stdout.write("\n".join(report(args.log, args.t0, args.until, args.tick, args.product_base, c, pairs)) + "\n")
+    if not pairs:
+        sys.stderr.write("fill1k-quantiles: no live row in the window carries a usable fill1k_bps and mid\n")
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
