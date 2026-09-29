@@ -1378,6 +1378,21 @@ class V2TickTest(unittest.TestCase):
         self.assertEqual(self.urlopen.call_count, 1)                             # D costs no call
         self.assertEqual(book._intent(dict(row, columns=dict(row["columns"], d=None)), "a", "argmax"), "buy")
 
+    def test_another_products_d_is_its_own_tables_answer_for_its_own_state(self):
+        # arm D for ETH: ETH's table (not SOL's), looked up by ETH's state string (not SOL's). SOL's table
+        # answers hold on SOL's state, ETH's sell on ETH's, rule_c buy: only the right pair gives sell
+        eth = self.two_products()
+        sol_sha = self.table("v1", override={STATE: "hold"})
+        eth_sha = self.table("v1", "ETH-USD", override={ETH_STATE: "sell"})
+        self.answer()
+        self.assertEqual(cycle.tick(product="ETH-USD"), 0)
+        (row,) = self.rows_of(eth.decisions)
+        self.assertEqual((row["state"], row["rule_c"], row["prompt_b"]), (ETH_STATE, "buy", "v1"))
+        self.assertEqual((row["columns"]["d"], row["table_sha"]), ("sell", eth_sha))
+        self.assertNotEqual(eth_sha, sol_sha)
+        self.assertEqual(cycle.tick(), 0)                                         # and SOL's own, beside it
+        self.assertEqual((self.only_row()["columns"]["d"], self.only_row()["table_sha"]), ("hold", sol_sha))
+
     def test_a_halt_or_dry_row_logs_the_table_sha_and_no_d(self):
         sha = self.table()
         self.assertEqual(cycle.main(["--dry", "--once"]), 0)
@@ -1448,6 +1463,50 @@ class V2TickTest(unittest.TestCase):
         self.assertEqual((row["table_sha"], row["columns"]["d"]), (sha3, "sell"))
         body = json.loads(self.urlopen.call_args.args[0].data)
         self.assertEqual(body["questions"]["b_action"]["instructions"], "Be long SOL on strength.")
+
+    def test_the_version_asked_is_the_rows_own_ticks_not_the_clocks(self):
+        # the row's tick is the snapshot's minute (SPEC §2); the version B asks and D looks up is the one
+        # current() names for THAT tick. Here the snapshot lands in 02:29, when v3 activates, while the clock
+        # the tick started on still reads 02:28 (a tick begun a hair before the minute): the row is v3's
+        v3 = {"version": "v3", "frozen": "2026-11-01", "note": "test", "activation_tick": "20260924T022900Z",
+              "replaces": "v1", "action": {"type": "choice", "instructions": "Be long {BASE} on strength.",
+                                           "criteria": {"buy": "pumping", "sell": "dumping", "hold": "else"}},
+              **{q: prompts.load("v1")[q] for q in prompts.CARRIED}}
+        with open(os.path.join(self.prompts_root, "v3.json"), "w", encoding="utf-8") as fh:
+            json.dump(v3, fh)
+        with open(os.path.join(self.prompts_root, "CURRENT"), "w", encoding="utf-8") as fh:
+            fh.write("v3\n")
+        sha3 = self.table("v3", override={STATE: "sell"})
+        self.table("v1", override={STATE: "hold"})
+        self.answer()
+        self.snapshot.return_value = dict(SNAP, ts_rx="2026-09-24T02:29:00.300Z")   # time.time() stays 02:28:49
+        self.assertEqual(cycle.main(["--once"]), 0)
+        row = self.only_row()
+        self.assertEqual((row["tick_id"], row["prompt_b"], row["table_sha"], row["columns"]["d"]),
+                         ("20260924T022900Z", "v3", sha3, "sell"))
+
+    def test_once_early_fire_reads_its_own_products_heartbeat(self):
+        # --once at :59.5 sleeps to the boundary only when THIS product's minute already has its row: ETH's
+        # heartbeat decides for ETH's loop, whatever SOL's says (each loop is its own launchd job)
+        eth = self.two_products()
+        os.makedirs(os.path.dirname(eth.heartbeat), exist_ok=True)
+        base = NOW - 49                                                           # 02:28:00
+        for eth_hb, sol_hb, sleeps, tick in (("2026-09-24T02:28:00.100Z", "2026-09-24T02:27:00.100Z", [0.5], "20260924T022900Z"),
+                                             ("2026-09-24T02:27:00.100Z", "2026-09-24T02:28:00.100Z", [], "20260924T022800Z")):
+            with self.subTest(eth=eth_hb, sol=sol_hb):
+                for path, hb in ((eth.heartbeat, eth_hb), (config.HEARTBEAT, sol_hb)):
+                    with open(path, "w", encoding="utf-8") as fh:
+                        fh.write(hb + "\n")
+                clock, self.sleeps[:] = [base + 59.5], []
+                def sleep(s):
+                    self.sleeps.append(s)
+                    clock[0] += s
+                self.snapshot.side_effect = lambda product=None: dict(SNAP, ts_rx=cycle.iso_ms(clock[0]))
+                with mock.patch("time.time", side_effect=lambda: clock[0]), mock.patch("time.sleep", side_effect=sleep), \
+                        mock.patch.dict(os.environ, {config.ENV_PRODUCT: "ETH-USD"}):
+                    self.assertEqual(cycle.main(["--dry", "--once"]), 0)
+                self.assertEqual(self.sleeps, sleeps)
+                self.assertEqual(self.rows_of(eth.decisions)[-1]["tick_id"], tick)
 
     def test_a_pending_version_the_loader_refuses_costs_nothing_before_its_activation(self):
         # a hand edit put a product word in the pending v3 (bin/promote's build refuses one): the ticks before
