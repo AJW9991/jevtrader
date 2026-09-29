@@ -282,7 +282,7 @@ class Synthetic(unittest.TestCase):
     def test_pair_table_primary_cell_by_hand(self):
         t = report.table(self.rows, self.outs)
         self.assertEqual(t["fees"], config.FEE_BPS_COLUMNS)
-        self.assertEqual(len(t["cells"]), 3 * len(rules.COLUMNS) * len(config.FEE_BPS_COLUMNS))
+        self.assertEqual(len(t["cells"]), (3 * len(rules.COLUMNS) + 2) * len(config.FEE_BPS_COLUMNS))   # + D - B, D - C at argmax
         # 2026-09-24, decided by Alex: the primary is 0 bps, gross. The same hand arithmetic is
         # run at the venue's 120 bps too, so the fee terms below are still exercised with a
         # non-zero constant now that the primary's own fee term is 0.
@@ -336,7 +336,11 @@ class Synthetic(unittest.TestCase):
         lines = report.table(self.rows, self.outs)["lines"]
         cells = [l for l in lines if l.startswith("  * ") or l.startswith("    ")]
         cells = [l for l in cells if l.split()[1 if l.startswith("  * ") else 0] in rules.COLUMNS]
-        self.assertEqual(len(cells), len(report.PAIRS) * len(rules.COLUMNS) * len(config.FEE_BPS_COLUMNS))
+        self.assertEqual(len(cells), sum(len(report.pair_columns(x, y)) for x, y in report.PAIRS) * len(config.FEE_BPS_COLUMNS))
+        self.assertEqual(len(cells), (3 * len(rules.COLUMNS) + 2) * len(config.FEE_BPS_COLUMNS))   # D - B and D - C at argmax only
+        self.assertEqual(report.PAIRS[3:], (("d", "b"), ("d", "c")))                # PREREG-v2 §10: report.PAIRS gains them
+        self.assertEqual([report.pair_columns(x, y) for x, y in report.PAIRS], [rules.COLUMNS] * 3 + [("argmax",)] * 2)
+        self.assertIn("pair D-B  fee 0 bps\n", "\n".join(lines) + "\n")
         self.assertEqual(sum(l.startswith("  * argmax") for l in cells), 1)
         self.assertEqual(sum("[* primary]" in l for l in lines), 1)
         # 2026-09-24, decided by Alex: the primary IS the 0 bps gross column (it used to be the

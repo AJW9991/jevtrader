@@ -13,12 +13,13 @@ a WITHHELD line until T0 + 28 d; that T0 is read from the repo's own PREREG.md �
 
 Every section is one function returning its numbers and its rendered lines from a single
 computation, so a test asserts the number and the text together. The pair table (§4.5) is
-3 pairs x 11 columns x len(config.FEE_BPS_COLUMNS) fees (6 today: 198 cells, ascending; the
+3 pairs x 11 columns, plus PREREG-v2's D - B and D - C at argmax alone (pair_columns), x
+len(config.FEE_BPS_COLUMNS) fees (6 today: 210 cells, ascending; the
 primary config.FEE_BPS_PRIMARY = 0 bps, gross, is the first and the venue's own taker
 config.FEE_BPS_VENUE = 120 bps, the realistic-cost column, the last); book.paired per cell
-is two replays, ~396 at 0.065 s per replay of 40,320 rows (28 days, measured), ~26 s. One
+is two replays, ~420 at 0.065 s per replay of 40,320 rows (28 days, measured), ~27 s. One
 replay per (arm, column, fee) is kept instead: 2 arms x 11 x 6 + 6 for arm C, which reads
-no column = 138, ~9 s. d_t is book.paired's own expression, px[t] - py[t], on the cached
+no column, + 6 for arm D at argmax = 144, ~9 s. d_t is book.paired's own expression, px[t] - py[t], on the cached
 pnl dicts, and tests/test_report.py pins the primary cell to book.paired itself.
 
 The pre-registered unit is the 900 s block (PREREG §3): S_k = the sum of d_t over the ticks
@@ -50,7 +51,8 @@ import argparse, bisect, collections, datetime, functools, math, os, sys
 
 from loop import book, config, outcomes, rules, state
 
-PAIRS = (("b", "c"), ("a", "c"), ("b", "a"))       # §4.5 order: the night shift's arm against the rule first
+PAIRS = (("b", "c"), ("a", "c"), ("b", "a"),       # §4.5 order: the night shift's arm against the rule first;
+         ("d", "b"), ("d", "c"))                   # PREREG-v2 §6/§10: D - B and D - C, at argmax only (pair_columns)
 # The primary CELL, PREREG §4's H1: (B, C, argmax, FEE_BPS_PRIMARY). The fee is 0 bps, gross
 # (2026-09-24, decided by Alex): at 0 a difference between arms is direction NET OF THE SPREAD
 # (a round trip still pays one spread: 0.87 bps at 1c, 1.74 at 2c on ~$115, against a 1.78 bps
@@ -75,7 +77,13 @@ TREND_SIGN = {"dumping": -1, "flat": 0, "pumping": 1}   # §4.6's no-model compa
                                                     # sees only the four words and rule_c acts on this one, so the
                                                     # report shows how much of lean it already is (PREREG §5, §9)
 CHOICES = rules.CHOICES
-ARMS = ("a", "b", "c")
+ARMS = ("a", "b", "c", "d")                         # the per-arm lines; D reads columns.d (book.ARMS), null on a v1 row
+
+
+def pair_columns(x, y):
+    """The columns a pair is printed at: every rules.COLUMNS, or argmax alone when D is in the pair (its
+    table holds the action choice alone, PREREG-v2 §6; book raises on any other column for D)."""
+    return (book.D_COLUMN,) if "d" in (x, y) else rules.COLUMNS
 
 
 # ---- small helpers: every rate in the report goes through _pct so n/0 is never a crash ----
@@ -674,7 +682,7 @@ def table(rows, outs, t0=None, last=None):
                          + ("  [* primary]" if (x, y, fee) == (PRIMARY[0], PRIMARY[1], PRIMARY[3]) else "")
                          + ("  [venue fee]" if fee == VENUE_FEE else ""))
             lines.append(head)
-            for col in rules.COLUMNS:
+            for col in pair_columns(x, y):
                 px, py = rep(x, col, fee), rep(y, col, fee)
                 dis = _disagreement(px, py)
                 a = _cell(px, py, dis)

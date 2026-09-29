@@ -171,7 +171,7 @@ class PairTable(unittest.TestCase):
         # module docstring: d_t is book.paired's own expression, one replay per (arm, column, fee) (CONTRACT §4.5)
         for x, y in report.PAIRS:
             for fee in (config.FEE_BPS_PRIMARY, config.FEE_BPS_VENUE):
-                for col in rules.COLUMNS:
+                for col in report.pair_columns(x, y):
                     self.assertEqual(dict(self.tb["cells"][(x, y, col, fee)]["all"]["d"]),
                                      dict(book.paired(self.rows, self.outs, x, y, col, fee)), (x, y, col, fee))
 
@@ -182,6 +182,8 @@ class PairTable(unittest.TestCase):
     def test_the_per_arm_equity_is_the_replays_last_mark(self):
         # CONTRACT §4.5: the per-arm line at the primary and at the venue fee is each arm's replayed equity
         rows = [_fixture_row(m) for m in range(5, 20)]                      # every arm long from m 10 on
+        for r in rows:                                                      # D (PREREG-v2) reads A's argmax as its table
+            r["columns"] = dict(r["columns"], d=(r["columns"]["a"] or {}).get("argmax"))
         rows[-1].update(bid=101.99, ask=102.01, mid=102.0)                 # and the last tick moves the mark
         outs = outcomes.join(rows)
         tb = report.table(rows, outs)
