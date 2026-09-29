@@ -14,8 +14,9 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # replays a book, joins a return to an answer, or bins a confidence
 ALLOWED_REPORT = {"health", "days_table", "occupancy", "retest", "in_sample", "tick_epoch", "day_of", "_iso_minute", "_t0", "_tick_of", "last_reached",
                   "_num", "_mean", "_p95", "DAY_TICKS", "SAMPLE_DAYS", "BAD_FILL", "BAD_JEV_ERR", "BAD_DAYS_PAUSE", "OCCUPANCY_FLAG"}
-ALLOWED_IMPORTS = {"config", "outcomes", "prompts", "report", "state"}   # prompts: CURRENT and a pending version's name and
-                                                                        # activation (PREREG-v2 §10), never an answer
+ALLOWED_IMPORTS = {"config", "exclusions_v2", "outcomes", "prompts", "report", "state"}   # prompts: CURRENT and a pending
+                                        # version's name and activation (PREREG-v2 §10), never an answer; exclusions_v2: the
+                                        # stop-rule-3 file and the rule recomputed from days_table's days
 
 
 BANNED_CALLS = {"getattr", "vars", "__import__", "eval", "exec", "globals", "locals", "setattr", "delattr"}
@@ -799,6 +800,12 @@ class DashV2(unittest.TestCase):
         self.assertIn(f"PAUSE.{self.products[2]} PRESENT since", page)
         self.assertIn("prompt_b pending: v3 (CURRENT) activates at 2099-12-31T22:00Z, replacing v2; until then B asks v2", page)
         self.assertIn("T0 2026-10-24T22:00Z", page)                           # T0_v2 from §12, sealed
+        self.assertIn(f"exclusions-v2: none ({config.EXCLUSIONS_V2} absent)", page)
+        self.assertIn("stop rule 3 (PREREG-v2 §9.3), recomputed from the log, which governs: 0 product-day(s) excluded: none", page)
+        with open(config.EXCLUSIONS_V2, "w", encoding="utf-8") as fh:            # a listed day the rule judges fine is named
+            fh.write(f"day\tproduct\tfill%\tjev-err%\treason\nd01\t{self.products[1]}\t90%\t0%\tlooked bad\n")
+        self.assertIn(f"DISAGREE: listed, but the rule does not exclude them (fine or not yet closed), so NOT excluded: d01 {self.products[1]}",
+                      self._page())
         self.assertNotIn("HALT present", page)
         with open(config.HALT, "w", encoding="utf-8") as fh:
             fh.write("x\n")

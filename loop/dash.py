@@ -17,7 +17,7 @@ Standard library only; the page carries no script and loads nothing from the net
 it can be opened from a file and shared without reaching for anything."""
 import argparse, collections, datetime, glob, hashlib, html, math, os, re, sys
 
-from . import config, outcomes, prompts, report, state
+from . import config, exclusions_v2, outcomes, prompts, report, state
 
 T0_RE = re.compile(r"T0 \(first tick_id of day 1\): `(\d{8}T\d{6}Z)`")   # PREREG §11's sealed line
 PREREG_PATH = os.path.join(config.REPO, "PREREG.md")   # the repository's PREREG, read at call time (tests pin a fixture)
@@ -513,11 +513,12 @@ def stores_html(stores, t0, now):
          " product's sends (its observation and outcomes go on). The page below is one log's.</p>",
          "<div class='wrap'><table><tr><th class='l'>product</th><th class='l'>log</th><th>rows</th><th>live</th><th>heartbeat</th>"
          "<th>fill</th><th>jev-err</th><th class='l'>BAD days</th><th class='l'>NO LIVE ROWS</th><th>spend, whole log</th><th class='l'>pause</th></tr>"]
-    total = 0.0
+    total, days = 0.0, {}
     for st in stores:
         sample = report.in_sample(st["rows"], t0) if t0 is not None else st["rows"]
         last = report.last_reached(st["rows"], now.timestamp())
         h = report.health(sample, st["outs"], t0=t0, last=last, now=now.timestamp())
+        days[st["product"]] = h["days"]
         whole = report.health(st["rows"], st["outs"], now=now.timestamp())["usd"]
         total += whole
         age = _age(st["hb"], now)
@@ -532,6 +533,14 @@ def stores_html(stores, t0, now):
     t.append("</table></div>")
     t.append(f"<p class='sub'>spend over every product's log: {'past range' if not math.isfinite(total) else f'${total:.4f}'}; the one"
              f" tripwire is ${config.DAILY_SPEND_HALT_USD:g} a day over them all (PREREG-v2 §2).</p>")
+    t.append(f"<p class='sub'>{_esc(exclusions_v2.status_line())}</p>")
+    if t0 is not None:                                   # stop rule 3 recomputed per product, which governs, beside the file
+        try:
+            listed, _ = exclusions_v2.read()
+        except (ValueError, OSError):
+            listed = set()                               # the line above says why
+        t.append("<p class='sub'>" + "<br>".join(_esc(l.strip()) for l in exclusions_v2.lines(
+            listed, exclusions_v2.recompute(days), [], "data/exclusions-v2.tsv")) + "</p>")
     return "".join(t)
 
 
