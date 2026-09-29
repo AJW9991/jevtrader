@@ -107,7 +107,7 @@ class Scratch(unittest.TestCase):
         self.write("prompts/CURRENT", "v2\n")
         for p in self.products:
             self.table(p, "jev-1.13.0")
-        self.write("probe/2026-09-30/run.json", json.dumps({"day": "2026-09-30"}) + "\n")
+        self.write("probe/2026-09-30/run.json", json.dumps({"day": "2026-09-30", "candidates": list(self.products[1:])}) + "\n")
         self.write("probe/2026-09-30/volume.json", "{}\n")
         for p in self.products[1:]:
             self.write(f"probe/2026-09-30/{p}.jsonl", "{}\n")
@@ -546,10 +546,10 @@ class Draft(Scratch):
         self.commit("one product's rows gone")
         self.assertFails("--draft", says=[f"probe/2026-09-30/ lacks {self.products[2]}.jsonl in HEAD"], failed="probe")
         self.write(f"probe/2026-09-30/{self.products[2]}.jsonl", "{}\n")
-        self.write("probe/2026-09-30/run.json", json.dumps({"day": "2026-10-01"}) + "\n")
+        self.write("probe/2026-09-30/run.json", json.dumps({"day": "2026-10-01", "candidates": list(self.products[1:])}) + "\n")
         self.commit("another day's run")
         self.assertFails("--draft", says=["probe/2026-09-30/run.json names day '2026-10-01', not 2026-09-30"])
-        self.write("probe/2026-09-30/run.json", json.dumps({"day": "2026-09-30"}) + "\n")
+        self.write("probe/2026-09-30/run.json", json.dumps({"day": "2026-09-30", "candidates": list(self.products[1:])}) + "\n")
         self.commit("back")
         self.write("probe/2026-09-30/volume.json", "{}\n")
         os.remove(self.path("probe/2026-09-30/volume.json"))
@@ -557,6 +557,28 @@ class Draft(Scratch):
         self.replace("PREREG-v2.md", "**D = 2026-09-30**", "D = 2026-09-30")
         self.commit("D unnamed")
         self.assertFails("--draft", says=["§2 of PREREG-v2.md names no day as **D = YYYY-MM-DD**"])
+
+    def test_every_candidates_rows_are_committed_verbatim(self):
+        # §2: the probe's rows go to probe/<D>/ and are committed verbatim: every candidate run.json names, not only the
+        # chosen products' (the S5 refuter's defect 7); and each chosen product is one the probe ran
+        cands = list(self.products[1:]) + ["DOGE-USD", "AVAX-USD"]
+        self.write("probe/2026-09-30/run.json", json.dumps({"day": "2026-09-30", "candidates": cands}) + "\n")
+        self.commit("run.json names four candidates, the chosen two's rows committed")
+        self.assertFails("--draft", says=["probe/2026-09-30/ lacks DOGE-USD.jsonl, AVAX-USD.jsonl in HEAD (§2: the probe's"
+                                          " rows are committed verbatim, every candidate's)"], failed="probe")
+        for p in ("DOGE-USD", "AVAX-USD"):
+            self.write(f"probe/2026-09-30/{p}.jsonl", "{}\n")
+        self.commit("every candidate's rows")
+        text = self.assertPasses("--draft")
+        self.assertIn("DOGE-USD.jsonl, AVAX-USD.jsonl", text)
+        self.write("probe/2026-09-30/run.json", json.dumps({"day": "2026-09-30", "candidates": cands[1:]}) + "\n")
+        self.commit("a chosen product the probe never ran")
+        self.assertFails("--draft", says=[f"probe/2026-09-30/run.json's candidates do not include {self.products[1]}"])
+        for bad in ({"day": "2026-09-30"}, {"day": "2026-09-30", "candidates": ["../x"]},
+                    {"day": "2026-09-30", "candidates": []}):
+            self.write("probe/2026-09-30/run.json", json.dumps(bad) + "\n")
+            self.commit("run.json without its candidates")
+            self.assertFails("--draft", says=["probe/2026-09-30/run.json names no candidates"], failed="probe")
 
     def test_a_missing_or_malformed_table_fails(self):
         self.git("rm", "-q", f"prompts/v2.table.{self.products[1]}.json")

@@ -54,8 +54,9 @@ The seal (no flag) exits 0 only when all of §13's five hold:
 --draft exits 0 only when all of §13's three hold:
 - no ________ remains in PREREG-v2.md outside §12: searched in the header and §0-§11, where §1, §2, §3 and §8 write
   their values before the tag; §13 names the token in its own text and §14 is the amendment log, so neither holds a field;
-- probe/<D>/ is in HEAD with run.json naming D, volume.json and <p>.jsonl for every p in config.PRODUCTS but SOL-USD,
-  D the day §2 names in bold (`**D = YYYY-MM-DD**`; if §14 moves D, §2's D moves with it);
+- probe/<D>/ is in HEAD with run.json naming D and its candidates (every p in config.PRODUCTS but SOL-USD among them),
+  volume.json and <c>.jsonl for every candidate c run.json names (§2: the probe's rows are committed verbatim, not only
+  the chosen products'), D the day §2 names in bold (`**D = YYYY-MM-DD**`; if §14 moves D, §2's D moves with it);
 - prompts/v2.table.<p>.json is in HEAD for every p in config.PRODUCTS and reads as prompts.table reads it;
 - PREREG-v2.md in HEAD is the tag prereg-v2-doc's, or §14 no longer reads "(none yet)" (no such tag: refused, since
   nothing can be compared).
@@ -90,6 +91,7 @@ NO_FIELD_SECTIONS = ("12", "13", "14")      # --draft: §12 keeps its blanks, §
 PROBE_DAY_RE = re.compile(r"\*\*D = (\d{4}-\d{2}-\d{2})\*\*")
 DEVIATIONS_RE = re.compile(r"^(#{1,6}) .*\bv2 deviations\b", re.I)
 COMMIT_CELL = re.compile(r"[0-9a-f]{7,40}")
+PRODUCT_NAME = re.compile(r"[A-Z0-9]{2,12}-[A-Z]{3,5}")      # a run.json candidate, joined into a path (bin/probe's form)
 SHA64 = re.compile(r"[0-9a-f]{64}")
 HEX12 = re.compile(r"[0-9a-f]{12,64}")
 PIN_NAME = re.compile(r"PREREG-v2\.md|prompts/v2\.table\.")
@@ -529,14 +531,24 @@ def draft(repo, products, out):
         day = m.group(1)
         d = f"probe/{day}"
         have = set(_text(_git(repo, "ls-tree", "--name-only", "HEAD", d + "/").stdout).splitlines())
-        want = ["run.json", "volume.json"] + [f"{p}.jsonl" for p in products if p != config.PRODUCT]
-        gone = [f for f in want if f"{d}/{f}" not in have]
         try:
-            named = json.loads(blob(repo, "HEAD", f"{d}/run.json") or "null").get("day") if not gone else None
-        except (ValueError, AttributeError):
-            named = None
-        verdict("probe", not gone and named == day, f"{d}/ is in HEAD with {', '.join(want)}" if not gone and named == day
-                else f"{d}/ lacks {', '.join(gone)} in HEAD" if gone else f"{d}/run.json names day {named!r}, not {day}")
+            run = json.loads(blob(repo, "HEAD", f"{d}/run.json") or "null")
+        except ValueError:
+            run = None
+        run = run if isinstance(run, dict) else {}
+        cands = run.get("candidates")
+        if not (isinstance(cands, list) and cands and all(isinstance(c, str) and PRODUCT_NAME.fullmatch(c) for c in cands)):
+            cands = None
+        chosen = [p for p in products if p != config.PRODUCT]
+        want = ["run.json", "volume.json"] + [f"{c}.jsonl" for c in (cands or chosen)]
+        gone = [f for f in want if f"{d}/{f}" not in have]
+        never = [p for p in chosen if cands is not None and p not in cands]
+        why = (f"{d}/ lacks {', '.join(gone)} in HEAD (§2: the probe's rows are committed verbatim, every candidate's)"
+               if gone else f"{d}/run.json names day {run.get('day')!r}, not {day}" if run.get("day") != day
+               else f"{d}/run.json names no candidates (a list of product names, as bin/probe writes it)" if cands is None
+               else f"{d}/run.json's candidates do not include {', '.join(never)}: a product the probe never ran"
+               if never else None)
+        verdict("probe", why is None, f"{d}/ is in HEAD with {', '.join(want)}" if why is None else why)
     with tempfile.TemporaryDirectory() as root:
         with open(os.path.join(root, "v2.json"), "w", encoding="utf-8") as fh:
             fh.write(blob(repo, "HEAD", "prompts/v2.json") or "")
