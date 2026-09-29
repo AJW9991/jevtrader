@@ -12,10 +12,15 @@ figures, the venue fee and the fee columns FEE_BPS_COLUMNS beside the 0 bps prim
 decision and descriptive report columns, none in a row's meaning; FEE_BPS_PRIMARY, the H1 cell,
 is pinned). The pins were taken 2026-09-28 from bytes identical to the sealed prereg-v1 commit
 (cfaa3f9) for SPEC, PREREG, PROMPT.md and v1.json, and to the promote commit (d155042) for v2.json.
+
+PREREG-v2's inference constants (§10: "the seeds, L, R, the ranks") are pinned by value as loop/inference_v2.py holds
+them (2026-09-29): H1's and family F's cells in §6's order with their pair, cadence, seed and exact alpha, L, R, the
+ranks the alphas give at R, the void threshold, the sample's days and §7's power.
 """
 import hashlib, json, os, unittest
+from fractions import Fraction
 
-from loop import config, state
+from loop import config, inference_v2, state
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -52,6 +57,15 @@ def _rule_c_digest(product):
     pairs = [[state.state_string(a, config.base(product)), state.rule_c(a)] for a in state.all_states()]
     return hashlib.sha256(json.dumps(pairs).encode()).hexdigest(), pairs
 
+INFERENCE_V2 = {"SEED_H1": 20261023, "RESAMPLES": 10000, "BLOCK_LEN": 4, "ALPHA_H1": Fraction(1, 40),
+                "ALPHA_F": Fraction(1, 160), "MIN_KEPT_DAYS": 21, "N_DAYS": 28, "POWER": 0.8}
+CELLS_V2 = (("H1", "b", "c", 900, 20261023, Fraction(1, 40)),       # §5
+            ("F1", "b", "c", 3600, 20261024, Fraction(1, 160)),     # §6, i = 1..4, seed 20261023 + i
+            ("F2", "b", "c", 14400, 20261025, Fraction(1, 160)),
+            ("F3", "a", "c", 900, 20261026, Fraction(1, 160)),
+            ("F4", "b", "a", 900, 20261027, Fraction(1, 160)))
+RANKS_V2 = {"H1": 249, "F1": 62, "F2": 62, "F3": 62, "F4": 62}   # sorted[ceil(alpha R) - 1]
+
 HOW = ("a frozen input changed during the sample (CLAUDE.md, 'What must not change'). If the change is"
        " Alex's and deliberate (an erratum, or prereg-v2 after 2026-10-23 21:40Z), update the pin in"
        " tests/test_frozen.py in the same commit and say why; otherwise revert it.")
@@ -81,6 +95,14 @@ class Frozen(unittest.TestCase):
                 self.assertEqual(got, want, HOW)
         pairs = [[state.state_string(a), state.rule_c(a)] for a in state.all_states()]      # v1's form, no base given
         self.assertEqual(hashlib.sha256(json.dumps(pairs).encode()).hexdigest(), RULE_C["SOL-USD"], HOW)
+
+    def test_the_v2_inference_constants_are_the_pinned_ones(self):
+        self.assertEqual({k: getattr(inference_v2, k) for k in INFERENCE_V2}, INFERENCE_V2, HOW)
+        self.assertEqual(tuple((c.name, c.x, c.y, c.c, c.seed, c.alpha) for c in inference_v2.CELLS), CELLS_V2, HOW)
+        self.assertEqual({c.name: inference_v2.alpha_rank(c.alpha, inference_v2.RESAMPLES) for c in inference_v2.CELLS}, RANKS_V2, HOW)
+        for c in inference_v2.CELLS:                                                     # exact, never a float that equals it
+            self.assertIs(type(c.alpha), Fraction, c.name)
+        self.assertNotEqual(Fraction(1, 160), 0.00625)                                   # the pin itself tells them apart
 
     def test_the_pins_catch_an_edit(self):
         # the check itself, not only its inputs: one changed byte, one changed threshold, one changed state
