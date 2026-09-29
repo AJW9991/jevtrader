@@ -87,16 +87,26 @@ nothing is pending there; its record of what the branch changed is kept below un
    `make backup` beside `make status` and bootout the hourly job. Until one is done the job writes a FAIL
    line every hour and the iCloud copy is the 04:12Z one.
 
-## Prereg-v2 (drafted 2026-09-29, blind; Alex: "approved for all recommended choices")
-`PREREG-v2.md` at the repo root is the draft of the second block: one primary (B − C pooled over
-three products, held 15 min), a four-cell claimable family, arm A frozen at the v2 wording, arm D the
-wording's own table without a call, `liq` re-cut from measured fill cost (p10/p90), the direction
-nouls retired to descriptive, verified fees (50 maker, 90 taker), a promotion schedule in code, the
-no-live-rows exclusion. Its §10 lists the code changes and §13 the freeze (tag `prereg-v2-draft`
-BEFORE `make results` on 10-23) and the seal. The code is built blind on branch `prereg-v2` in the
-worktree `~/Projects/jev-paper-loop-v2` (no `data/` there), merged to `main` only after RESULTS.md is
-committed on 10-23. Review of the draft: five-lens Opus panel with refuters, 2026-09-29 (this
-session); changes from it land in the draft before the freeze tag. Nothing of v1 §4–§7 was read.
+## Prereg-v2 (drafted 2026-09-29, blind by procedure; Alex: "approved for all recommended choices")
+`PREREG-v2.md` is the second block's pre-registration; tag `prereg-v2-doc` (467cda4) marks the text
+after a five-lens Opus review (114 findings, refuted one by one; 6 blockers, 14 majors, 18 minors) and
+its recheck (15 partial items, 1 blocker, 9 majors, 14 minors), all applied. Design: one primary
+(B − C pooled over products, decided once per 15-minute block, α 1/40), family F of four (60- and
+240-minute holds, A − C, B − A; α 1/160 each, `sorted[62]`), arm A frozen at the v2 wording rendered
+per product, arm D the wording's own table (no call), `liq` in spread ticks (SOL: deep < 1.5, thin
+> 4.5 half-ticks; 16.5 / 77.1 / 6.4 %), direction nouls descriptive, fees 50/90, the nightly pinned to
+a model id with no user memory, promotions on days 8/15/22 at most, activation at day boundaries,
+`PAUSE.<product>` beside the global HALT, `exclusions-v2.tsv` with the recomputed rule governing,
+each arm's break-even fee as the money arithmetic. Three tags: `prereg-v2-doc` (done) →
+`prereg-v2-draft` (build complete and pinned on branch `prereg-v2`, BEFORE `make results` 10-23) →
+`prereg-v2-seal` (after the switch, by `bin/seal-check`). §13 bounds what `main` may take between
+tags; §14 logs every edit after the doc tag. The code is built in the worktree
+`~/Projects/jev-paper-loop-v2` (no `data/`): `bin/fill1k-quantiles` and `bin/probe` exist (branch at
+4437076+); the rest of §10 follows. **Probe day D = 2026-09-30 UTC** (starts 19:00 Chicago 09-29):
+`bin/probe run` from the worktree under `caffeinate -i`, public GETs only, 1 req/s, nothing under
+data/. **Alex's blanks before the draft tag:** the header's disclosure line (did he open a digest or
+nightly transcript directly before 09-29), the probe approval date (§2). The model id fills §8 from
+the 2026-09-29 08:30Z night's `claude model` line.
 
 ## Approved 2026-09-28 ("approved for recommended on all")
 - The nightly model is recorded, not pinned: decision 4.
