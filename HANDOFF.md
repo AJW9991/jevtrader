@@ -4,7 +4,9 @@ Written 2026-09-28 ~21:50Z by Claude (Fable 5.1) on Alex's Mac, the session that
 merge onto the Mac. Supersedes the cloud session's handoff of 2026-09-28 (branch
 `claude/cool-lamport-7sirtw`, merged to `main` by fast-forward at 183db6b); its record of what the
 branch changed is kept below unchanged. Update this file at the end of every session that changes
-state; whichever session ends last pushes.
+state; whichever session ends last pushes. The cloud session handed off to this one on 2026-09-29:
+its branch is fully merged and nothing is pending there; what it knew that this file did not say is
+in "What tonight's log should show" (State), "Known residuals" and the prereg-v2 notes.
 
 ## State
 - **The Mac runs 183db6b since 2026-09-28 21:31:50Z.** `git pull --ff-only` between ticks (heartbeat
@@ -37,6 +39,16 @@ state; whichever session ends last pushes.
   promoted: v2 keeps its 28 days (Do not). **Tonight, 2026-09-29 08:30Z, is the first night under
   the pulled code**: the call runs from an empty temp directory (no repo CLAUDE.md), logs the CLI
   version, the user-memory sha and `claude model <id>`. Record what it does.
+- **What tonight's log should show** (logs/propose.log; the cloud session's note): before the call,
+  `claude cwd <TMPDIR>/jevloop-claude.XXXXXX (empty); user memory ~/.claude/CLAUDE.md sha256 <12 hex>
+  (or absent); cli <version>`; after it, `claude model <id>`, read from the CLI's own transcript of the
+  call, which now lands in `~/.claude/projects/<that temp cwd as a slug>/`: one small directory per
+  night from now on (the pre-pull nights shared the repo's). `claude model unrecorded` means no
+  transcript was found (CLAUDE_CODE_PROJECT_DIR_NAME set, or a cwd path past 200 characters, which the
+  CLI cuts and hashes); the night goes on either way. The table gains `proposal written by: <id>` in
+  its header and, per candidate, the "where it changes CURRENT's answer" block. On the 09-27 stall:
+  tonight's call is the first without the repo as its cwd (no git status, no commit subjects, no repo
+  CLAUDE.md in its context), so a stall tonight would rule the repo context out altogether.
 - Added this session: ERRATA.md SPEC §10 row for the **verified venue fee: 90 bps taker** (Alex,
   in-account, 2026-09-27 ~22:55Z; tier Intro, maker 0.50 %); `config.FEE_BPS_VENUE` stays 120
   through the sample (the digest prints pnl at it; the treatment). `AGENTS.md -> CLAUDE.md`.
@@ -71,6 +83,25 @@ state; whichever session ends last pushes.
 - Report §4.5: the H1 cell by arm B's prompt version, one row per contiguous stretch of a version
   (a rollback's return is `<version> #2`). Descriptive, not in PREREG, and withheld with §4-§7
   until day 28; read it beside, never instead of, the H1 statistic.
+
+## Known residuals (the cloud session's, left by choice; none on the normal path)
+Each is also written where it lives (docstring, test or commit message).
+- Exclusions parser: five typos it cannot tell from a good line. The two-space `d1  6  80.0 ...`
+  reads as d01; so does a tab typed inside the day of a line that also leaves out its fill% or
+  jev-err%, a jev-err% without its % run straight into the reason (`0.0Mac`), a whole jev-err%
+  joined by one point to a reason that begins with a number (`0` + `.3h`), and `n/a` run into a
+  word. `make status` prints the parsed days each morning and day 28 recomputes rule 3 beside them.
+  A byte-order mark or a blank line before the header is refused, loudly.
+- Path guard: a second name with a device of its own (an overlay, an NFS or SMB loopback, a FUSE
+  mirror such as bindfs) or a second name for a directory inside the forbidden tree is not
+  recognised; none exists on the Mac as set up.
+- Report: a NaN `input_tokens` is named nowhere in §1; §4.5's block count still counts a row
+  stamped after the clock (withheld until day 28).
+- Dash: a foreign log's 1e308 latencies print `mean inf ms` (cosmetic); a path that is not UTF-8
+  prints as `?` (Linux only).
+- Tests: the readers-diff SIG_DFL guard misses a handler that is not a plain function in the tool's
+  file (a `functools.partial`); the strict plist read does not see a character reference (`&#32;`)
+  or a CDATA section between elements, which Apple's reader refuses.
 
 ## Pulling on the Mac (done 2026-09-28; the procedure, for the next merge)
 Take the counts of decision 6 first (`bin/readers-diff OLD NEW --log data/decisions.jsonl` with
@@ -174,6 +205,10 @@ and says so) · `make dash` · `make inference-smoke` · `make results` (day 28;
 
 ## Not changed on purpose (prereg-v2 notes)
 Every disagreement between the sealed documents and the code, in one table per document: ERRATA.md.
+- `tests/test_frozen.py` pins SPEC, PREREG, PROMPT.md, prompts/v1 and v2, the config thresholds a row
+  depends on, the alphabet and arm C, by bytes or by value: re-sealing PREREG for prereg-v2, or any
+  erratum applied to those after the sample, fails it by design; update the pin in the same commit.
+  `FEE_BPS_VENUE` is not pinned (a descriptive column), so setting the verified 90 does not touch it.
 - The digest's summary line on a promotion day replays arm B over every row of the day, v1 and
   v2 alike, while saying B is read from the v2 rows only; the digest's content is the treatment.
   Avoid promoting between 00:00Z and ~08:30Z.
