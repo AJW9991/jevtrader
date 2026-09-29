@@ -413,62 +413,79 @@ descriptive, `report.cadence_table` at PREREG-v2 §6's fee columns (`inference_v
 
 ## 5. Nightly
 
-`nightly/digest.py [--date YYYY-MM-DD]` → `data/digest-<date>.md`: one summary
-line (ticks, occupancy, trades and paper PnL per arm at 0 bps, labelled direction, AND
-at `FEE_BPS_VENUE`, labelled venue fee (2026-09-24, decided by Alex), disagreement count
-for B), up to 25 arm-B disagreement rows (state, choice,
-confidence, ret_h_bps, label) highest confidence first, the CURRENT `action`
-question verbatim, both shas. Never the key, never the raw log, never the features.
+`nightly/digest.py [--date YYYY-MM-DD] [--data DIR]` → `data/digest-<date>.md` (PREREG-v2 §8): the UTC day just
+closed, over every product's log (where `config.store` puts it, under `--data` when given), only the rows carrying
+this tree's SPEC sha (the v2 spec_sha: a switch-day digest mixes no v1-code rows in). One summary line per product
+and one pooled (sums): ticks, absences, outcomes joined, occupancy, trades and paper PnL per arm (A, B, C) at 0 bps
+(direction), at the venue's verified maker (50) and taker (90), the versions B was read from, and B's disagreement
+count. Every arm-B figure comes from rows whose `prompt_b` is the version `prompts.current(tick_id)` names for that
+row's tick (a promotion inside the day splits B's rows at its activation; a row asking any other wording is counted,
+not read; a pending version is never reached). Up to 25 arm-B disagreement rows over the products (state, choice,
+confidence, ret_h_bps, label), highest confidence first; per product the 81-state table (live rows seen, B's buy /
+sell / hold, mean ret_h_bps and up / down / flat at the 15-minute join); the CURRENT `action` question (what
+`current()` names now) verbatim with its base token written `{BASE}`; prompt_a's and each prompt_b's sha. Never the
+key, never the raw log, never the features. Exit 4 when no product has a row of this SPEC that day. Its bytes on a
+fixed three-product day are held by `tests/golden/digest-v2.md`.
 
-`nightly/propose.sh` (as it runs; the header of the script is the authority): the digest
-first (`nightly.digest --date <date>`; exit 4 = the day has no rows, so the night ends
-there with one log line and no Claude call); then the token read from
-`~/.secondbrain-secrets/oauth_token` into `CLAUDE_CODE_OAUTH_TOKEN` for the ONE call and
-unset after, never on argv, never logged; the call itself, with the working directory an
-empty temporary directory so the CLI auto-loads no CLAUDE.md from the repo (the slow
-model sees PROMPT.md and the digest, nothing the repo's working rules say, and
-`~/.claude/CLAUDE.md` user memory as it always has, whose sha256 is logged; the night
-fails if a CLAUDE.md, CLAUDE.local.md or .claude sits in any ancestor of the temp
-directory; 2026-09-28). The call names no model; after it, `nightly/answered_model.py` reads
-the model that answered from the CLI's own transcript of that session and the night logs it
-(`claude model <id>`, or `unrecorded`) and passes it to the table's header (recorded, not
-pinned: HANDOFF decision 4, approved 2026-09-28):
+`nightly/propose.sh` (as it runs; the header of the script is the authority): the slow model's id first, from
+`nightly/slow_model.py`'s `MODEL_ID` alone (PREREG-v2 §8; blank until §8 names it, and then the night fails there,
+no digest, no call, no send); the digest (`nightly.digest --date <date> --data <root>/data`; exit 4 = nothing to
+read, the night ends with one log line and no Claude call); then the token read from
+`~/.secondbrain-secrets/oauth_token` into `CLAUDE_CODE_OAUTH_TOKEN` for the ONE call and unset after, never on argv,
+never logged; the call itself, in an empty temporary working directory (the CLI auto-loads no CLAUDE.md from the
+repo; the night fails if a CLAUDE.md, CLAUDE.local.md or .claude sits in any ancestor of it) and with
+`CLAUDE_CONFIG_DIR` a fresh `mktemp -d` outside the repo, made and removed each night, for `--version`, the call and
+`answered_model.py`: the night fails, sending nothing, if that directory holds CLAUDE.md, CLAUDE.local.md, rules/,
+skills/, agents/ or plugins/ when the call is due, and logs "user memory not loaded" (PREREG-v2 §8; v1 loaded
+`~/.claude/CLAUDE.md` and logged its sha). After the call `nightly/answered_model.py` reads the model that answered
+from the CLI's transcript in that directory and the night logs it beside the requested id (`claude model <id>`, or
+`unrecorded`) and passes it to the table's header:
 `caffeinate -i python3 nightly/capped.py 2700 -- claude -p "$(cat nightly/PROMPT.md)
 
-$(cat data/digest-<date>.md)" --tools "" --restricted --strict-mcp-config --settings
-nightly/settings.json --output-format text` (`capped.py`: 45 min of AWAKE time, monotonic,
-exit 124 when it fires; the command runs in a process group of its own, which the cap ends,
-which ends when the command exits, and to which SIGTERM/SIGINT/SIGHUP/SIGQUIT are passed on; the CLI's version and the temp cwd are logged); extract exactly one
-fenced ```json block; validate it is `{"candidates": [ {"instructions": str, "criteria":
-{"buy","sell","hold"}} , ... ]}` with 1–3 entries and no digit; write `proposals/<date>.json`
-(refused, before the digest and any call, when `proposals/<date>.json` or `.md` exists: a
-missed slot that fires after 00:00Z plus the regular slot must not spend twice or overwrite
-a json a table vouches for; `--dry`, the tests' form, needs `--root DIR` outside the repo,
-else a usage error, exit 2). Then
-`policy_table.py proposals/<date>.json` asks Jev each candidate AND the CURRENT action
-question on the 81 synthetic state strings (3⁴ combinations of the alphabet; ~$0.005) and
-writes `proposals/<date>.md`: per candidate, the 81-row table of choice/confidence, the diff
-of its wording vs CURRENT, the count of states where it differs from CURRENT and from
-rule_c, where those changes land (per adjective, changed / answered states, and the
-CURRENT -> candidate moves; since 2026-09-28, for the person who promotes, never the digest),
-and the sha256 of the json it was built from (`bin/promote` checks it). Last, on
-every night whatever happened, `loop.dash` rebuilds `data/dash.html`. Every failure is one
-line in `logs/propose.log` and exit 0 (launchd throttles a failing job); the night also
-writes `data/digest-<date>.md` and `logs/claude-<date>.{txt,err}`.
-**It scores nothing against any logged outcome.** The nightly never touches
-`prompts/`. While `data/HALT` exists it sends nothing (propose.sh skips the
-table, and `policy_table.py` refuses again, before every send); a 429, three transient
-failures in a row, or three failures of any kind in a row end its night; a 401/403 writes
-`data/HALT`.
+$(cat data/digest-<date>.md)" --model <MODEL_ID> --tools "" --restricted --strict-mcp-config --settings
+nightly/settings.json --output-format text` (`capped.py`: 45 min of AWAKE time, monotonic, exit 124 when it fires;
+the command runs in a process group of its own, which the cap ends, which ends when the command exits, and to which
+SIGTERM/SIGINT/SIGHUP/SIGQUIT are passed on; the CLI's version, the temp cwd and the config dir are logged); extract
+exactly one fenced ```json block; validate it is `{"candidates": [ {"instructions": str, "criteria":
+{"buy","sell","hold"}} , ... ]}` with 1–3 entries and no digit; write `proposals/<date>.json` (refused, before the
+digest and any call, when `proposals/<date>.json` or `.md` exists; `--dry`, the tests' form, needs `--root DIR`
+outside the repo, else a usage error, exit 2). Then `policy_table.py proposals/<date>.json` (PREREG-v2 §8) asks Jev,
+for every product, each candidate AND the CURRENT action question on the product's 81 synthetic state strings
+(`state_string(adj, base)`; one request per state carrying every wording, each rendered for the product's base:
+81 a product, ~$0.005 each), CURRENT being what `prompts.current()` names now (a pending version is invisible), and
+writes `proposals/<date>.table.json` (every wording's 81 answers per product, the questions as sent, the proposal's
+sha, CURRENT's version and sha; gitignored) and `proposals/<date>.md` from it: its `table sha256` line (the json's),
+pooled counts first, then per product the 81-row tables (a candidate's with CURRENT's answer and whether the state
+moved), the diff of each wording vs CURRENT, the counts of states where it differs from CURRENT and from rule_c,
+where those changes land, and the sha256 of the proposal json (`bin/promote` checks both shas). A candidate naming a
+product other than `{BASE}` is refused before any send; a proposal with no candidates is a CURRENT-only table (the
+run a version's own tables come from). `python3 -m nightly.policy_table --fill proposals/<date>.table.json`
+(attended) re-sends only the unanswered states, with the questions the night sent, writes their answers into the
+same file and its new sha into the re-rendered .md; a json the .md does not vouch for is refused. Last, on every
+night whatever happened, `loop.dash` rebuilds `data/dash.html` from every product's store. Every failure is one line
+in `logs/propose.log` and exit 0 (launchd throttles a failing job); the night also writes `data/digest-<date>.md` and
+`logs/claude-<date>.{txt,err}`. **It scores nothing against any logged outcome.** The nightly never touches
+`prompts/`. While `data/HALT` exists it sends nothing (propose.sh skips the table, and `policy_table.py` refuses
+again, before every send); a 429, three transient failures in a row, or three failures of any kind in a row end its
+night (and every later product's sends); a 401/403 writes `data/HALT`; the night's deadline is 900 s a product.
+`nightly/trial-night.sh` is PREREG-v2 §8's trial night before the draft tag: a real call through propose.sh with
+`--root` a temp dir outside every checkout holding a synthetic three-product log (and data/HALT: no Jev send), printing
+only the exit code and the FAIL, claude exit, claude model and "user memory not loaded" lines, then PASS or FAIL.
 
-`bin/promote proposals/<date>.json <k>`: copies candidate k to `prompts/v<N+1>.json`
-(with the other three questions carried from v1 unchanged), writes the new
-version name to `prompts/CURRENT`, prints the diff, and refuses without a tty, if `git status`
-is dirty, if the `prereg-v1` tag does not exist (PREREG §10: sealed before the
-first row with `prompt_b != "v1"`), or if the json's sha256 differs from the
-`proposal sha256` line of the table beside it (no table, a table without the line, or
-one marked INCOMPLETE is a warning). CURRENT is written as CURRENT.tmp and renamed
-over. A person runs it. Nothing else writes `prompts/`.
+`bin/promote proposals/<date>.json <k> --reason "<one line>"` (PREREG-v2 §8): copies candidate k to
+`prompts/v<N+1>.json` (the other three questions carried from v1 unchanged) with `activation_tick` = T0_v2 + 86,400
+(E − 1) and `replaces` = the version active when it ran, then candidate k's column of the proposal's `.table.json` to
+`prompts/v<N+1>.table.<product>.json` for every product, then the new name to `prompts/CURRENT` (CURRENT.tmp renamed
+over); prints the diff and the commit line (the reason, the states moved per product). It refuses without a tty, on
+a dirty `git status`, without the annotated tag `prereg-v2-seal` at or before HEAD, while PREREG-v2.md §12's T0_v2 is
+blank, while a version is pending, off the schedule (run on day E − 1 for an effective day 8 ≤ E ≤ 22, at least 7
+days after the block's last promotion, at most three, and not within 600 s of the activation), unless the committed
+.md vouches for the json and the .table.json and the table was scored against the version CURRENT names, unless
+candidate k answered 81/81 on every product, for a candidate that moves 0 of 81 states on every product, and for a
+product word other than `{BASE}`. `bin/promote --table-only proposals/<date>.json` (attended, clean tree, no schedule
+or seal) copies the CURRENT column into `prompts/<CURRENT>.table.<product>.json` for every product, refusing unless
+the table's CURRENT sha is that version file's; it replaces an existing table only saying so. Neither form sends
+anything. A person runs it. Nothing else writes `prompts/`.
 
 ## 6. Tests (`tests/`, `python3 -m unittest`)
 
