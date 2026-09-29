@@ -443,6 +443,35 @@ class Withheld(unittest.TestCase):
         with open(looks, encoding="utf-8") as fh:
             self.assertEqual(len(fh.read().splitlines()), 3)
 
+    def test_unblind_is_a_look_whatever_it_lifts(self):
+        # §9.5: "`report --unblind` is a look: it appends (UTC, argv, HEAD) to data/looks.tsv", with no condition. It is
+        # recorded when nothing was withheld too (2026-09-29 refuter: with §12 blank and SPEC still v1's, --unblind
+        # printed everything and recorded nothing), and a look that cannot be recorded is still refused.
+        looks = os.path.join(self.data, "looks.tsv")
+        if os.path.exists(looks):
+            os.remove(looks)
+
+        def n_lines():
+            with open(looks, encoding="utf-8") as fh:
+                return len(fh.read().splitlines())
+        code, out, err = self._run(["--unblind", "--t0", T0S], END)           # the sample has ended: nothing is withheld
+        self.assertEqual(code, 0)
+        self.assertIn("pair B-C", out)
+        self.assertEqual(n_lines(), 2)
+        self.assertIn("report: --unblind: nothing read here was withheld; the look is recorded all the same (PREREG-v2 §9.5)", err)
+        self.assertIn(f"report: --unblind: recorded in {looks}: ", err)
+        self._run(["--unblind"], END + 86400, t0_v2=None, sha="some-other-spec")   # §12 blank, no row carries the v2 sha
+        self.assertEqual(n_lines(), 3)
+        code, out, err = self._run(["--unblind", "--health"], self.DAY1)      # health only: still a look
+        self.assertEqual(code, 0)
+        self.assertIn("health only", out)
+        self.assertEqual(n_lines(), 4)
+        with mock.patch.object(config, "DATA", os.path.join(self.data, "no-such-dir")):
+            code, out, err = self._run(["--unblind", "--t0", T0S], END)
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("the look cannot be recorded", err)
+        self.assertEqual(n_lines(), 4)
+
 
 if __name__ == "__main__":
     unittest.main()

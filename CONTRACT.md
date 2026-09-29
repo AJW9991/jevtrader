@@ -377,8 +377,9 @@ PREREG-v2's withholding sits beside v1's in both forms: T0_v2 is read from the r
 PREREG-v2.md §12 (`dash.read_t0_v2`) whatever the flags say, and §4–§7 are withheld while the
 clock is before T0_v2 + 28 d and a row read is in [T0_v2, T0_v2 + 28 d); while §12's T0_v2 is blank
 (or malformed) they are withheld over every row carrying the v2 `spec_sha` (`dash.v2_spec_sha`).
-`--unblind` is a look: `loop/looks.py` appends (UTC, argv, HEAD) to `data/looks.tsv` before
-anything withheld is printed, and a look it cannot record is refused (exit 2). `--sample` without
+Every `--unblind` is a look, whether or not it lifts a withholding: `loop/looks.py` appends (UTC,
+argv, HEAD) to `data/looks.tsv` before anything is printed, and a look it cannot record is refused
+(exit 2). `--sample` without
 `--log` reads T0_v2 from §12. `make status` and the dash show every store, HALT (REPO/data) and
 each PAUSE, and the pending prompt version on its own line; still health only.
 

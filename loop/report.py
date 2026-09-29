@@ -16,8 +16,8 @@ render_v2 reads every product's store (config.store) and prints §1-§3 per prod
 D's agreement, §5 the paired book at the minute cadence and at each config.CADENCES through book.at_cadence,
 per product and pooled over the time block, with the rule-recomputed exclusions (loop.exclusions_v2), §6-§7
 per product. Either way PREREG-v2's withholding (withheld_v2: T0_v2 from PREREG-v2.md §12, whatever the
-flags; blank, every row carrying the v2 spec_sha) is applied beside v1's, and --unblind is recorded in
-data/looks.tsv (loop.looks) before anything withheld is printed. The v2 report is ~4 s per product-day of
+flags; blank, every row carrying the v2 spec_sha) is applied beside v1's, and every --unblind is recorded in
+data/looks.tsv (loop.looks) before anything is printed, whether or not it lifts a withholding. The v2 report is ~4 s per product-day of
 minute rows (one replay per product, arm, column, fee and cadence: ~150 per product and cadence), so ~2 min
 at day 28 on three products.
 
@@ -1458,8 +1458,9 @@ def render_v2(stores, t0=None, since=None, health_only=False, withheld=(), now=N
 def main(argv=None, now=None):
     """`now` (epoch) pins the clock for tests of the withholding; the live run uses the clock. With --log, v1's
     report on that one log, as before; without it, PREREG-v2's over every product's store (render_v2). Either way
-    PREREG-v2's withholding (§9.5, T0_v2 from PREREG-v2.md §12) applies beside v1's, and --unblind is recorded in
-    data/looks.tsv before anything withheld is printed (a look that cannot be recorded is refused, exit 2)."""
+    PREREG-v2's withholding (§9.5, T0_v2 from PREREG-v2.md §12) applies beside v1's, and every --unblind is recorded in
+    data/looks.tsv before anything is printed, whatever it lifts, --health included (§9.5: `report --unblind` is a look;
+    a look that cannot be recorded is refused, exit 2)."""
     ap = argparse.ArgumentParser(prog="python3 -m loop.report", description="CONTRACT §4 report, plain text, no p-values.")
     ap.add_argument("--since", metavar="YYYY-MM-DD", help="rows whose tick_id date is on or after this day")
     ap.add_argument("--t0", metavar="YYYY-MM-DDTHH:MM",
@@ -1474,7 +1475,7 @@ def main(argv=None, now=None):
     ap.add_argument("--prereg", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--unblind", action="store_true",
                     help=f"print sections {HEALTH_N + 1}-{len(TITLES)} on sample rows before the sample has ended (a look: it is"
-                         " printed as one and appended to data/looks.tsv)")
+                         " printed as one and appended to data/looks.tsv, whether or not anything was withheld)")
     raw = list(sys.argv[1:] if argv is None else argv)
     args = ap.parse_args(raw)
     try:
@@ -1528,24 +1529,26 @@ def main(argv=None, now=None):
     if not health_only:
         w1 = withheld_until(every, sealed_repo, now)
         w2 = withheld_v2(every, t0_v2, v2_sha, now)
-        if (w1 is not None or w2 is not None) and args.unblind:
-            from . import looks                                      # a look is recorded before it is printed
-            try:
-                line = looks.record(raw, clock)
-            except OSError as e:
-                sys.stderr.write(f"report: --unblind: the look cannot be recorded in {config.LOOKS} ({e.strerror or e});"
-                                 " nothing is unblinded\n")
-                return 2
-            if w1 is not None:
-                sys.stderr.write(f"report: --unblind: sections {HEALTH_N + 1}-{len(TITLES)} printed on sample rows before"
-                                 f" {_iso_minute(w1)}; this is a look (PREREG §8.4)\n")
-            if w2 is not None:
-                sys.stderr.write(f"report: --unblind: sections {HEALTH_N + 1}-{len(TITLES)} printed on PREREG-v2's withheld rows;"
-                                 " this is a look (PREREG-v2 §9.5)\n")
-            sys.stderr.write(f"report: --unblind: recorded in {config.LOOKS}: {line}")
-            w1 = w2 = None
-        elif w1 is not None or w2 is not None:
-            health_only = True
+    if args.unblind:                                                 # PREREG-v2 §9.5: `report --unblind` is a look, whatever it
+        from . import looks                                          # lifts; it is recorded before anything is printed
+        try:
+            line = looks.record(raw, clock)
+        except OSError as e:
+            sys.stderr.write(f"report: --unblind: the look cannot be recorded in {config.LOOKS} ({e.strerror or e});"
+                             " nothing is unblinded\n")
+            return 2
+        if w1 is not None:
+            sys.stderr.write(f"report: --unblind: sections {HEALTH_N + 1}-{len(TITLES)} printed on sample rows before"
+                             f" {_iso_minute(w1)}; this is a look (PREREG §8.4)\n")
+        if w2 is not None:
+            sys.stderr.write(f"report: --unblind: sections {HEALTH_N + 1}-{len(TITLES)} printed on PREREG-v2's withheld rows;"
+                             " this is a look (PREREG-v2 §9.5)\n")
+        if w1 is None and w2 is None:
+            sys.stderr.write("report: --unblind: nothing read here was withheld; the look is recorded all the same (PREREG-v2 §9.5)\n")
+        sys.stderr.write(f"report: --unblind: recorded in {config.LOOKS}: {line}")
+        w1 = w2 = None
+    elif w1 is not None or w2 is not None:
+        health_only = True
     if v2_bad:
         sys.stderr.write(f"report: {v2_bad}; withheld as if blank\n")
     if args.log is not None:
