@@ -87,7 +87,11 @@ Each fix is its own commit and one row here, added at the end: the commit (7 to 
 prints it; RESULTS-v2 §0 reproduces it. A deviation that touches `at_cadence`, `replay`/`paired`, inference, the pooling
 or exclusion readers, `rule_c`, the alphabet or its cuts, PROMPT.md v2, the digest or promote's schedule voids the draft
 tag. Rows under this heading are read as deviations until the next heading of its level; any other addition after the
-draft tag goes under a heading of its own.
+draft tag goes under a heading of its own. Main adds at the end of this file after the draft tag (§13), so this table
+stops being the end: a row added after such an addition goes at the end of the file under a new heading
+`## v2 deviations (continued)` with this table's header row (§13 (c) allows only additions at the end, and
+`bin/seal-check` reads every heading that holds "v2 deviations"). A fix main needs before switch step (6) is listed the
+same way, from main.
 
 | Commit | What it fixes | Why outside §13 (c) |
 |---|---|---|

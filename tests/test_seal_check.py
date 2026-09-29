@@ -547,6 +547,18 @@ class Deviations(Scratch):
         self.commit("no such commit")
         self.assertFails(says=["names 0123456789abc, which is not a commit here"])
 
+    def test_a_row_under_a_continued_heading_after_mains_additions_is_listed(self):
+        # ERRATA.md: once main's additions follow the table, a row goes at the end under `## v2 deviations (continued)`
+        self.filled()
+        self.write("ERRATA.md", ERRATA + "\n## RESULTS.md (v1)\n\nmain's erratum after the draft tag\n")
+        self.commit("main's addition at the end")
+        self.replace("loop/code.py", "Y = 2", "Y = 3")
+        fix = self.commit("a fix")
+        self.write("ERRATA.md", self.read("ERRATA.md") + "\n## v2 deviations (continued)\n\n| Commit | What it fixes | Why "
+                   f"outside §13 (c) |\n|---|---|---|\n| {fix[:10]} | Y | outside (c) |\n")
+        self.commit("its row")
+        self.assertIn("(1 listed deviation(s) taken out)", self.assertPasses())
+
     def test_rows_under_another_heading_are_not_listed(self):
         self.replace("loop/code.py", "Y = 2", "Y = 3")
         fix = self.commit("a fix")

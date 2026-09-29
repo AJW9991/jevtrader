@@ -41,6 +41,44 @@ def _deviations(errata):
     return "\n".join(keep), rows
 
 
+DEVIATIONS_HEADER = ["| Commit | What it fixes | Why outside §13 (c) |", "|---|---|---|"]
+
+
+def _deviation_tables(errata):
+    """The table rows of each "v2 deviations" section, in order (bin/seal-check reads every such heading the same way,
+    to the next heading of its level or above)."""
+    tables, depth = [], None
+    for line in errata.splitlines():
+        h = re.match(r"^(#{1,6}) ", line)
+        if h:
+            if re.match(r"^#{1,6} .*\bv2 deviations\b", line, re.I):
+                depth = len(h.group(1))
+                tables.append([])
+                continue
+            if depth is not None and len(h.group(1)) <= depth:
+                depth = None
+        if depth is not None and line.startswith("|"):
+            tables[-1].append(line)
+    return tables
+
+
+def deviation_problems(errata):
+    """Why ERRATA.md's v2 deviations are not as bin/seal-check reads them (empty when they are): a `## v2 deviations`
+    section first, and every such section (the first, and a `## v2 deviations (continued)` once main's additions follow
+    it) a table with the header row, each row after it naming one commit."""
+    bad = []
+    if len(re.findall(r"^## v2 deviations \(PREREG-v2 §13\b", errata, re.M)) != 1:
+        bad.append("not exactly one ## v2 deviations (PREREG-v2 §13 ...) heading")
+    for rows in _deviation_tables(errata):
+        if rows[:2] != DEVIATIONS_HEADER:
+            bad.append(f"a v2 deviations table does not begin with {DEVIATIONS_HEADER}")
+        for row in rows[2:]:
+            cells = [c.strip() for c in row.strip().strip("|").split("|")]
+            if len(cells) != 3 or not re.fullmatch(r"[0-9a-f]{7,40}", cells[0].strip("`")):
+                bad.append(f"{row!r} is not one commit, what it fixes, why")
+    return bad
+
+
 class Errata(unittest.TestCase):
     def test_every_cited_section_exists(self):
         errata = _read("ERRATA.md")
@@ -62,14 +100,19 @@ class Errata(unittest.TestCase):
     def test_the_v2_deviations_table_exists_and_each_row_names_one_commit(self):
         # PREREG-v2 §13: a fix between prereg-v2-draft and the seal outside (c) is one commit and one row of this table;
         # bin/seal-check reads the first cell as the commit and refuses a row that names none
-        errata = _read("ERRATA.md")
-        self.assertEqual(len(re.findall(r"^## v2 deviations\b", errata, re.M)), 1)
-        rows = _deviations(errata)[1]
-        self.assertEqual(rows[:2], ["| Commit | What it fixes | Why outside §13 (c) |", "|---|---|---|"])
-        for row in rows[2:]:
-            cells = [c.strip() for c in row.strip().strip("|").split("|")]
-            self.assertEqual(len(cells), 3, row)
-            self.assertRegex(cells[0].strip("`"), r"^[0-9a-f]{7,40}$", row)
+        self.assertEqual(deviation_problems(_read("ERRATA.md")), [])
+
+    def test_a_row_after_mains_later_additions_goes_under_a_continued_heading(self):
+        # §13: main adds at the end of ERRATA.md after the draft tag, so the deviations table stops being the end; a
+        # later row is an addition at the end only under a new heading, `## v2 deviations (continued)`, which
+        # bin/seal-check reads as it reads the first (the S5 refuter's defect 4: this test demanded exactly one)
+        errata = (_read("ERRATA.md") + "\n## RESULTS.md (v1), 2026-10-23\n\nmain's erratum after the draft tag\n"
+                  "\n## v2 deviations (continued)\n\n" + "\n".join(DEVIATIONS_HEADER) + "\n| 0123456789ab | x | y |\n")
+        self.assertEqual(deviation_problems(errata), [])
+        self.assertEqual(deviation_problems(errata + "| see above | x | y |\n"),
+                         ["'| see above | x | y |' is not one commit, what it fixes, why"])
+        self.assertNotIn("main's erratum", "\n".join(_deviations(errata)[1]))
+        self.assertIn("main's erratum", _deviations(errata)[0])
 
 
 if __name__ == "__main__":
