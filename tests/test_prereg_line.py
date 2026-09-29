@@ -95,6 +95,41 @@ class PreregV2Line(unittest.TestCase):
         self.assertIsNone(self._read_line("| T_first_v2, T0_v2, sealed-by, sealed-on | at sealing | the logs |\n"
                                           "T_first_v2: `________`   T0_v2: `________`   Sealed by: `________`   on: `________`"))
 
+    def _tiers(self, read, table, extra=""):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "PREREG-v2.md")
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write(text_v2().replace("\n## 13.", f"\nFee tiers (30-day band / maker / taker, read UTC `{read}`): `{table}`\n{extra}\n## 13.")
+                         + "Fee tiers (30-day band / maker / taker, read UTC `x`): `$0+ / 1% / 1%`\n")   # §13: never read
+            return dash.read_fee_tiers(p)
+
+    def test_the_fee_tier_table(self):
+        # PREREG-v2 §6.2 and §12: the venue's spot schedule, every row, read in-account at sealing with the read time. Blank
+        # (underscores) is None: the report then prints ERRATA's 2026-09-27 reading alone. The form a filled field takes
+        # (this reader's, for §14): rows `[name:] $LOW-$HIGH / maker / taker` or `$LOW+ / ...` joined by `;`, amounts with
+        # an optional K, M or B, each fee with its unit, % or bps. Anything else filled in is a ValueError, never blank.
+        path = os.path.join(REPO, "PREREG-v2.md")
+        dash.read_fee_tiers(path)                                          # the repository's own line: blank or a table, never a raise
+        self.assertIsNone(self._tiers("________", "________"))
+        self.assertIsNone(dash.read_fee_tiers(os.path.join(REPO, "no-such-PREREG-v2.md")))
+        got = self._tiers("2026-10-24T21:00Z", "Intro 1: $0-$10K / 0.50% / 0.90%; Intro 2: $10K-$50K / 0.25% / 0.40%;"
+                                               " $50K-$1.5M / 15 bps / 25 bps; Advanced: $1B+ / 0% / 0.07%")
+        self.assertEqual(got["read"], "2026-10-24T21:00Z")
+        self.assertEqual([(t["name"], t["low"], t["high"], t["maker"], t["taker"]) for t in got["tiers"]],
+                         [("Intro 1", 0.0, 10_000.0, 50.0, 90.0), ("Intro 2", 10_000.0, 50_000.0, 25.0, 40.0),
+                          (None, 50_000.0, 1_500_000.0, 15.0, 25.0), ("Advanced", 1e9, None, 0.0, 7.0)])
+        self.assertEqual(got["tiers"][0]["band"], "$0-$10K")
+        for read, table in (("________", "$0+ / 0.5% / 0.9%"),               # a table without its read time
+                            ("2026-10-24T21:00Z", "________"),               # a read time without its table
+                            ("2026-10-24T21:00Z", "$0+ / 0.5 / 0.9"),        # a fee without its unit
+                            ("2026-10-24T21:00Z", "$0+ / 0.5% / 0.9%, $10K+ / 0.2% / 0.4%"),
+                            ("2026-10-24T21:00Z", "Intro / 0.5% / 0.9%"),    # no band
+                            ("2026-10-24T21:00Z", "$0-$10K / 0.5% / 0.9%;")):
+            with self.assertRaises(ValueError, msg=table):
+                self._tiers(read, table)
+        with self.assertRaises(ValueError):                                 # the field line without its backticks
+            self._tiers("________", "________", extra="Fee tiers (30-day band / maker / taker): $0+ / 0.5% / 0.9%")
+
     def test_the_v2_spec_sha(self):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "SPEC.md")

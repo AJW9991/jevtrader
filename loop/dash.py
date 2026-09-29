@@ -15,7 +15,7 @@ or confidence number can appear by accident; tests/test_dash.py holds every `rep
 in this file to an allowlist.
 Standard library only; the page carries no script and loads nothing from the network, so
 it can be opened from a file and shared without reaching for anything."""
-import argparse, collections, datetime, glob, hashlib, html, math, os, re, sys
+import argparse, collections, datetime, decimal, glob, hashlib, html, math, os, re, sys
 
 from . import config, exclusions_v2, outcomes, prompts, report, state
 
@@ -27,6 +27,11 @@ T0_V2_RE = re.compile(r"T0_v2[ \t]*:[ \t]*`([^`\n]*)`")        # §12's field li
 T0_V2_ANY = re.compile(r"T0_v2[ \t]*:")                        # any field-like mention in §12: each must be T0_V2_RE's form
 BLANK_RE = re.compile(r"_*")                                  # an unfilled field is underscores (or nothing)
 TICK_RE = re.compile(r"\d{8}T\d{4}00Z")                        # a filled T0_v2 is a tick_id: a minute boundary (§2)
+FEE_TIERS_RE = re.compile(r"Fee tiers \(30-day band / maker / taker, read UTC `([^`\n]*)`\): `([^`\n]*)`")   # §12's fee-tier field
+FEE_TIERS_ANY = re.compile(r"Fee tiers\b")                     # any mention in §12: each must be FEE_TIERS_RE's form
+_MONEY = r"\$?\d[\d,]*(?:\.\d+)?[KMB]?"
+TIER_RE = re.compile(r"(?:(?P<name>[^:/;$]*[^:/;$\s])\s*:\s*)?(?P<band>(?P<low>" + _MONEY + r")\s*(?:-\s*(?P<high>" + _MONEY + r")|\+))"
+                     r"\s*/\s*(?P<maker>\d+(?:\.\d+)?)\s*(?P<mu>%|bps)\s*/\s*(?P<taker>\d+(?:\.\d+)?)\s*(?P<tu>%|bps)")
 V1_SPEC_SHA = "5d4f355e181739ae2a65a6496ecddf195d9dde7c7668c7606c19d795c5254ca7"   # sha256 of `git show prereg-v1:SPEC.md`:
                                                               # the spec_sha every v1 sample row carries (PREREG-v2 §10)
 PROPOSAL_HEAD = re.compile(r"requests: (\d+), answered: (\d+), errors: (\d+)")
@@ -118,6 +123,55 @@ def v2_spec_sha(spec=None):
     except OSError:
         return None
     return None if sha == V1_SPEC_SHA else sha
+
+
+def _usd(x):
+    """'$10K' -> 10000.0: an optional $, commas, an optional K, M or B."""
+    x = x.replace("$", "").replace(",", "")
+    mult = {"K": 1e3, "M": 1e6, "B": 1e9}.get(x[-1:], 1.0)
+    return float(x[:-1] if mult != 1.0 else x) * mult
+
+
+def read_fee_tiers(prereg=None):
+    """PREREG-v2.md §12's fee-tier table (§6.2: the venue's published spot schedule, every row, read in-account at
+    sealing) as {"read": the read time as written, "tiers": [{"name", "band", "low", "high", "maker", "taker"}]},
+    amounts in USD (high None for the top band), fees in bps; None while the field is blank (underscores, both the
+    read time and the table) or the file or the field is absent. The filled form (this reader's; §12 does not fix
+    one): rows joined by `;`, each `[name:] $LOW-$HIGH / maker / taker` or `[name:] $LOW+ / maker / taker`, an amount
+    with an optional $, commas and K, M or B, each fee a number with its unit, `%` or `bps`. Anything else filled in
+    (a fee without its unit, a row it cannot read, a read time without a table or the reverse, the field without its
+    backticks) raises ValueError: a malformed table must be loud, never read as blank. Read at call time from `prereg`
+    or the repository's own PREREG-v2.md (PREREG_V2_PATH), as read_t0_v2 reads T0_v2."""
+    try:
+        with open(prereg or PREREG_V2_PATH, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return None
+    sec = re.search(r"^## 12\..*?(?=^## |\Z)", text, re.M | re.S)
+    body = sec.group(0) if sec else ""
+    fields = FEE_TIERS_RE.findall(body)
+    if len(FEE_TIERS_ANY.findall(body)) != len(fields) or len(fields) > 1:
+        bad = [l.strip() for l in body.splitlines() if FEE_TIERS_ANY.search(l)]
+        raise ValueError(f"PREREG-v2 §12's fee-tier field is not one `Fee tiers (30-day band / maker / taker, read UTC `...`): `...``: {bad!r}")
+    if not fields:
+        return None
+    read, table = (x.strip() for x in fields[0])
+    blank_read, blank_table = bool(BLANK_RE.fullmatch(read)), bool(BLANK_RE.fullmatch(table))
+    if blank_read and blank_table:
+        return None
+    if blank_read or blank_table:
+        raise ValueError(f"PREREG-v2 §12's fee-tier field is half filled (read UTC {read!r}, table {table!r}): both or neither")
+    tiers = []
+    for row in table.split(";"):
+        m = TIER_RE.fullmatch(row.strip())
+        if m is None:
+            raise ValueError(f"PREREG-v2 §12's fee-tier row {row.strip()!r} is not `[name:] $LOW-$HIGH / maker / taker` (or `$LOW+`),"
+                             " each fee a number with % or bps, rows joined by ;")
+        fee = {k: float(decimal.Decimal(m.group(k)) * (100 if m.group(u) == "%" else 1))    # exact: 0.07 % is 7 bps, not 7.000000000000001
+               for k, u in (("maker", "mu"), ("taker", "tu"))}
+        tiers.append({"name": m.group("name"), "band": re.sub(r"\s+", "", m.group("band")), "low": _usd(m.group("low")),
+                      "high": _usd(m.group("high")) if m.group("high") else None, **fee})
+    return {"read": read, "tiers": tiers}
 
 
 def heartbeat(path=None):
