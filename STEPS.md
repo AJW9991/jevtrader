@@ -551,10 +551,11 @@ cd ~/Projects/jev-paper-loop && git merge --ff-only prereg-v2 && make test
 (8) CURRENT names `v2`, or is set to it and committed, naming what it replaced; else the line in HANDOFF.md:
 
 ```bash
-cd ~/Projects/jev-paper-loop && WAS=$(cat prompts/CURRENT) && if [ "$WAS" = v2 ]; then echo "- $(date -u +%Y-%m-%dT%H:%MZ) switch step 8: CURRENT already v2" >> HANDOFF.md; else printf 'v2\n' > prompts/CURRENT && git add prompts/CURRENT && git commit -m "prompts/CURRENT: v2 at the switch (PREREG-v2 §10 step 8), replacing $WAS"; fi
+cd ~/Projects/jev-paper-loop && WAS=$(cat prompts/CURRENT) && if [ "$WAS" = v2 ]; then echo "- $(date -u +%Y-%m-%dT%H:%MZ) switch step 8: CURRENT already v2" >> HANDOFF.md && git add HANDOFF.md && git commit -m "HANDOFF.md: switch step 8, CURRENT already v2 (PREREG-v2 §10)"; else printf 'v2\n' > prompts/CURRENT && git add prompts/CURRENT && git commit -m "prompts/CURRENT: v2 at the switch (PREREG-v2 §10 step 8), replacing $WAS"; fi
 ```
 
-(8a) `data/HALT` absent, or its v1 cause recorded (HANDOFF.md) and the file removed:
+(8a) `data/HALT` absent, or its v1 cause recorded in HANDOFF.md and committed (`git add HANDOFF.md && git commit`),
+and the file removed:
 
 ```bash
 cd ~/Projects/jev-paper-loop && if [ -e data/HALT ]; then cat data/HALT; fi
@@ -673,7 +674,9 @@ EOF
 Fill §12 in one commit with the PREREG-v2.md pin in `tests/test_frozen.py`: the fee tiers as read in-account, with the
 read time (`Fee tiers (30-day band / maker / taker, read UTC `2026-10-24T09:00Z`): `$0-$10K / 0.60 % / 1.20 %;
 $10K-$50K / ...``, rows joined by `;`, the form `make dash` and the report read), the rebuild line if (11a) did not
-write it, T_first_v2 and T0_v2 (each a tick_id, `YYYYMMDDTHHMM00Z`, as printed), who sealed and the date. Then:
+write it, T_first_v2 and T0_v2 (each a tick_id, `YYYYMMDDTHHMM00Z`, as printed), who sealed and the date. The tree is
+clean before the seal (`bin/seal-check` (b)): the HANDOFF.md lines of switch steps (8) and (8a) are committed with them.
+Then:
 
 ```bash
 cd ~/Projects/jev-paper-loop && bin/seal-check && git tag -a prereg-v2-seal -m "PREREG-v2 sealed" HEAD && git push origin prereg-v2-seal

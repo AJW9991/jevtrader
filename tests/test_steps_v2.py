@@ -123,6 +123,58 @@ class Stores(unittest.TestCase):
         return out.getvalue(), None
 
 
+class SwitchGit(unittest.TestCase):
+    """10.5: a switch step that only touches git, run in a scratch repository by each shell the author may paste it into."""
+
+    def step(self, label):
+        text = subsection("10.5")
+        block = bash_blocks(text[text.index(label):])[0]
+        prefix = "cd ~/Projects/jev-paper-loop && "
+        self.assertTrue(block.startswith(prefix), block)
+        return block[len(prefix):]
+
+    def scratch(self, current):
+        d = self.enterContext(tempfile.TemporaryDirectory())
+        env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1", GIT_AUTHOR_NAME="t",
+                   GIT_AUTHOR_EMAIL="t@example.invalid", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.invalid")
+
+        def run(*argv):
+            r = subprocess.run(argv, cwd=d, env=env, capture_output=True)
+            return r.returncode, r.stdout.decode("utf-8", "replace") + r.stderr.decode("utf-8", "replace")
+        os.makedirs(os.path.join(d, "prompts"))
+        for name, text in (("prompts/CURRENT", current + "\n"), ("HANDOFF.md", "notes\n")):
+            with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+                fh.write(text)
+        for argv in (("git", "init", "-q", "-b", "main"), ("git", "add", "-A"), ("git", "commit", "-q", "-m", "switched")):
+            self.assertEqual(run(*argv)[0], 0)
+        return d, run
+
+    def test_step_8_leaves_a_clean_tree_either_way(self):
+        # (8) records "CURRENT already v2" in HANDOFF.md, and bin/seal-check (b) wants a clean tree: the line is
+        # committed with the step, as its other branch commits CURRENT (the S5 refuter's defect 10: left uncommitted,
+        # the seal failed on " M HANDOFF.md")
+        shells = [s for s in ("/bin/bash", "/bin/zsh") if os.path.exists(s)]
+        self.assertTrue(shells)
+        for shell in shells:
+            for current in ("v2", "v3"):
+                d, run = self.scratch(current)
+                code, out = run(shell, "-c", self.step("(8) CURRENT"))
+                self.assertEqual(code, 0, (shell, current, out))
+                self.assertEqual(run("git", "status", "--porcelain"), (0, ""), (shell, current))
+                with open(os.path.join(d, "prompts", "CURRENT"), encoding="utf-8") as fh:
+                    self.assertEqual(fh.read(), "v2\n")
+                with open(os.path.join(d, "HANDOFF.md"), encoding="utf-8") as fh:
+                    last = fh.read().splitlines()[-1]
+                self.assertEqual(last.endswith("switch step 8: CURRENT already v2"), current == "v2", (shell, last))
+                self.assertEqual(run("git", "log", "-1", "--format=%s")[1].split(":")[0],
+                                 "HANDOFF.md" if current == "v2" else "prompts/CURRENT", (shell, current))
+
+    def test_every_handoff_line_is_committed_before_the_seal(self):
+        text = subsection("10.5")
+        self.assertIn("committed", text[text.index("(8a)"):text.index("(8b)")])
+        self.assertIn("HANDOFF.md lines of switch steps (8) and (8a) are committed", subsection("10.6"))
+
+
 class ShakedownModel(Stores):
     """10.5 (11a): the Jev version that answered the first shakedown rows against the pinned tables'."""
 
