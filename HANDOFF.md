@@ -52,6 +52,15 @@ in "What tonight's log should show" (State), "Known residuals" and the prereg-v2
 - Added this session: ERRATA.md SPEC §10 row for the **verified venue fee: 90 bps taker** (Alex,
   in-account, 2026-09-27 ~22:55Z; tier Intro, maker 0.50 %); `config.FEE_BPS_VENUE` stays 120
   through the sample (the digest prints pnl at it; the treatment). `AGENTS.md -> CLAUDE.md`.
+- Added 2026-09-29 ~04:15Z (Mac session): **backup tooling** — `bin/backup-data` (rsync of data/ and
+  logs/ to the iCloud Drive folder jevtrader-backup; refuses the repo, the crypto repo, an ancestor, a
+  newline), `launchd/com.alexward.jevloop.backup.plist` (hourly at :45; pinned in tests/test_nightly.py),
+  `make backup`, tests/test_backup.py; 840 tests green on the Mac. **The first copy and the install are
+  Alex's (STEPS §9); until then the sealed sample still exists once.** A `--dry --root <scratch>` run of
+  `nightly/propose.sh --date 2026-09-26` over a copy of the log succeeded (digest 606 ticks, fixture
+  proposal, dash; the repo untouched), so decision 8's by-hand rerun is proven up to the claude call and
+  the 81 sends. A one-shot check of tonight's night is scheduled in the Mac session for 09:21Z (past the
+  45 min cap); it records the comparison against the bullet above, here.
 
 ## Decisions for Alex
 1. ~~The slow model's context~~ **done as (a)** by the pull; first night 2026-09-29 08:30Z.
@@ -66,12 +75,15 @@ in "What tonight's log should show" (State), "Known residuals" and the prereg-v2
 7. ~~2026-09-26 likely BAD~~ Under the T0-anchored days you decided on 09-26, d01 (09-25 21:40Z →
    09-26 21:40Z) closed at 95.2 % and is kept; the UTC day 09-26 at 90.2 % is not a unit of the
    sample. No exclusions line is due. (`make status` shows the table each morning.)
-8. **The missed 2026-09-26 proposal.** `nightly/propose.sh --date 2026-09-26` would digest that day
-   (data/digest-2026-09-26.md exists, 606 ticks) and make one `claude -p` call (a spend, ~1-2 min
-   on the 09-28 evidence, 45 min cap). Options: (a) run it by hand once, outside 00:00-08:30Z and
-   never while the loop's tick is writing (it is a separate process; the nightly's 81 sends have
-   their own HALT check); (b) leave the slot empty and let the write-up say one night of 28 produced
-   no proposal. Nothing in PREREG requires a proposal every night; promote is yours either way.
+8. **The missed 2026-09-26 proposal.** Nothing in PREREG requires a proposal every night; promote is
+   yours either way. (a) Run it by hand once — one `claude -p` call plus 81 Jev sends (~$0.005), any time
+   the nightly is not running; the dry run above proves the path; then commit `proposals/2026-09-26.md`:
+   ```bash
+   cd ~/Projects/jev-paper-loop && launchctl print gui/$(id -u)/com.alexward.jevloop.nightly | grep -q 'state = running' && echo "nightly running: wait" || { bash nightly/propose.sh --date 2026-09-26 && git add proposals/2026-09-26.md && git commit -m "proposals: the 2026-09-26 table, run by hand after the capped night"; }
+   ```
+   (b) Leave the slot empty and let the write-up say one night of 28 produced no proposal.
+9. **Install the backup** (STEPS §9): `make backup` once, then bootstrap the plist; or name another
+   destination (`bin/backup-data DEST`, and the plist's argument with it).
 
 ## Approved 2026-09-28 ("approved for recommended on all")
 - The nightly model is recorded, not pinned: decision 4.
