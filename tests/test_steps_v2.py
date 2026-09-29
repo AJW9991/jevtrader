@@ -110,6 +110,48 @@ class Stores(unittest.TestCase):
         return out.getvalue(), None
 
 
+class ShakedownModel(Stores):
+    """10.5 (11a): the Jev version that answered the first shakedown rows against the pinned tables'."""
+
+    def snippet(self):
+        text = subsection("10.5")
+        return heredoc(bash_blocks(text[text.index("(11a)"):])[0])
+
+    def tables(self, model):
+        os.makedirs(os.path.join(self.root, "prompts"))
+        for p in self.products:
+            with open(os.path.join(self.root, "prompts", f"v2.table.{p}.json"), "w", encoding="utf-8") as fh:
+                json.dump({"version": "v2", "product": p, "model_answered": model}, fh)
+
+    def rows(self, minutes, **kw):
+        return [self.row(f"20261023T22{m:02d}00Z", f"2026-10-23T22:{m:02d}:00.400Z", **kw) for m in minutes]
+
+    def test_the_first_v2_rows_are_read_and_a_product_without_one_waits(self):
+        # §10 (11a): "model_answered of the first shakedown rows". The snippet took the last three live rows of each
+        # log's last 64 KB with no spec_sha filter, so SOL's v1 rows counted, a product whose first rows had no answer
+        # read "DIFFERENT", and a product with no log yet raised (the S5 refuter's defect 8)
+        self.tables("jev-1.14.0")
+        self.log("SOL-USD", [self.row(f"20261023T21{m:02d}00Z", "2026-10-23T21:00:00.500Z", v2=False) for m in range(10)]
+                 + self.rows([5], model="jev-1.14.0"))
+        self.log(self.products[1], self.rows([6], absence="jev"))
+        out, stop = self.run_snippet(self.snippet())
+        self.assertIsNone(stop, out)
+        self.assertEqual(out.splitlines(), [
+            "SOL-USD first v2 rows: ['jev-1.14.0'] tables: jev-1.14.0 same",
+            f"{self.products[1]} no answered v2 row yet (tables: jev-1.14.0): run this again in a minute",
+            f"{self.products[2]} no answered v2 row yet (tables: jev-1.14.0): run this again in a minute"])
+
+    def test_another_version_on_the_first_rows_says_rebuild_whatever_answers_later(self):
+        self.tables("jev-1.13.0")
+        for p in self.products:
+            self.log(p, self.rows(range(5, 8), model="jev-1.14.0") + self.rows(range(8, 20), model="jev-1.13.0"))
+        out, stop = self.run_snippet(self.snippet())
+        self.assertIsNone(stop, out)
+        for p, line in zip(self.products, out.splitlines()):
+            self.assertEqual(line, f"{p} first v2 rows: ['jev-1.14.0'] tables: jev-1.13.0 DIFFERENT: rebuild the tables"
+                                   " once (PREREG-v2 §8, §12)")
+
+
 class SealFields(Stores):
     """10.6: T_first_v2 and T0_v2 from the logs."""
 

@@ -579,30 +579,40 @@ Background, the new `com.alexward.jevloop.loop.*` entries ON, as in §7); then t
 cd ~/Projects/jev-paper-loop && make status && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.alexward.jevloop.nightly.plist
 ```
 
-(11a) The answering Jev version of the first shakedown rows against the pinned tables' (§8, §12):
+(11a) The answering Jev version of the first shakedown rows against the pinned tables' (§8, §12): each product's
+first three live rows carrying this tree's SPEC sha (SOL's v1 rows carry prereg-v1's and are not read); a product with
+no such row yet says so and is run again a minute later:
 
 ```bash
 cd ~/Projects/jev-paper-loop && python3 - <<'EOF'
-import json, os
+import hashlib, json
 from loop import config
+with open("SPEC.md", "rb") as fh:
+    sha = hashlib.sha256(fh.read()).hexdigest()
 for p in config.PRODUCTS:
-    path = config.store(p).decisions
-    size = os.path.getsize(path)
-    with open(path, "rb") as fh:
-        fh.seek(max(0, size - 65536))                   # the log's last 64 KB; a line cut by the seek is dropped
-        lines = fh.read().decode("utf-8", "replace").splitlines()[1 if size > 65536 else 0:]
-    got = []
-    for line in lines:
-        try:
-            r = json.loads(line)
-        except ValueError:
-            continue
-        if r.get("mode") == "live" and r.get("absence") is None:
-            got.append(r.get("model_answered"))
     with open(f"prompts/v2.table.{p}.json", encoding="utf-8") as fh:
         pinned = json.load(fh)["model_answered"]
-    print(p, "rows:", sorted(set(got[-3:]), key=str), "tables:", pinned,
-          "same" if set(got[-3:]) == {pinned} else "DIFFERENT: rebuild the tables once (PREREG-v2 §8, §12)")
+    got = []
+    try:
+        with open(config.store(p).decisions, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if sha not in line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(r, dict) and r.get("spec_sha") == sha and r.get("mode") == "live" and r.get("absence") is None:
+                    got.append(r.get("model_answered"))
+                    if len(got) == 3:
+                        break
+    except FileNotFoundError:
+        pass
+    if not got:
+        print(p, f"no answered v2 row yet (tables: {pinned}): run this again in a minute")
+        continue
+    print(p, "first v2 rows:", sorted(set(got), key=str), "tables:", pinned,
+          "same" if set(got) == {pinned} else "DIFFERENT: rebuild the tables once (PREREG-v2 §8, §12)")
 EOF
 ```
 
