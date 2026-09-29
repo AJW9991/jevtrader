@@ -6,7 +6,8 @@ import glob, os, unittest
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CODE = sorted(glob.glob(os.path.join(REPO, "loop", "*.py")) + glob.glob(os.path.join(REPO, "nightly", "*.py"))
-              + [os.path.join(REPO, "nightly", "propose.sh"), os.path.join(REPO, "bin", "promote")])
+              + [os.path.join(REPO, "nightly", "propose.sh"), os.path.join(REPO, "nightly", "trial-night.sh"),
+                 os.path.join(REPO, "bin", "promote")])
 
 
 def _code_lines(path):

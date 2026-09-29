@@ -1164,6 +1164,97 @@ class LiveBranch(unittest.TestCase):
             self.assertIn(f"FAIL proposals/{DAY.isoformat()}.json exists", fh.read())
 
 
+class TrialNight(unittest.TestCase):
+    """nightly/trial-night.sh (PREREG-v2 §8's trial night before the draft tag), driven with a stub claude on a copy of
+    the tree whose slow model id is set: a temp root outside the checkout with a synthetic log and data/HALT (no Jev
+    send), propose.sh's live branch with --root and --date, and only the exit code and the FAIL, claude exit, claude
+    model and "user memory not loaded" lines printed, then PASS or FAIL. The temp root is removed, and nothing is
+    written into the tree."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.token = os.path.join(self.tmp, "token")
+        with open(self.token, "w", encoding="utf-8") as fh:
+            fh.write("sekrit-trial-token\n")
+        self.saw = os.path.join(self.tmp, "saw")
+        os.makedirs(self.saw)
+
+    def _tree(self, model_id=STUB_MODEL):
+        copy = _live_tree(self, model_id)
+        os.makedirs(os.path.join(copy, "tests"))
+        shutil.copy(os.path.join(REPO, "tests", "synth.py"), os.path.join(copy, "tests"))
+        return copy
+
+    def _stub(self, body):
+        p = os.path.join(self.tmp, "claude")
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/bash\n" + body)
+        os.chmod(p, 0o755)
+        return p
+
+    def _run(self, copy, stub):
+        env = _sh_env(self, self.tmp, JEVLOOP_CLAUDE=stub, JEVLOOP_TOKEN_FILE=self.token)
+        return subprocess.run(["/bin/bash", os.path.join(copy, "nightly", "trial-night.sh")], capture_output=True,
+                              text=True, timeout=180, env=env, cwd=copy), env
+
+    ANSWER = ('[ "$1" = --version ] && { echo "9.9.9 (stub claude)"; exit 0; }\n'
+              'printf "%s" "$2" >"SAW/prompt"\n'
+              'd="$CLAUDE_CONFIG_DIR/projects/$(pwd -P | sed "s/[^A-Za-z0-9]/-/g")"\n'
+              'mkdir -p "$d"\n'
+              'printf "%s\\n" \'{"type":"assistant","message":{"model":"claude-stub-1","content":[]}}\' >"$d/0.jsonl"\n'
+              'cat <<"EOF"\n```json\n{"candidates": [{"rationale": "t", "instructions": "Decide.",'
+              ' "criteria": {"buy": "pumping", "sell": "dumping", "hold": "else"}}]}\n```\nEOF\n')
+
+    def test_a_trial_night_that_passes_prints_its_four_lines_and_leaves_nothing(self):
+        copy = self._tree()
+        r, env = self._run(copy, self._stub(self.ANSWER.replace("SAW", self.saw)))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = r.stdout.splitlines()
+        self.assertEqual(out[0], "propose.sh exit 0")
+        self.assertRegex(out[1], r" propose claude cwd .* config dir .*: user memory not loaded; cli 9\.9\.9 \(stub claude\)$")
+        self.assertRegex(out[2], r" propose claude exit 0 after \d+ s wall clock")
+        self.assertRegex(out[3], r" propose claude model claude-stub-1 \(read from the CLI's transcript of this call; requested "
+                                 + re.escape(f"--model {STUB_MODEL})") + "$")
+        self.assertEqual(out[4:], ["PASS: claude answered, one model (claude-stub-1), user memory not loaded"])
+        with open(os.path.join(self.saw, "prompt"), encoding="utf-8") as fh:
+            prompt = fh.read()
+        self.assertIn("# digest 2026-09-30", prompt)                          # the synthetic log's day, of this tree's SPEC
+        self.assertTrue(re.search(r"\nSOL-USD \| ticks [1-9]\d+, ", prompt), "no SOL-USD summary line in the digest")
+        self.assertEqual(sorted(os.listdir(copy)), ["SPEC.md", "loop", "nightly", "tests"])   # nothing written in the tree
+        self.assertEqual(os.listdir(env["TMPDIR"]), [])                        # the temp root, cwd and config dir are gone
+        self.assertNotIn("sekrit-trial-token", r.stdout + r.stderr)
+
+    def test_the_temp_root_is_outside_every_checkout(self):
+        # a TMPDIR inside the tree would put the night's root there: refused before anything is made (exit 3); the
+        # checkouts are this tree and every one `git worktree list` names (the live checkout among them)
+        copy = self._tree()
+        inside = os.path.join(copy, "tmp")
+        os.makedirs(inside)
+        env = _sh_env(self, self.tmp, JEVLOOP_CLAUDE=self._stub("exit 9\n"), JEVLOOP_TOKEN_FILE=self.token, TMPDIR=inside)
+        r = subprocess.run(["/bin/bash", os.path.join(copy, "nightly", "trial-night.sh")], capture_output=True, text=True,
+                           timeout=60, env=env, cwd=copy)
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertIn(f"is inside the checkout {os.path.realpath(copy)}", r.stderr)
+        self.assertEqual(os.listdir(inside), [])
+        with open(os.path.join(REPO, "nightly", "trial-night.sh"), encoding="utf-8") as fh:
+            self.assertIn("worktree list --porcelain", fh.read())
+
+    def test_a_trial_night_that_fails_says_so(self):
+        copy = self._tree()
+        r, _ = self._run(copy, self._stub('[ "$1" = --version ] && { echo "9.9.9"; exit 0; }\necho boom >&2; exit 7\n'))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn(" propose claude exit 7 after ", r.stdout)
+        self.assertIn(" propose FAIL claude exit 7 ", r.stdout)
+        self.assertIn("claude model unrecorded", r.stdout)
+        self.assertTrue(r.stdout.rstrip().endswith("(§8: on a config-dir failure the fallback is to pin the user-memory sha)"))
+        copy = self._tree("")                                                  # the id not yet in §8: no call at all
+        r, _ = self._run(copy, self._stub('echo called >"%s/called"\n' % self.saw))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(" propose FAIL no slow model id", r.stdout)
+        self.assertFalse(os.path.exists(os.path.join(self.saw, "called")))
+
+
 class Capped(unittest.TestCase):
     """nightly/capped.py: the claude call's cap on awake seconds (propose.sh wires it in)."""
     PY = sys.executable                       # /opt/homebrew/bin/python3 under `make test` on the Mac; whatever runs the suite elsewhere
