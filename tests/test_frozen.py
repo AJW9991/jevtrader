@@ -11,7 +11,8 @@ PROTOCOL.md (Alex's signed carve-out, not an input of the measurement); the spen
 figures, the venue fee and the fee columns FEE_BPS_COLUMNS beside the 0 bps primary (a spending
 decision and descriptive report columns, none in a row's meaning; FEE_BPS_PRIMARY, the H1 cell,
 is pinned). The pins were taken 2026-09-28 from bytes identical to the sealed prereg-v1 commit
-(cfaa3f9) for SPEC, PREREG, PROMPT.md and v1.json, and to the promote commit (d155042) for v2.json.
+(cfaa3f9) for SPEC, PREREG, PROMPT.md and v1.json, and to the promote commit (d155042) for v2.json;
+PROMPT.md's was moved to its v2 text (PREREG-v2 §8) on 2026-09-29, in the commit that wrote it.
 
 PREREG-v2's inference constants (§10: "the seeds, L, R, the ranks") are pinned by value as loop/inference_v2.py holds
 them (2026-09-29): H1's and family F's cells in §6's order with their pair, cadence, seed and exact alpha, L, R, the
@@ -27,7 +28,8 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FILES = {                                            # sha256 of the bytes on disk
     "SPEC.md": "5d4f355e181739ae2a65a6496ecddf195d9dde7c7668c7606c19d795c5254ca7",
     "PREREG.md": "28dab0a9cba8bb21a596fe06f3a19302476f42e3efbbe40b41480898266b7882",
-    "nightly/PROMPT.md": "d20cc08e3c757bb7e37f0638037bf3e29b7c4176d371bd8a94233ba7adfdfb6b",
+    "nightly/PROMPT.md": "7ebcd64071700b6da578078e5eec10a846a56852a3c6de54bfd7ce8d786a1e50",   # v2 text (PREREG-v2 §8), 2026-09-29;
+                                                 # v1's d20cc08e... stays in prereg-v1
     "prompts/v1.json": "207ed69be0ce6cb8d22ac81519a4db6845ab92d643c2772f150cabfe9efe57a0",
     "prompts/v2.json": "dcc848e5ad1452bede8631cf0d2f9801175070746ced883857e86366ec4a8ab4",
 }
