@@ -1,43 +1,56 @@
 #!/opt/homebrew/bin/python3
-"""bin/promote -- the human apply step, and the ONLY writer of prompts/ (CONTRACT §5).
+"""bin/promote -- the human apply step, and the ONLY writer of prompts/ (CONTRACT §5), on PREREG-v2 §8's schedule.
 
-Usage:  bin/promote proposals/<date>.json <k>        k = candidate index, from 0
+Usage:  bin/promote proposals/<date>.json <k> --reason "one line"   k = candidate index, from 0
 
-A person runs this at a terminal. It never runs under launchd, from a plist, a cron,
-a hook or another script: nothing in this repo self-deploys, and a wording no one
-read before it went live would turn the measurement into the thing it measures. It
-refuses without a tty for that reason, and refuses on a dirty git tree because a
-promote must be its own commit: every row after it names prompt_b_sha, and that sha
-must point at one committed text, not at a working copy someone was still editing.
-It also refuses while the git tag PREREG_TAG (prereg-v1) is missing: PREREG §10
-requires the tag to exist before the first row whose prompt_b is not v1, and that
-ordering is the only thing that makes it a PRE-registration. It refuses without a tty, and when the json's
-sha256 differs from the `proposal sha256` line of the table beside it. No flag skips any of
-these refusals. --repo only names the git tree the clean-tree and tag checks read
-(default: the checkout this file lives in) and --prompts the prompts root; both exist
-for tests (which replace subprocess.run for git rather than point --repo elsewhere),
-and a person never passes either: --repo aimed at another tree would defeat both checks.
+A person runs this at a terminal. It never runs under launchd, from a plist, a cron, a hook or another script: nothing
+in this repo self-deploys, and a wording no one read before it went live would turn the measurement into the thing it
+measures. It refuses without a tty for that reason, and refuses on a dirty git tree because a promote must be its own
+commit: every row after it names prompt_b_sha and table_sha, and each must point at one committed text. It sends
+nothing: the tables it writes are copied from the proposal night's .table.json.
+--repo names the git tree the checks read (default: the checkout this file lives in), --prompts the prompts root and
+--prereg the PREREG-v2.md read; all three exist for tests (which replace subprocess.run for git rather than point --repo
+elsewhere), and a person never passes any: --repo aimed at another tree would defeat the checks.
 
-May: read the proposal, copy candidate k into prompts/v<N+1>.json as the `action`
-question (with "type": "choice" added: proposals carry none), carry skip/up15/down15
-from v1 byte-for-byte, write the new name to prompts/CURRENT (CURRENT.tmp, then
-os.replace: the loop reads CURRENT every minute, and a truncate-then-write would let a
-tick read an empty file), and print the unified diff of the action question against the
-version that was CURRENT. Warn when the table beside the json says INCOMPLETE: a
-candidate can otherwise be promoted on a table that answered 2 of 81 states.
-May not: touch data/, send anything, read the key, edit any existing prompt file, or
-pick k itself. N is the highest vN.json present, not CURRENT+1: after a rollback
-(CURRENT set back to v1 by hand) the next promote must still get a fresh number.
+A promotion (PREREG-v2 §8), refused unless all of:
+- the annotated tag PREREG_TAG (prereg-v2-seal) exists and is an ancestor of HEAD (§8: `PREREG_TAG` becomes
+  `prereg-v2-seal`; §13: the seal precedes the block);
+- T0_v2 is filled in PREREG-v2.md §12 (read as loop.dash.read_t0_v2 reads it; blank or malformed: refused);
+- the schedule: day N = [T0_v2 + 86,400 (N - 1), T0_v2 + 86,400 N); a promote run on day N has effective day E = N + 1
+  and activation_tick = T0_v2 + 86,400 (E - 1), the first tick of day E. Refused: E < E_MIN (8) or E > E_MAX (22), so
+  none before or during the shakedown; E - E_prev < E_SPACING (7) after the latest promotion of the block; a fourth
+  (MAX_PROMOTIONS 3: days 8, 15, 22 at most); and now >= activation - LEAD_S (the last 600 s of day E - 1);
+- no version is pending (prompts.pending(now) is None): a second pending version is refused, before the schedule;
+- the proposal's .md vouches for the json's bytes (its `proposal sha256` line) and for the .table.json beside it (its
+  `table sha256` line); the table was built from these bytes (its proposal_sha256) against the version CURRENT names
+  (its CURRENT sha is that version file's sha);
+- candidate k's column answers 81 of 81 states with buy, sell or hold on every product in config.PRODUCTS (the
+  product's own 81 strings), and moves at least one state from CURRENT's answer on some product (a candidate that
+  moves 0 of 81 on every product is refused);
+- the candidate is a whole action question with no digit and no product word but {BASE} (prompts.build refuses it for
+  every product before anything is written: the base-token refusal, §1), and --reason is one non-empty line.
+Then, in this order: prompts/v<N+1>.json (N the highest vN.json present, not CURRENT+1) with activation_tick and
+replaces (the version active when it ran), written only if absent; prompts/v<N+1>.table.<product>.json for every
+product, candidate k's column with prompt_sha the new file's; then CURRENT (CURRENT.tmp renamed over it: the loop reads
+it every minute). prompts.current(tick_id) follows `replaces` until the activation, so the loop, the digest and the
+policy table keep asking the version active now until then. It prints the diff of the action question, and the commit
+line: the person's reason with the states moved per product.
+
+May not: touch data/, send anything, read the key, edit an existing version file, or pick k itself.
 """
-import hashlib, argparse, datetime, difflib, json, os, re, subprocess, sys
+import argparse, datetime, difflib, hashlib, json, os, re, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 sys.path.insert(0, REPO)
-from loop import prompts                                   # noqa: E402
+from loop import config, dash, prompts, state                 # noqa: E402
+from nightly import policy_table                                # noqa: E402  (reads a table; its sends are never called)
 
 _VFILE = re.compile(r"^v(\d+)\.json$")
-PREREG_TAG = "prereg-v1"
+PREREG_TAG = "prereg-v2-seal"
+DAY_S = 86400
+E_MIN, E_MAX, E_SPACING, MAX_PROMOTIONS = 8, 22, 7, 3       # PREREG-v2 §8: days 8, 15, 22 at most
+LEAD_S = 600                                                  # refused when now >= activation - 600 s
 
 
 def _attended():
@@ -45,19 +58,28 @@ def _attended():
     return sys.stdin.isatty()
 
 
+def _git(repo, *args):
+    return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True)
+
+
 def clean_tree(repo):
-    r = subprocess.run(["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True)
+    r = _git(repo, "status", "--porcelain")
     if r.returncode != 0:
         raise RuntimeError(f"git status failed: {r.stderr.strip()}")
     return r.stdout.strip() == ""
 
 
 def sealed(repo):
-    """True when PREREG_TAG exists in `repo` (`git tag -l <tag>` prints its name)."""
-    r = subprocess.run(["git", "tag", "-l", PREREG_TAG], cwd=repo, capture_output=True, text=True)
+    """True when the annotated tag PREREG_TAG exists in `repo` and is an ancestor of HEAD."""
+    r = _git(repo, "rev-parse", "-q", "--verify", f"refs/tags/{PREREG_TAG}^{{tag}}")
+    if r.returncode not in (0, 1):                                # 1: no such annotated tag; anything else: git failed
+        raise RuntimeError(f"git rev-parse failed: {r.stderr.strip()}")
     if r.returncode != 0:
-        raise RuntimeError(f"git tag failed: {r.stderr.strip()}")
-    return PREREG_TAG in r.stdout.split()
+        return False
+    r = _git(repo, "merge-base", "--is-ancestor", PREREG_TAG, "HEAD")
+    if r.returncode not in (0, 1):
+        raise RuntimeError(f"git merge-base failed: {r.stderr.strip()}")
+    return r.returncode == 0
 
 
 def next_version(root):
@@ -76,98 +98,229 @@ def diff(cur_name, cur_action, new_name, new_action):
                                           tofile=f"{new_name}.action", lineterm="", n=4))
 
 
-_TABLE_SHA = re.compile(r"^proposal sha256: ([0-9a-f]{64})", re.M)
-_TABLE_HEAD = re.compile(r"requests: (\d+), answered: (\d+), errors: (\d+) -- INCOMPLETE")
+def tick_of(epoch):
+    return time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(epoch))
+
+
+def minute_of(epoch):
+    """The tick_id of the minute `epoch` is in: what prompts.current() and pending() read for "now"."""
+    return time.strftime("%Y%m%dT%H%M00Z", time.gmtime(epoch))
+
+
+def epoch_of(tick):
+    return datetime.datetime.strptime(tick, "%Y%m%dT%H%M%SZ").replace(tzinfo=datetime.timezone.utc).timestamp()
+
+
+def promotions(root, t0):
+    """{version: E} of the block's promotions so far: every vN.json carrying an activation_tick inside the block
+    (T0_v2 .. T0_v2 + 28 d), E its effective day. v1's promote wrote none; only this one writes the key."""
+    out = {}
+    for f in sorted(os.listdir(root)):
+        m = _VFILE.match(f)
+        if not m:
+            continue
+        act = prompts.activation_of(f[:-5], root)
+        if act is None:
+            continue
+        a = epoch_of(act[0])
+        if t0 <= a < t0 + 28 * DAY_S:
+            out[f[:-5]] = int((a - t0) // DAY_S) + 1
+    return out
+
+
+def schedule(now, t0, root):
+    """(E, activation epoch) for a promote run at `now`, or RuntimeError naming the rule it breaks (PREREG-v2 §8)."""
+    n = int((now - t0) // DAY_S) + 1                              # the T0-anchored day now is in (<= 0 before T0_v2)
+    e = n + 1
+    act = t0 + DAY_S * (e - 1)
+    if now < t0:
+        raise RuntimeError(f"before T0_v2 ({tick_of(t0)}): no promotion before or during the shakedown; the first "
+                           f"effective day is {E_MIN} (PREREG-v2 §8)")
+    if e < E_MIN:
+        raise RuntimeError(f"now is day {n}: the effective day would be {e} < {E_MIN}; the first promote runs on day "
+                           f"{E_MIN - 1} (PREREG-v2 §8)")
+    if e > E_MAX:
+        raise RuntimeError(f"now is day {n}: the effective day would be {e} > {E_MAX}; the last promote runs on day "
+                           f"{E_MAX - 1} (PREREG-v2 §8)")
+    if now >= act - LEAD_S:
+        raise RuntimeError(f"now is within {LEAD_S} s of the activation {tick_of(act)} (day {e}): too late on day {n} "
+                           f"(PREREG-v2 §8)")
+    done = promotions(root, t0)
+    if len(done) >= MAX_PROMOTIONS:
+        raise RuntimeError(f"{len(done)} promotions already ({', '.join(sorted(done))}): at most {MAX_PROMOTIONS} (PREREG-v2 §8)")
+    if done and e - max(done.values()) < E_SPACING:
+        last = max(done, key=done.get)
+        raise RuntimeError(f"day {e} is {e - done[last]} day(s) after {last}'s day {done[last]}: the spacing is at least "
+                           f"{E_SPACING} (PREREG-v2 §8)")
+    return e, act
+
+
+def _md(proposal):
+    return proposal[:-5] + ".md" if proposal.endswith(".json") else proposal + ".md"
 
 
 def vouched(proposal, raw):
-    """`raw` are the proposal's bytes, read once by main: the sha checked here and the candidates
-    parsed there are of the same bytes (policy_table reads once for the same reason).
-    proposals/<date>.json is gitignored; the committed proposals/<date>.md carries its sha256
-    (policy_table.render). A mismatch is a refusal: the json was edited after the table was
-    made. No table, or a table without the line (made before 2026-09-26), is a warning: the
-    person at the terminal is promoting a file nothing vouches for. A table marked INCOMPLETE
-    is a warning too: it did not ask the candidate on every state."""
-    md = proposal[:-5] + ".md" if proposal.endswith(".json") else proposal + ".md"
+    """(the .table.json document, its sha) for the proposal whose bytes are `raw` (read once by main): the .md beside it
+    must exist and name `raw`'s sha256 on its `proposal sha256` line and the .table.json's on its `table sha256` line,
+    and the table must say it was built from these bytes. Anything else is a refusal: the json and its table are
+    gitignored, and the committed .md is what vouches for them."""
+    md = _md(proposal)
     try:
         with open(md, encoding="utf-8") as fh:
             text = fh.read()
-    except OSError:
-        print(f"promote: WARNING no policy table beside {proposal}: nothing vouches for this file", file=sys.stderr)
-        return
-    if "-- INCOMPLETE" in text:
-        h = _TABLE_HEAD.search(text)
-        seen = f" (answered {h.group(2)} of {h.group(1)} states)" if h else ""
-        print(f"promote: WARNING {md} is INCOMPLETE{seen}: the candidate was not asked on every state; "
-              "read the table before promoting it", file=sys.stderr)
-    m = _TABLE_SHA.search(text)
-    if not m:
-        print(f"promote: WARNING {md} carries no 'proposal sha256' line: nothing vouches for this file", file=sys.stderr)
-        return
+    except OSError as e:
+        raise RuntimeError(f"no policy table beside {proposal} ({e}): nothing vouches for it") from None
     have = hashlib.sha256(raw).hexdigest()
-    if have != m.group(1):
-        raise RuntimeError(f"{proposal} sha256 {have[:12]} != {m.group(1)[:12]} in {md}: the file changed after its table was made")
+    m = re.search(r"^proposal sha256: ([0-9a-f]{64})", text, re.M)
+    if not m or m.group(1) != have:
+        raise RuntimeError(f"{proposal} sha256 {have[:12]} is not the one {md} names: the file changed after its table was made")
+    tpath = policy_table.table_path(md)
+    try:
+        doc, tsha = policy_table.read_table(tpath)
+    except (OSError, ValueError) as e:
+        raise RuntimeError(f"cannot read {tpath}: {e}") from None
+    if policy_table.vouched_sha(md) != tsha:
+        raise RuntimeError(f"{tpath} sha256 {tsha[:12]} is not the one {md} names: the table changed after it was made")
+    if doc.get("proposal_sha256") != have:
+        raise RuntimeError(f"{tpath} was built from another proposal ({str(doc.get('proposal_sha256'))[:12]}), not {have[:12]}")
+    return doc, tsha
 
 
-def build(v1, cand, version, source, k, today):
-    """The new version document, key order as v1.json. The action is the candidate
-    projected onto the wire keys (prompts.question refuses a wrong shape); the three
-    nouls are v1's own objects, so their serialisation cannot differ from v1's."""
+def column(doc, qid, product):
+    """({state: choice} of wording `qid` on the product's 81 states, {state: CURRENT's choice}, the models that
+    answered), refusing anything short of 81 of 81 answered with buy, sell or hold on exactly the product's strings."""
+    pd = doc["products"].get(product)
+    if pd is None:
+        raise RuntimeError(f"the table has no {product}: it was made for {', '.join(doc['products'])}")
+    want = [state.state_string(a, config.base(product)) for a in state.all_states()]
+    rows = pd["rows"]
+    if [r.get("state") for r in rows] != want:
+        raise RuntimeError(f"the table's {product} rows are not the product's 81 states in order")
+    col, cur, models = {}, {}, set()
+    for r in rows:
+        a = r.get("answers") if isinstance(r.get("answers"), dict) else {}
+        c, k = (a.get(qid) or [None])[0], (a.get(policy_table.CURRENT) or [None])[0]
+        if c not in prompts.TABLE_ANSWERS or k not in prompts.TABLE_ANSWERS:
+            n = sum(1 for x in rows if isinstance(x.get("answers"), dict) and (x["answers"].get(qid) or [None])[0] in prompts.TABLE_ANSWERS)
+            raise RuntimeError(f"{qid} answered {n} of 81 states on {product}: a table is copied only at 81/81 "
+                               f"(policy_table --fill asks the rest)")
+        col[r["state"]], cur[r["state"]] = c, k
+        models.add(str(r.get("model")) if r.get("model") else "none named")
+    return col, cur, sorted(models)
+
+
+def table_file(version, product, prompt_sha, col, models):
+    return {"version": version, "product": product, "prompt_sha": prompt_sha, "model_answered": ", ".join(models),
+            "answers": col}
+
+
+def build(v1, cand, version, source, k, today, activation_tick=None, replaces=None):
+    """The new version document, key order as v1.json with the two activation keys after "frozen". The action is the
+    candidate projected onto the wire keys (prompts.question refuses a wrong shape); the three nouls are v1's own
+    objects, so their serialisation cannot differ from v1's."""
     action = prompts.question({**cand, "type": "choice"}, "choice", f"{source} candidate {k}")
     if any(ch.isdigit() for ch in action["instructions"] + "".join(action["criteria"].values())):
         raise ValueError(f"candidate {k} carries a digit; PROMPT.md forbids numbers")
     why = str(cand.get("rationale", "")).strip()
-    return {"version": version, "frozen": today,
-            "note": f"Promoted by bin/promote from {source} candidate {k}."
-                    + (f" Rationale: {why}" if why else "") + " skip/up15/down15 carried from v1 unchanged.",
-            "action": action, **{q: v1[q] for q in prompts.CARRIED}}
+    doc = {"version": version, "frozen": today}
+    if activation_tick is not None:
+        doc.update(activation_tick=activation_tick, replaces=replaces)
+    doc.update(note=f"Promoted by bin/promote from {source} candidate {k}." + (f" Rationale: {why}" if why else "")
+               + " skip/up15/down15 carried from v1 unchanged.", action=action, **{q: v1[q] for q in prompts.CARRIED})
+    return doc
 
 
-def main(argv=None):
-    ap = argparse.ArgumentParser(prog="promote", description="copy candidate k of a proposal into prompts/v<N+1>.json; "
-                                 "run by a person, never under launchd")
+def _write_new(path, doc):
+    """Written only if absent ('x'): an existing prompt file is never edited."""
+    with open(path, "x", encoding="utf-8") as fh:
+        fh.write(json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
+
+
+def _checks(a):
+    if not _attended():
+        raise RuntimeError("no tty: promote is run by a person at a terminal, never by launchd or a script")
+    if not clean_tree(a.repo):
+        raise RuntimeError("git tree is dirty: commit or stash first, so the promote is its own commit")
+
+
+def main(argv=None, now=None):
+    ap = argparse.ArgumentParser(prog="promote", description="copy candidate k of a proposal into prompts/v<N+1>.json on "
+                                 "PREREG-v2 §8's schedule; run by a person, never under launchd")
     ap.add_argument("proposal", help="proposals/<date>.json")
     ap.add_argument("k", type=int, help="candidate index, from 0")
+    ap.add_argument("--reason", default=None, help="the person's reason, one line: it goes into the promote commit")
     ap.add_argument("--prompts", default=None, help="prompts root (tests)")
     ap.add_argument("--repo", default=REPO, help="git tree to check (tests)")
+    ap.add_argument("--prereg", default=None, help="PREREG-v2.md to read T0_v2 from (tests)")
     a = ap.parse_args(argv)
-    root = a.prompts or prompts.config.PROMPTS
+    root = a.prompts or config.PROMPTS
+    now = time.time() if now is None else now
     try:
-        if not _attended():
-            raise RuntimeError("no tty: promote is run by a person at a terminal, never by launchd or a script")
-        if not clean_tree(a.repo):
-            raise RuntimeError("git tree is dirty: commit or stash first, so the promote is its own commit")
+        _checks(a)
         if not sealed(a.repo):
-            raise RuntimeError(f"no git tag {PREREG_TAG}: PREREG.md §10 must be sealed before the first "
-                               "promote (the first row with prompt_b != v1)")
-        with open(a.proposal, "rb") as fh:                 # read ONCE: vouched and parsed from the same bytes
+            raise RuntimeError(f"no annotated git tag {PREREG_TAG} at or before HEAD: PREREG-v2 is sealed before the "
+                               "first promotion of the block (PREREG-v2 §8, §13)")
+        t0 = dash.read_t0_v2(a.prereg or os.path.join(a.repo, "PREREG-v2.md"))
+        if t0 is None:
+            raise RuntimeError("PREREG-v2.md §12's T0_v2 is blank: no promotion before the block has a T0 (PREREG-v2 §8)")
+        reason = (a.reason or "").strip()
+        if not reason or "\n" in a.reason or "\r" in a.reason:
+            raise RuntimeError("--reason must be one non-empty line: it is the promote commit's line (PREREG-v2 §8)")
+        pend = prompts.pending(minute_of(now), root)
+        if pend is not None:
+            raise RuntimeError(f"{pend} is pending (activates {prompts.activation_of(pend, root)[0]}): a second pending "
+                               "version is refused (PREREG-v2 §8)")
+        e, act = schedule(now, t0, root)
+        with open(a.proposal, "rb") as fh:                      # read ONCE: vouched and parsed from the same bytes
             raw = fh.read()
-        vouched(a.proposal, raw)                           # the committed table names this file's sha, or says so
+        table, _ = vouched(a.proposal, raw)
         doc = json.loads(raw.decode("utf-8"))
-        if not isinstance(doc, dict):                      # an array (or a bare value) is refused like any bad proposal
+        if not isinstance(doc, dict):                           # an array (or a bare value) is refused like any bad proposal
             raise RuntimeError(f"{a.proposal}: not a JSON object with a candidates list")
         cands = doc.get("candidates")
         if not isinstance(cands, list) or not 0 <= a.k < len(cands):
             raise RuntimeError(f"{a.proposal}: no candidate {a.k} (has {len(cands) if isinstance(cands, list) else 0})")
-        v1 = prompts.load("v1", root)
-        cur_name = prompts.current(root=root)
+        cur_name = prompts.named(root)                          # no version is pending: the one CURRENT names is active
         cur_doc = prompts.load(cur_name, root)
+        if table["current"].get("sha") != prompts.sha_of(cur_doc):
+            raise RuntimeError(f"the table's CURRENT sha {str(table['current'].get('sha'))[:12]} is not {cur_name}.json's "
+                               f"{prompts.sha_of(cur_doc)[:12]}: the candidate was scored against another CURRENT (PREREG-v2 §8)")
+        qid = f"cand_{a.k}"
+        cols = {p: column(table, qid, p) for p in config.PRODUCTS}
+        moved = {p: sum(c[0][s] != c[1][s] for s in c[0]) for p, c in cols.items()}
+        if not any(moved.values()):
+            raise RuntimeError(f"{qid} moves 0 of 81 states from {cur_name}'s answer on every product: nothing to promote (PREREG-v2 §8)")
+        v1 = prompts.load("v1", root)
         version = next_version(root)
         target = os.path.join(root, version + ".json")
         if os.path.exists(target):
             raise RuntimeError(f"{target} exists")
-        doc = build(v1, cands[a.k], version, os.path.relpath(a.proposal, REPO), a.k,
-                    datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d"))
-        for p in prompts.config.PRODUCTS:                  # the five wire questions must build, for every product,
-            prompts.build(v1, doc, prompts.config.base(p), v1=v1)   # before anything is written; build() refuses a
-                                                           # product word other than the version's base token
-    except (OSError, ValueError, RuntimeError) as e:       # PromptError is a ValueError
+        new = build(v1, cands[a.k], version, os.path.relpath(a.proposal, REPO), a.k,
+                    datetime.datetime.fromtimestamp(now, datetime.timezone.utc).strftime("%Y-%m-%d"),
+                    tick_of(act), prompts.current(minute_of(now), root))
+        frozen_a = prompts.load(config.FROZEN_A, root)
+        for p in config.PRODUCTS:                               # the five wire questions must build, for every product,
+            prompts.build(frozen_a, new, config.base(p), v1=v1)  # before anything is written; build() refuses a product
+                                                                # word other than the version's base token
+        sha = prompts.sha_of(new)
+        tables = [(p, table_file(version, p, sha, cols[p][0], cols[p][2])) for p in config.PRODUCTS]
+    except (OSError, ValueError, RuntimeError) as e:            # PromptError is a ValueError
         print(f"promote: {e}", file=sys.stderr)
         return 1
-    with open(target, "w", encoding="utf-8") as fh:
-        fh.write(json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
-    # The loop reads CURRENT every minute: written whole beside it, then renamed over it, so no
-    # tick can read a truncated or empty CURRENT (PromptError, an absence "guard" row).
+    try:
+        _write_new(target, new)
+    except OSError as e:                                        # FileExistsError: a second promote wrote it first
+        print(f"promote: {target}: {e}", file=sys.stderr)
+        return 1
+    try:
+        for p, t in tables:                                     # the tables before CURRENT changes (PREREG-v2 §8)
+            _write_new(prompts.table_path(version, p, root), t)
+            prompts.table(version, p, root)                     # read back as the loop will read it, or refuse
+    except (OSError, ValueError) as e:
+        print(f"promote: wrote {target} but not its tables ({e}); CURRENT still names {cur_name}", file=sys.stderr)
+        return 1
+    # The loop reads CURRENT every minute: written whole beside it, then renamed over it, so no tick can read a
+    # truncated or empty CURRENT (PromptError, an absence "guard" row).
     tmp = os.path.join(root, "CURRENT.tmp")
     try:
         with open(os.path.join(root, "CURRENT.tmp"), "w", encoding="utf-8") as fh:   # the one CURRENT writer (test_protocol_scan)
@@ -178,12 +331,17 @@ def main(argv=None):
             os.unlink(tmp)
         except OSError:
             pass
-        print(f"promote: wrote {target} but could not switch CURRENT ({e}); CURRENT still names {cur_name}",
+        print(f"promote: wrote {target} and its tables but could not switch CURRENT ({e}); CURRENT still names {cur_name}",
               file=sys.stderr)
         return 1
-    print(diff(cur_name, cur_doc["action"], version, doc["action"]) or "(action wording identical)")
-    print(f"\npromote: wrote {target}, CURRENT -> {version} (sha {prompts.sha_of(doc)[:12]}); "
-          f"commit prompts/ now, on its own")
+    states_moved = ", ".join(f"{p} {moved[p]}/81" for p in config.PRODUCTS)
+    when = datetime.datetime.fromtimestamp(act, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+    print(diff(cur_name, cur_doc["action"], version, new["action"]) or "(action wording identical)")
+    print(f"\npromote: wrote {target} (sha {sha[:12]}), {len(tables)} table(s), CURRENT -> {version}: pending until "
+          f"{when} (day {e}); B asks {new['replaces']} until then")
+    msg = (f"promote {version} (day {e}, activates {when}) from {os.path.relpath(a.proposal, REPO)} {qid}: {reason}"
+           f" -- states moved: {states_moved}")
+    print(f"commit prompts/ now, on its own, with this line:\n{msg}")
     return 0
 
 
