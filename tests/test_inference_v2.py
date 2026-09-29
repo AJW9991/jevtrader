@@ -3,7 +3,7 @@ NO PROMOTION, void), RESULTS-v2 §0, the fee arithmetic on a hand-built book, an
 the bound and the pooled statistic are held to transcriptions of the text in tests/test_invariants.py; this module holds
 the behaviour. Offline: hand-built rows every 900 s (so each row's t + h is the next row) in memory or in temp
 directories; the live data/, HALT and looks.tsv are never touched."""
-import contextlib, datetime, hashlib, io, json, os, re, subprocess, sys, tempfile, unittest
+import contextlib, datetime, hashlib, io, json, math, os, random, re, subprocess, sys, tempfile, unittest
 from unittest import mock
 
 from fixture_prereg import pin_prereg_v2
@@ -429,6 +429,152 @@ class FeeArithmeticOnAHandBuiltBook(unittest.TestCase):
         lines = inference_v2.fee_reading({900: {"pooled": {a: {"fstar": None, "volume_30d": 0.0} for a in book.ARMS}}}, self.tiers["tiers"])
         self.assertEqual(lines, ["  §11 (fees, descriptive): no arm's pooled break-even fee f*_X, at any cadence, exceeds the taker"
                                  " fee of a tier its own account-level volume reaches: nothing measured here paid at the venue at $1,000"])
+
+
+class FeeArithmeticKeptDaysThroughTheRun(unittest.TestCase):
+    """§6.1-§6.2 through run(): what run() hands report.cadence_table as the kept blocks and the kept days, held to the
+    text by hand. SOL's d02 is BAD (10 of 96 rows jev errors) and B buys on it (row 100, ask 100.01) and sells on d04
+    (row 300, bid 109.99; the mid is 110 from d03's first row): "a fill counts when its tick is on a kept day", so one
+    fill, the sell; E sums the pnl over kept days' ticks, so the buy tick's spread (on d02) is out and the jump (d03's
+    first row) is in; the 30-day volume is the kept fill value x 30 / 27 kept days. P2 has 20 kept days (void, §9.4) and
+    trades: it is in no pooled sum. Both switches sit on decision rows at 900 and 3,600 s."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.p2 = add_products(cls, 2)[1]
+
+        def row(n):
+            if 96 <= n < 192 and (n - 96) % 10 == 5:
+                return {"absence": "jev"}
+            return {"b": "buy" if n == 100 else "sell" if n == 300 else "hold"}
+        sol = _log(mid=lambda n: 100.0 if n < 192 else 110.0, row=row)
+        p2 = _log(cls.p2, days=range(1, 21), mid=lambda n: 50.0 if n < 20 else 60.0,
+                  row=lambda n: {"b": "buy" if n == 0 else "sell" if n == 40 else "hold"})
+        with mock.patch.object(inference_v2, "FEE_COLUMNS", (0.0, 90.0)):
+            cls.out = _run(_store("SOL-USD", sol), _store(cls.p2, p2), descriptive=True)
+
+    def test_a_fill_on_an_excluded_day_and_a_void_product_are_out(self):
+        self.assertEqual(self.out["excluded"] & {(2, "SOL-USD")}, {(2, "SOL-USD")})
+        self.assertEqual((self.out["kept_days"]["SOL-USD"], self.out["void_products"]), (27, {self.p2}))
+        q = 1000.0 / 100.01
+        e0 = q * (110.0 - 100.0 - 0.01) * 10.0                                           # bps of NOTIONAL; the buy's 0.01 is on d02
+        value = q * 109.99                                                               # the one kept fill, the sell
+        for c in (900, 3600):
+            with self.subTest(c=c):
+                fa = self.out["ct"]["fee_arithmetic"][c]
+                self.assertEqual(fa["days"]["SOL-USD"], 27.0)
+                sol, b = fa["per"]["SOL-USD"]["b"], fa["pooled"]["b"]
+                self.assertEqual(sol["fills"], 1)
+                self.assertAlmostEqual(sol["e0"], e0, places=9)
+                self.assertAlmostEqual(sol["e90"], e0 - 90.0 * value / 1000.0, places=9)
+                self.assertAlmostEqual(sol["volume_30d"], value * 30 / 27, places=9)
+                for k in ("e0", "e90", "fills", "value", "volume_30d"):                     # P2, void, is in no pooled sum
+                    self.assertEqual(b[k], sol[k], k)
+                self.assertAlmostEqual(b["fstar"], 90.0 * e0 / (90.0 * value / 1000.0), places=9)
+        self.assertIn(f"      {self.p2}: void (PREREG-v2 §9.4): not pooled", self.out["text"])
+
+
+class PowerAsMeasured(unittest.TestCase):
+    """RESULTS-v2 §5, PREREG-v2 §7's figures as measured, each held to a transcription of the text: z = the one-sided
+    alpha's normal quantile + power 0.80's (§7: 1.95996 + 0.84162 = 2.80159 at 1/40, 2.4977 + 0.8416 = 3.3393 at 1/160);
+    sd = the sample sd of S-bar_k; MDE = z sd / sqrt(n) per block, x 86,400 / c per day; n_eff = f n = the pooled
+    disagreement blocks (a kept product's SIDES differ into or out of a tick in them), counted here from the positions the
+    fixture sets; the MDE on them z sd_dis / sqrt(n_eff); rho = Pearson's r of two pooled products' S_k,p over the blocks
+    both keep. Two products on correlated random walks, every row promoted (F4 read); P2 has no row on d05 (excluded).
+    B is long on rows [0, 1008] and [1504, 2208], A on [304, 704], C never: every switch sits on a decision row at every
+    cadence (multiples of 16), so the sides are known by hand at 900, 3,600 and 14,400 s."""
+    Z_H1, Z_F = 1.95996 + 0.84162, 2.49771 + 0.84162                                    # §7's, to the text's digits
+
+    @classmethod
+    def setUpClass(cls):
+        cls.p2 = add_products(cls, 2)[1]
+        rng = random.Random(20261029)
+        common = [rng.gauss(0.0, 0.05) for _ in range(96 * 28 + 3)]
+        own = [[rng.gauss(0.0, 0.04) for _ in range(96 * 28 + 3)] for _ in range(2)]
+        walks = []
+        for j, (base, beta) in enumerate(((100.0, 1.0), (50.0, 0.5))):
+            w, x = [], base
+            for n in range(96 * 28 + 3):
+                x += beta * common[n] + own[j][n]
+                w.append(round(x, 2))
+            walks.append(w)
+
+        def row(n):
+            b = "buy" if n in (0, 1504) else "sell" if n in (1008, 2208) else "hold"
+            a = "buy" if n == 304 else "sell" if n == 704 else "hold"
+            return {"b": b, "a": a, "promoted": True}
+        sol = _log(mid=lambda n: walks[0][n], row=row)
+        p2 = _log(cls.p2, days=[d for d in range(1, 29) if d != 5], mid=lambda n: walks[1][n], row=row)
+        cls.out = _run(_store("SOL-USD", sol), _store(cls.p2, p2))
+        cls.long = {"b": [(0, 1008), (1504, 2208)], "a": [(304, 704)], "c": []}
+
+    @staticmethod
+    def sd(xs):
+        m = sum(xs) / len(xs)
+        return math.sqrt(sum((x - m) ** 2 for x in xs) / (len(xs) - 1))
+
+    @staticmethod
+    def r(xs, ys):
+        mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
+        return (sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+                / math.sqrt(sum((x - mx) ** 2 for x in xs) * sum((y - my) ** 2 for y in ys)))
+
+    def side(self, arm, n):
+        return any(a <= n < b for a, b in self.long[arm])                               # long out of row n: its buy's row to the sell's
+
+    def hot(self, x, y, c):
+        """The disagreement blocks by hand: a row whose sides differ into it (after the row before) or out of it."""
+        per, out = c // 900, set()
+        for n in range(96 * 28):
+            into = n > 0 and self.side(x, n - 1) != self.side(y, n - 1)
+            if into or self.side(x, n) != self.side(y, n):
+                out.add(n // per)
+        return out
+
+    def figures(self, name):
+        line = _power_line(self.out["text"], name)
+        m = re.search(r": n (\d+); disagreement blocks (\d+) \(f ([\d.]+)%, n_eff (\d+); product-blocks (\d+)\); sd ([\d.]+),"
+                      r" sd_dis ([\d.]+) bps; z ([\d.]+); (?:MDE ([\d.]+) bps/block = ([\d.]+) bps/day|no all-block MDE \([^)]*\));"
+                      r" MDE on the disagreement blocks ([\d.]+) bps/block$", line)
+        self.assertIsNotNone(m, line)
+        return m.groups()
+
+    def test_z_sd_mde_and_n_eff_per_cell(self):
+        for name, x, y, c, z in (("H1", "b", "c", 900, self.Z_H1), ("F1", "b", "c", 3600, self.Z_F), ("F2", "b", "c", 14400, self.Z_F),
+                                 ("F3", "a", "c", 900, self.Z_F), ("F4", "b", "a", 900, self.Z_F)):
+            with self.subTest(cell=name):
+                n, dis, f, n_eff, pdis, sd, sdd, zz, mde, mday, mdd = self.figures(name)
+                series = dict(self.out["cells"][name]["series"])
+                self.assertEqual(int(n), 28 * 86400 // c)                                  # SOL keeps every day
+                hot = self.hot(x, y, c)
+                self.assertEqual((int(dis), int(n_eff)), (len(hot), len(hot)))
+                d05 = range(4 * 86400 // c, 5 * 86400 // c)                                # P2's excluded day: SOL alone
+                self.assertEqual(int(pdis), sum(1 if k in d05 else 2 for k in hot))         # both products' sides are B's and A's
+                self.assertAlmostEqual(float(f), 100.0 * len(hot) / int(n), delta=0.05)
+                self.assertEqual(zz, f"{z:.4f}")                                           # 2.8016 at 1/40, 3.3393 at 1/160
+                vals, dv = list(series.values()), [series[k] for k in sorted(hot)]
+                self.assertAlmostEqual(float(sd), self.sd(vals), delta=0.0005)
+                self.assertAlmostEqual(float(sdd), self.sd(dv), delta=0.0005)
+                self.assertAlmostEqual(float(mdd), z * self.sd(dv) / math.sqrt(len(dv)), delta=0.0006)
+                if name == "F4":
+                    self.assertIsNone(mde)                                                 # §7: no all-block figure for cell 4
+                else:
+                    self.assertAlmostEqual(float(mde), z * self.sd(vals) / math.sqrt(len(vals)), delta=0.0006)
+                    self.assertAlmostEqual(float(mday), z * self.sd(vals) / math.sqrt(len(vals)) * 86400 / c, delta=0.06)
+
+    def test_rho_between_the_pooled_products_over_the_blocks_both_keep(self):
+        text = self.out["text"]
+        for name in ("H1", "F1", "F2", "F3", "F4"):
+            with self.subTest(cell=name):
+                x = self.out["cells"][name]
+                c = x["cell"].c
+                ks = [k for k in range(28 * 86400 // c) if not 4 * 86400 // c <= k < 5 * 86400 // c]   # P2's d05 is excluded
+                want = self.r([x["S_p"]["SOL-USD"].get(k, 0.0) for k in ks], [x["S_p"][self.p2].get(k, 0.0) for k in ks])
+                self.assertTrue(0.2 < abs(want) < 0.99, want)                              # a rho that means something
+                m = re.search(rf"\n    {name}: SOL-USD~{self.p2} (-?[\d.]+) over (\d+)\n", text)
+                self.assertIsNotNone(m, name)
+                self.assertEqual(int(m.group(2)), len(ks))
+                self.assertAlmostEqual(float(m.group(1)), want, delta=0.0005)
 
 
 class MakeResults(unittest.TestCase):
