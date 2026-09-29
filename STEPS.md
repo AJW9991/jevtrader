@@ -7,6 +7,9 @@ step 1. Each step says what it changes and what it does not. Backups use the
 house pattern `<file>.bak-YYYYMMDD-HHMMSS` beside the file (`*.bak-*` is
 gitignored here).
 
+§10 is PREREG-v2's, the second block: the probe's volume, the trial night, v2's tables, the draft
+tag, the switch of 2026-10-23, the seal and the morning check over three stores.
+
 Done on my side, not installed: `SPEC.md` (frozen; its sha goes into every
 row), `PREREG.md` (draft until step 6), the two plists in `launchd/`
 (`plutil -lint` clean). Nothing has been sent to api.typesafe.ai and no key
@@ -364,6 +367,315 @@ nightly's `claude -p`, a child of propose.sh, would inherit that reach.
 Undo: `launchctl bootout gui/$(id -u)/com.alexward.jevloop.backup`. Another destination:
 `bin/backup-data /Volumes/<disk>/jevtrader-backup` (edit the plist's ProgramArguments to
 match, and `tests/test_nightly.py` pins the plist).
+
+## 10. PREREG-v2: the probe's volume, the trial night, v2's tables, the draft tag, the switch, the seal
+
+Written in the build (branch `prereg-v2`, worktree `~/Projects/jev-paper-loop-v2`) and frozen with it by the tag
+`prereg-v2-draft` (PREREG-v2 §10); where this and PREREG-v2.md differ, PREREG-v2.md wins. Until switch step (6) a
+command runs in the worktree unless it names `~/Projects/jev-paper-loop` (the live checkout, `main`); from (6) on the
+build is `main` and everything runs in the live checkout. Nothing here is run by a script, and each step that sends,
+installs or tags is yours.
+
+### 10.1 The probe's volume (2026-10-01 UTC, once) and the products' commit
+
+The probe's run over D = 2026-09-30 (`bin/probe run --day 2026-09-30 --out probe/2026-09-30`, under `caffeinate -i`,
+started by hand before D) ends by itself after D's last slot. On 2026-10-01 (UTC), once (PREREG-v2 §2):
+
+```bash
+cd ~/Projects/jev-paper-loop-v2 && bin/probe volume --day 2026-09-30 --out probe/2026-09-30 && make probe-summarize DIR=probe/2026-09-30
+```
+
+`volume` exits 1 when the candles endpoint does not answer (§2: criterion (2) is then restated in §14).
+`probe-summarize` prints every criterion per candidate, each product's tick and atoms (a10, a90), and the two chosen;
+exit 1 is a void D (§2 names what follows: the next UTC day, once, named in §14 before it starts, and §2's
+`**D = …**` with it, which `bin/seal-check --draft` reads). Commit the directory verbatim, on its own (the run's stderr
+file beside it, if you sent it there, goes in with it or out of the tree: the draft tag wants a clean tree):
+
+```bash
+cd ~/Projects/jev-paper-loop-v2 && git add probe/2026-09-30 && git commit -m "probe/2026-09-30: bin/probe's rows, run.json and volume.json, verbatim (PREREG-v2 §2)"
+```
+
+Then one commit adds the products (tests/test_products_added.py says what it holds): `loop/config.py` (`PRODUCTS` in
+summarize's order, `TICK_P`, `LIQ_ATOMS` from its a10/a90, `LIQ_THIN_FALLBACK`), the pins in `tests/test_frozen.py`
+(`THRESHOLDS`, `RULE_C` per product), and the two loop plists; PREREG-v2.md §2's Products, `TICK_p` and Atoms fields
+and their §14 entry go with it or right after:
+
+```bash
+cd ~/Projects/jev-paper-loop-v2 && bin/plists --write && plutil -lint launchd/*.plist && make test
+```
+
+### 10.2 The trial night (before the draft tag, once §2's products are in)
+
+```bash
+cd ~/Projects/jev-paper-loop-v2 && /bin/bash nightly/trial-night.sh
+```
+
+One real `claude -p` call (PREREG-v2 §8) through this tree's `propose.sh`, on a synthetic three-product log in a temp
+root outside both checkouts; it writes nothing under either tree's `data/`, `logs/` or `proposals/`. It reads only the
+exit code, the `claude exit`, `claude model` and "user memory not loaded" lines and the digest's products. PASS needs
+all of them; its NOT SHOWN line (whether `--settings` still applies under the fresh config dir) is yours to settle
+before the tag, as a §14 entry or an amended §8. A refused model id allows §8's one substitute, written into §8 before
+the tag.
+
+### 10.3 v2's own tables (before the draft tag; attended, 81 sends per product, about $0.01)
+
+`prompts/CURRENT` must name `v2` here (a merge of `main` after one of v1's promotions moves it, and `--table-only`
+then refuses). From the worktree, `jev.py`'s ledger rows land in this tree's `data/sends.tsv` (created by the send,
+gitignored) and `policy_table` reads this tree's `data/HALT`, not the live one, so the first command checks the live
+HALT itself:
+
+```bash
+cd ~/Projects/jev-paper-loop-v2 && test "$(cat prompts/CURRENT)" = v2 && test ! -e ~/Projects/jev-paper-loop/data/HALT && printf '{"candidates": []}\n' > proposals/v2-tables.json && python3 -m nightly.policy_table proposals/v2-tables.json && git add proposals/v2-tables.md && git commit -m "proposals/v2-tables.md: v2's own tables, CURRENT only, no candidate (PREREG-v2 §8)"
+```
+
+```bash
+cd ~/Projects/jev-paper-loop-v2 && bin/promote --table-only proposals/v2-tables.json
+```
+
+Then commit `prompts/v2.table.*.json` with their pins in `tests/test_frozen.py`, the message naming the answering Jev
+version (each table's `model_answered`), and a §14 entry naming the run. An unanswered state is re-sent only by
+`python3 -m nightly.policy_table --fill proposals/v2-tables.table.json` (§8).
+
+### 10.4 The draft tag (before `make results` on 2026-10-23)
+
+First, on `main` (§10: the guard and any other `main` tooling land before the draft tag). The guard is the build's
+commit `097edc0`, made on the tree `main` and `prereg-v2` last shared, so it goes onto `main` cleanly (it touches the
+Makefile's `results` recipe, ERRATA.md, `bin/results-v1` and its test; no loop code). Merged, as below, it is the same
+commit on both branches and the pre-tag merge meets no conflict over it; `git cherry-pick 097edc0` works too, and then
+that merge stops on the Makefile's `results` recipe:
+
+```bash
+cd ~/Projects/jev-paper-loop && git merge --no-ff --no-edit 097edc0 && make test
+```
+
+The backup-job fix (§9) lands on `main` too. Then, on the build branch, all of (PREREG-v2 §10, §13):
+- §1, §2, §3 and §8's pre-tag values written (the products, `TICK_p`, the atoms, arm A's per-product state counts,
+  the slow model's id and its night from `grep 'claude model' ~/Projects/jev-paper-loop/logs/propose.log`), each edit a
+  dated §14 entry saying what its author had read; no `________` left outside §12;
+- SPEC v2 committed; the probe's directory and one v2 table per product committed (10.1, 10.3); the trial night PASS
+  (10.2);
+- `tests/test_frozen.py` pinning by sha what §10 lists (SPEC v2, CONTRACT, PREREG-v2.md, `nightly/PROMPT.md` v2, the
+  sources of `nightly/digest.py` and `nightly/policy_table.py`, `prompts/v2.json`, one v2 table per product,
+  `THRESHOLDS` with `TICK_p` and the atoms, every §14 constant, the inference constants, `RULE_C` per product). The pins
+  of PREREG-v2.md and of the v2 tables stay one per line, `"<path>": "<sha256>",`: after the tag `bin/seal-check`
+  lets only those lines change in that file.
+
+Then (§13), the merge of `main`, the suite and a push:
+
+```bash
+cd ~/Projects/jev-paper-loop-v2 && git merge --no-edit main && make test && git push origin prereg-v2
+```
+
+If the merge stops on the Makefile's `results` recipe (the guard cherry-picked rather than merged; main's recipe is
+v1's run behind the guard, the build's is v2's, which checks `prereg-v2-seal`): keep the build's recipe and main's
+other hunks, `make test`, commit. ERRATA.md: the v2 deviations table stays last. Once CI is green on that sha (`gh run list --branch prereg-v2 --limit 1`):
+
+```bash
+cd ~/Projects/jev-paper-loop-v2 && test -z "$(git status --porcelain)" && bin/seal-check --draft && git tag -a prereg-v2-draft -m "frozen before make results (v1)" HEAD && git push origin prereg-v2-draft
+```
+
+`bin/seal-check --draft` refuses a `________` left outside §12, a missing `probe/<D>/` file or v2 table, and an edit of
+PREREG-v2.md since `prereg-v2-doc` while §14 reads "(none yet)". From the tag until switch step (6), `main` takes only
+RESULTS.md, HANDOFF.md, additions at the end of ERRATA.md (under a heading of their own: rows under the v2 deviations
+heading are read as deviations), `proposals/`, `data/exclusions.tsv` and v1's `bin/promote` commits (§13).
+
+### 10.5 The switch (2026-10-23, after `make results`: PREREG-v2 §10's steps 1-11a)
+
+One terminal, in order (steps 5 and 9 share a shell variable). A stop anywhere from (6) to (8) is
+`cd ~/Projects/jev-paper-loop && git reset --hard ORIG_HEAD` and a re-bootstrap of v1's SOL loop
+(`launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.alexward.jevloop.loop.plist`, and the nightly).
+
+(1) v1's day 28, not before ~21:56Z (the last block's t + h row); it refuses, exit 3, until then, and without the draft
+tag on `prereg-v2` (`make results NO_V2=1` only if v2 is not run: it says so in RESULTS.md):
+
+```bash
+cd ~/Projects/jev-paper-loop && tail -1 data/decisions.jsonl | cut -c1-40 && make results
+```
+
+(2) RESULTS.md with v1's `data/exclusions.tsv`, or a line that it is absent:
+
+```bash
+cd ~/Projects/jev-paper-loop && if [ -e data/exclusions.tsv ]; then git add RESULTS.md data/exclusions.tsv && git commit -m "RESULTS.md (v1) and data/exclusions.tsv"; else git add RESULTS.md && git commit -m "RESULTS.md (v1); data/exclusions.tsv is absent: no day was listed"; fi
+```
+
+(3) The tag:
+
+```bash
+cd ~/Projects/jev-paper-loop && git tag -a results-v1 -m "v1's result (PREREG.md), committed" HEAD && git push origin results-v1
+```
+
+(4) In the worktree: merge `main`, the suite there, and the ancestry, or stop with v1 running:
+
+```bash
+cd ~/Projects/jev-paper-loop-v2 && git merge --no-edit main && make test && git merge-base --is-ancestor main prereg-v2 && echo "(4) OK"
+```
+
+(4a) The nightly: booted out after 07:30Z on the switch day (§10) and bootstrapped again after (11). It fires at 03:30
+local (08:30Z while Chicago is on CDT): boot it out before then and 10-23 has no night, or after its night has
+finished (`tail -3 logs/propose.log`):
+
+```bash
+launchctl bootout gui/$(id -u)/com.alexward.jevloop.nightly
+```
+
+(5) Wait for this minute's SOL heartbeat, then boot the SOL loop out and keep the minute for (9):
+
+```bash
+cd ~/Projects/jev-paper-loop && M=$(date -u +%Y-%m-%dT%H:%M) && until grep -q "^$M" data/heartbeat; do sleep 1; done && launchctl bootout gui/$(id -u)/com.alexward.jevloop.loop && OUT=$(date -u +%H%M) && echo "SOL out at $OUT"
+```
+
+(6) `main` takes the build; (7) the suite:
+
+```bash
+cd ~/Projects/jev-paper-loop && git merge --ff-only prereg-v2 && make test
+```
+
+(8) CURRENT names `v2`, or is set to it and committed, naming what it replaced; else the line in HANDOFF.md:
+
+```bash
+cd ~/Projects/jev-paper-loop && WAS=$(cat prompts/CURRENT) && if [ "$WAS" = v2 ]; then echo "- $(date -u +%Y-%m-%dT%H:%MZ) switch step 8: CURRENT already v2" >> HANDOFF.md; else printf 'v2\n' > prompts/CURRENT && git add prompts/CURRENT && git commit -m "prompts/CURRENT: v2 at the switch (PREREG-v2 §10 step 8), replacing $WAS"; fi
+```
+
+(8a) `data/HALT` absent, or its v1 cause recorded (HANDOFF.md) and the file removed:
+
+```bash
+cd ~/Projects/jev-paper-loop && if [ -e data/HALT ]; then cat data/HALT; fi
+```
+
+(8b) Every plist in `launchd/` into `~/Library/LaunchAgents`, each compared. The one-process plist is in
+`launchd/one-process/` and is not copied; the nightly and backup plists are unchanged, so their copies are the same
+bytes:
+
+```bash
+cd ~/Projects/jev-paper-loop && plutil -lint launchd/*.plist && for f in launchd/*.plist; do cp "$f" ~/Library/LaunchAgents/ && cmp "$f" "$HOME/Library/LaunchAgents/${f#launchd/}" || echo "DIFFERS: $f"; done
+```
+
+(9) SOL in a later minute than its bootout:
+
+```bash
+until [ "$(date -u +%H%M)" != "$OUT" ]; do sleep 1; done; launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.alexward.jevloop.loop.plist
+```
+
+(10) The two named products:
+
+```bash
+cd ~/Projects/jev-paper-loop && for p in $(python3 -c 'from loop import config; print(*[p for p in config.PRODUCTS if p != config.PRODUCT])'); do launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.alexward.jevloop.loop.$p.plist; done
+```
+
+(11) Two minutes later, three heartbeats (and in System Settings → General → Login Items & Extensions → Allow in the
+Background, the new `com.alexward.jevloop.loop.*` entries ON, as in §7); then the nightly again:
+
+```bash
+cd ~/Projects/jev-paper-loop && make status && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.alexward.jevloop.nightly.plist
+```
+
+(11a) The answering Jev version of the first shakedown rows against the pinned tables' (§8, §12):
+
+```bash
+cd ~/Projects/jev-paper-loop && python3 - <<'EOF'
+import json, os
+from loop import config
+for p in config.PRODUCTS:
+    path = config.store(p).decisions
+    size = os.path.getsize(path)
+    with open(path, "rb") as fh:
+        fh.seek(max(0, size - 65536))                   # the log's last 64 KB; a line cut by the seek is dropped
+        lines = fh.read().decode("utf-8", "replace").splitlines()[1 if size > 65536 else 0:]
+    got = []
+    for line in lines:
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if r.get("mode") == "live" and r.get("absence") is None:
+            got.append(r.get("model_answered"))
+    with open(f"prompts/v2.table.{p}.json", encoding="utf-8") as fh:
+        pinned = json.load(fh)["model_answered"]
+    print(p, "rows:", sorted(set(got[-3:]), key=str), "tables:", pinned,
+          "same" if set(got[-3:]) == {pinned} else "DIFFERENT: rebuild the tables once (PREREG-v2 §8, §12)")
+EOF
+```
+
+Different: the tables are rebuilt once, as in 10.3 but from `~/Projects/jev-paper-loop` (proposal
+`proposals/v2-tables-rebuild.json`); `bin/promote --table-only` allows one rebuild after the draft tag, for a Jev
+version other than the pinned one, and none after the seal. One commit holds the rebuilt tables, §12's line
+("Tables rebuilt at the switch: `<version>; <product> <sha, 12 hex or more>, ...`", the shas `--table-only` prints) and
+the pins of both in `tests/test_frozen.py`. Same: §12's line reads `no` (it can go in with the seal's fields).
+
+### 10.6 The seal (on `main`, once §12 is filled, before T0_v2)
+
+T_first_v2 is the latest, over products, of each product's first live row carrying this tree's SPEC sha (§2), read as
+that row's `ts_rx` (its decision time; `tick_id` is the minute it is filed under); T0_v2 is the first minute boundary
+at or after T_first_v2 + 86,400 s:
+
+```bash
+cd ~/Projects/jev-paper-loop && python3 - <<'EOF'
+import datetime, hashlib, json
+from loop import config
+with open("SPEC.md", "rb") as fh:
+    sha = hashlib.sha256(fh.read()).hexdigest()
+first = {}
+for p in config.PRODUCTS:
+    with open(config.store(p).decisions, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(r, dict) and r.get("spec_sha") == sha and r.get("mode") == "live" and r.get("absence") is None:
+                first[p] = datetime.datetime.fromisoformat(r["ts_rx"].replace("Z", "+00:00"))
+                print(p, "first v2 live row:", r["tick_id"], r["ts_rx"])
+                break
+missing = [p for p in config.PRODUCTS if p not in first]
+if missing:
+    raise SystemExit(f"no v2 live row yet for {missing}")
+t = max(first.values())
+end = t + datetime.timedelta(days=1)
+t0 = end.replace(second=0, microsecond=0) + datetime.timedelta(minutes=1 if (end.second or end.microsecond) else 0)
+print("T_first_v2:", t.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z", "  T0_v2:", t0.strftime("%Y%m%dT%H%M00Z"))
+EOF
+```
+
+Fill §12 in one commit with the PREREG-v2.md pin in `tests/test_frozen.py`: the fee tiers as read in-account, with the
+read time (`Fee tiers (30-day band / maker / taker, read UTC `2026-10-24T09:00Z`): `$0-$10K / 0.60 % / 1.20 %;
+$10K-$50K / ...``, rows joined by `;`, the form `make dash` and the report read), the rebuild line if (11a) did not
+write it, T_first_v2, T0_v2 (a tick_id, `YYYYMMDDTHHMM00Z`), who sealed and the date. Then:
+
+```bash
+cd ~/Projects/jev-paper-loop && bin/seal-check && git tag -a prereg-v2-seal -m "PREREG-v2 sealed" HEAD && git push origin prereg-v2-seal
+```
+
+`bin/seal-check` prints the whole `-U0` diff from the draft tag and each check, (a)-(e); (e) is `make test`, a few
+minutes. A fix it refuses that §13 (c) does not cover is its own commit and one row at the end of ERRATA.md's v2
+deviations table. Not sealed before T0_v2: the block has not started; T0_v2 is re-derived at sealing from the commit
+time of the fix that lets `bin/seal-check` pass (§13). No seal by 2026-11-06: RESULTS.md records v2 as not run.
+
+### 10.7 Every morning
+
+```bash
+cd ~/Projects/jev-paper-loop && make status
+```
+
+Three heartbeats, one per store; HALT; each `data/PAUSE.<PRODUCT>`; a pending version on its own line; today's spend
+over every product's log against the tripwire (0.25 × products); the sample day from §12's T0_v2. `make backup` beside
+it while the hourly job is out (§9). The day-14 look is `make health` and nothing more (§9.5).
+
+### 10.8 Only if the shakedown shows `feed: http-429` lines: the one-process plist
+
+```bash
+cd ~/Projects/jev-paper-loop && grep -c 'feed: http-429' logs/loop-launchd*.log
+```
+
+It replaces every loop plist (a product ticked twice writes lock rows), so each one is booted out and disabled, which
+keeps it from loading again at the next login, before it is bootstrapped; launchd only, not the repo (§2):
+
+```bash
+cd ~/Projects/jev-paper-loop && for l in com.alexward.jevloop.loop $(python3 -c 'from loop import config; print(*["com.alexward.jevloop.loop." + p for p in config.PRODUCTS if p != config.PRODUCT])'); do launchctl bootout gui/$(id -u)/$l; launchctl disable gui/$(id -u)/$l; done; plutil -lint launchd/one-process/com.alexward.jevloop.loop.every-product.plist && cp launchd/one-process/com.alexward.jevloop.loop.every-product.plist ~/Library/LaunchAgents/ && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.alexward.jevloop.loop.every-product.plist
+```
+
+Back: `launchctl bootout gui/$(id -u)/com.alexward.jevloop.loop.every-product`, remove its file from
+`~/Library/LaunchAgents`, then `launchctl enable` and `launchctl bootstrap` each loop plist. Its log is
+`logs/loop-launchd-every-product.log`.
 
 ---
 
