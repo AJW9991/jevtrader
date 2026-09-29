@@ -672,14 +672,17 @@ class PinnedPrereg(unittest.TestCase):
 
     def test_every_program_reads_the_pin_and_never_the_repositorys_prereg(self):
         tmp = self.enterContext(tempfile.TemporaryDirectory())
-        repo_prereg = os.path.realpath(os.path.join(config.REPO, "PREREG.md"))
+        # the repository's PREREG-v2.md too: its §12 is filled at the seal, and a v2 T0 read from it replaced this
+        # pin's T0 on every screen, so make test failed on the sealed tree and bin/seal-check's (e) with it
+        repo_prereg = {os.path.realpath(os.path.join(config.REPO, name)) for name in ("PREREG.md", "PREREG-v2.md")}
         real_open = open
 
         def guarded(file, *a, **k):
-            if isinstance(file, (str, bytes, os.PathLike)) and os.path.realpath(file) == repo_prereg:
+            if isinstance(file, (str, bytes, os.PathLike)) and os.path.realpath(file) in repo_prereg:
                 raise AssertionError(f"{file} was opened while a PREREG was pinned")
             return real_open(file, *a, **k)
         path = pin_prereg(self, self.LATER)
+        pin_prereg_v2(self)                                             # v2's §12 blank: this test is v1's T0
         pin_v1(self)
         log = os.path.join(tmp, "decisions.jsonl")
         _write(log, [_row(m) for m in range(20)], garbage=False)       # 2026-09-23 10:00 .. 10:19, before any T0 here
