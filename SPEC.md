@@ -135,7 +135,7 @@ Where (`config.store(product)`): `data/decisions.jsonl` for `SOL-USD` (v1's path
   exception at the columns stage keeps the answer with `absence: "jev"`, `jev.error:
   "unexpected"` (folded from ERRATA.md). `columns` is `{"a": null, "b": null, "d": null}` —
   each arm's value is `null` itself, not a dict of nulls (CONTRACT §3 step 5) — whenever the tick
-  did not reach step 7 (dry, every absence, a refused answer); otherwise `a` and `b` are the full
+  did not reach §13's step 6, the columns (dry, every absence, a refused answer); otherwise `a` and `b` are the full
   dicts of §9 and `d` is the table's answer for `state` (§7), `null` when the tick has no table
   or the table lacks the state. `rule_c` is present whenever the state was computed, absence or
   not, dry or live; `null` only when the tick stopped before the state was computed.
@@ -269,7 +269,7 @@ looks up:
 `{BASE}` is `config.base(product)` = `product.split("-")[0]`: `SOL` for `SOL-USD` (v1's string,
 byte for byte), the probe products' bases for theirs; a base that is not capital ASCII letters is
 refused. The product name is the first word (PREREG-v2 §8), so one wording reads identically for
-every product up to that word. Ten words after the colon, no digit (a digit raises), no position
+every product up to that word. Eight words after the colon, no digit (a digit raises), no position
 (the two arms share one request on one state, and a position would differ per arm). The 81 = 3⁴
 states are enumerated in one fixed order (`state.all_states()`: `liq`, `flow`, `trend`, `vol`,
 each in alphabet order, `vol` fastest); the nightly's policy tables, arm D's tables and the

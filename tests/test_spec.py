@@ -401,6 +401,25 @@ class Row(unittest.TestCase):
         self.assertIn(f'"v": {cycle.ROW_V},', block)
 
 
+class Wording(unittest.TestCase):
+    """Two slips the S6 refuter found: §5 counted the state string's words after the colon as ten (v1's text; there
+    are eight), and §2 named the columns step by CONTRACT §3's number (7) where §13, SPEC's own list, numbers it 6."""
+
+    def test_section_5_counts_the_state_strings_words(self):
+        from loop import state
+        said = re.search(r"\b(\w+) words after the colon\b", section(spec_text(), 5))
+        self.assertIsNotNone(said)
+        numbers = {"six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12}
+        for a in state.all_states():
+            self.assertEqual(len(state.state_string(a).split(":", 1)[1].split()), numbers[said.group(1).lower()])
+
+    def test_section_2_names_the_columns_step_by_section_13s_number(self):
+        said = re.search(r"did not reach §13's step (\d+), the columns", " ".join(section(spec_text(), 2).split()))
+        self.assertIsNotNone(said)
+        step = re.search(rf"^{said.group(1)}\. (\w+)", section(spec_text(), 13), re.M)
+        self.assertEqual(step.group(1), "Columns")
+
+
 class LiqTable(unittest.TestCase):
     def test_section_5_gives_every_product_its_tick_and_atoms_as_config_holds_them(self):
         # PREREG-v2 §3: TICK_p per product in config.py, the atoms from the product's window; the commit that adds the

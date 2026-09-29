@@ -33,7 +33,7 @@ from test_spec import load, spec14
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 FILES = {                                            # sha256 of the bytes on disk
-    "SPEC.md": "6ca448f64193b9bbceb010419c708be9def605f983fdd6896e58beaa4c936d81",   # SPEC v2 (PREREG-v2 §10), 2026-09-29;
+    "SPEC.md": "d4173afaf261f984c179337140a86f71991cf0fe061984ba5b4f65ccd3d9be78",   # SPEC v2 (PREREG-v2 §10), 2026-09-29;
                                                  # v1's 5d4f355e... stays in prereg-v1 (V1_FILES)
     "CONTRACT.md": "16e71638a8eb7f125fa01c4128e14d369bf148bc803d8d1d9276ad173c4e2725",   # v2's interfaces, 2026-09-29
     "PREREG-v2.md": "0b417be4cc2f4555ab004f2187bb6eab3f487c33785aa26c3c05d6a451e602e6",
