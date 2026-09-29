@@ -35,7 +35,43 @@ class PromptsTest(unittest.TestCase):
     def test_live_current_loads_and_builds_whatever_it_is(self):
         # the repo's own prompts/: CURRENT names one version that exists and builds four wire
         # questions with v1's skip/up15/down15 byte-identical (bin/promote's promise), whatever N is
-        cur = prompts.current()
+        self._check_live()
+
+    def test_at_the_switch_a_v1_era_current_passes_as_what_it_is(self):
+        # PREREG-v2 §10: switch step 4 merges main into prereg-v2 and runs make test, step 7 runs it on main,
+        # and only step 8 sets CURRENT to v2. A v1 promotion before 2026-10-23 leaves CURRENT naming a v3
+        # that v1's bin/promote wrote: SOL in its words and no activation keys. v2's loader refuses SOL in a
+        # v3 (§1), and this module's live-CURRENT check failed on it, which stops the switch ("or stop with v1
+        # running"). The check now names that state for what it is -- refused for SOL, while v2, the version
+        # step 8 names, builds -- and still fails on anything else the loader refuses.
+        root = os.path.join(self.tmp, "prompts")
+        os.makedirs(root)
+        for v in ("v1", "v2"):
+            shutil.copy(os.path.join(config.REPO, "prompts", v + ".json"), root)
+        v3 = prompts.load("v2")
+        v3.update(version="v3", frozen="2026-10-10")                                  # as v1's bin/promote writes it
+        with open(os.path.join(root, "v3.json"), "w", encoding="utf-8") as fh:
+            json.dump(v3, fh, ensure_ascii=False)
+        with open(os.path.join(root, "CURRENT"), "w", encoding="utf-8") as fh:
+            fh.write("v3\n")
+        with mock.patch.object(config, "PROMPTS", root):
+            self._check_live()                                                     # passes: refused for SOL, v2 builds
+            v3["action"]["instructions"] += " Unlike ETH."                         # another product word: still fails
+            with open(os.path.join(root, "v3.json"), "w", encoding="utf-8") as fh:
+                json.dump(v3, fh, ensure_ascii=False)
+            with self.assertRaises(prompts.PromptError):
+                self._check_live()
+            v3["action"]["instructions"] = prompts.load("v2")["action"]["instructions"]
+            v3.update(activation_tick="20261101T214000Z", replaces="v2")          # v2's bin/promote wrote it: fails
+            with open(os.path.join(root, "v3.json"), "w", encoding="utf-8") as fh:
+                json.dump(v3, fh, ensure_ascii=False)
+            with mock.patch("time.time", return_value=1793655600.0), \
+                    self.assertRaises(prompts.PromptError):                        # 2026-11-02: v3 active, asked
+                self._check_live()
+
+    def _check_live(self):
+        cur = prompts.named()
+        cur = config.FROZEN_A if self._v1_era(cur) else prompts.current()        # v2: what switch step 8 names
         live = prompts.load(cur)
         q = prompts.build(prompts.load("v1"), live, "SOL", v1=self.v1)
         self.assertEqual(sorted(q), ["a_action", "b_action", "down15", "skip", "up15"])
@@ -45,6 +81,24 @@ class PromptsTest(unittest.TestCase):
             self.assertEqual(q["a_action"], q["b_action"])
         else:
             self.assertNotEqual(q["a_action"], q["b_action"])
+
+    @staticmethod
+    def _v1_era(name):
+        """CURRENT names a file v1's bin/promote wrote before the switch: v3 or later, none of the activation keys
+        v2's bin/promote always writes (PREREG-v2 §8), refused by v2's loader, and sound under v1's own rule
+        (SOL its only product word, as in v2.json). Anything else the loader refuses is not this."""
+        if prompts.placeholder(name) != prompts.BASE_TOKEN:
+            return False
+        with open(os.path.join(config.PROMPTS, name + ".json"), encoding="utf-8") as fh:
+            doc = json.load(fh)
+        if not isinstance(doc, dict) or "activation_tick" in doc or "replaces" in doc:
+            return False
+        try:
+            prompts.load(name)
+            return False
+        except prompts.PromptError:
+            prompts.check_words(doc, "v2", name)                                   # raises unless SOL is its only word
+            return True
 
     # --- CONTRACT §6: sha is stable ---------------------------------------------
     def test_sha_stable_across_reserialisation(self):
