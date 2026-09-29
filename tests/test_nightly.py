@@ -3,7 +3,7 @@ table enumerates 81 digit-free states and sends nothing in --dry;
 propose.sh --dry turns the fixture reply into a proposals json. Offline: loop.jev.ask
 is mocked wherever the table is run, subprocess.run is mocked for git, and every
 write lands in a temp dir. Nothing here opens a socket."""
-import ast, datetime, hashlib, importlib.util, io, json, os, plistlib, re, shutil, signal, subprocess, sys, tempfile, time, unittest, urllib.request
+import ast, datetime, hashlib, importlib.machinery, importlib.util, io, json, os, plistlib, re, shutil, signal, subprocess, sys, tempfile, time, unittest, urllib.request
 from contextlib import redirect_stdout
 from unittest import mock
 
@@ -1799,8 +1799,17 @@ class Capped(unittest.TestCase):
         self.assertIn('[ $rc -eq 124 ] && fail "claude capped', src)
 
 
+def _load_plists():
+    path = os.path.join(REPO, "bin", "plists")
+    loader = importlib.machinery.SourceFileLoader("plists_under_test", path)
+    spec = importlib.util.spec_from_file_location("plists_under_test", path, loader=loader)
+    m = importlib.util.module_from_spec(spec)
+    loader.exec_module(m)
+    return m
+
+
 class LaunchdPlists(unittest.TestCase):
-    """Both launchd/*.plist files are well-formed XML and parse to exactly the keys and values
+    """Every launchd/*.plist file is well-formed XML and parse to exactly the keys and values
     STEPS.md installs. A '--' inside a comment (XML 1.0 §2.5 forbids it) made expat and xmllint
     refuse the whole loop plist, though the installed copy loads on the Mac (Apple's reader looks
     only for a comment's end), and nothing parsed either file, so a real break, a missing
@@ -1842,7 +1851,35 @@ class LaunchdPlists(unittest.TestCase):
             "StandardOutPath": HOME + "/logs/backup-launchd.log",
             "StandardErrorPath": HOME + "/logs/backup-launchd.log",
             "RunAtLoad": True},
+        # PREREG-v2 §2's one-process mode, built beside the per-product loops and installed only instead of them: in a
+        # directory of its own, so switch step 8b's copy of launchd/*.plist never installs it beside them
+        "one-process/com.alexward.jevloop.loop.every-product.plist": {
+            "Label": "com.alexward.jevloop.loop.every-product",
+            "ProgramArguments": ["/opt/homebrew/bin/python3", "-m", "loop.cycle", "--once", "--every-product"],
+            "WorkingDirectory": HOME,
+            "StartCalendarInterval": {},
+            "RunAtLoad": True,
+            "EnvironmentVariables": {"PATH": PATH},
+            "StandardOutPath": HOME + "/logs/loop-launchd-every-product.log",
+            "StandardErrorPath": HOME + "/logs/loop-launchd-every-product.log"},
     }
+
+    @staticmethod
+    def product_plist(p, home=HOME, path=PATH):
+        """An added product's loop plist (PREREG-v2 §2, §10): SOL's loop with its own label, JEVLOOP_PRODUCT and log."""
+        return {"Label": f"com.alexward.jevloop.loop.{p}",
+                "ProgramArguments": ["/opt/homebrew/bin/python3", "-m", "loop.cycle", "--once"],
+                "WorkingDirectory": home,
+                "StartCalendarInterval": {},
+                "RunAtLoad": True,
+                "EnvironmentVariables": {"PATH": path, "JEVLOOP_PRODUCT": p},
+                "StandardOutPath": home + f"/logs/loop-launchd-{p}.log",
+                "StandardErrorPath": home + f"/logs/loop-launchd-{p}.log"}
+
+    for _p in config.PRODUCTS:                       # one pinned plist per product in config.PRODUCTS but SOL-USD
+        if _p != config.PRODUCT:
+            EXPECTED[f"com.alexward.jevloop.loop.{_p}.plist"] = product_plist(_p)
+    del _p
 
     @staticmethod
     def _typed(v):
@@ -1855,13 +1892,77 @@ class LaunchdPlists(unittest.TestCase):
 
     def test_every_plist_parses_to_its_pinned_keys_and_values(self):
         here = os.path.join(REPO, "launchd")
-        names = sorted(n for n in os.listdir(here) if n.endswith(".plist"))
+        names = sorted(os.path.relpath(os.path.join(d, n), here) for d, _, ns in os.walk(here) for n in ns if n.endswith(".plist"))
         self.assertEqual(names, sorted(self.EXPECTED))                  # a new plist gets pinned here too
         for name in names:
             with self.subTest(plist=name):
                 with open(os.path.join(here, name), "rb") as fh:
                     got = plistlib.load(fh, fmt=plistlib.FMT_XML)
                 self.assertEqual(self._typed(got), self._typed(self.EXPECTED[name]))
+
+    def test_the_template_writes_each_added_products_pinned_plist(self):
+        # bin/plists renders launchd/loop-product.plist.in for a product; checked on stand-ins (fixture_products) before
+        # the probe's products exist, so their commit meets a template already held to the pinned shape
+        plists = _load_plists()
+        for p in ("ETH-USD", "XRP-USD", "DOGE-USD"):
+            with self.subTest(product=p):
+                raw = plists.render(p).encode("utf-8")
+                self.assertNotIn(b"@PRODUCT@", raw)
+                self.assertEqual(self._typed(plistlib.loads(raw, fmt=plistlib.FMT_XML)), self._typed(self.product_plist(p)))
+                self.assertEqual(self._strict_problems(raw), [])
+                text = raw.decode("utf-8")
+                self.assertEqual([m.group(1) for m in re.finditer(r"<!--(.*?)-->", text, re.S)
+                                  if "--" in m.group(1) or m.group(1).endswith("-")], [])
+        with self.assertRaises(ValueError):
+            plists.render("../x")
+
+    def test_bin_plists_holds_launchd_to_config_products(self):
+        plists = _load_plists()
+        r = subprocess.run([sys.executable, os.path.join(REPO, "bin", "plists")], capture_output=True, text=True,
+                           encoding="utf-8", timeout=60, env=_sh_env(self))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)          # the committed tree: one plist per added product
+        for p in config.PRODUCTS:
+            if p != config.PRODUCT:
+                with open(os.path.join(REPO, "launchd", f"com.alexward.jevloop.loop.{p}.plist"), encoding="utf-8") as fh:
+                    self.assertEqual(fh.read(), plists.render(p))
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        shutil.copytree(os.path.join(REPO, "launchd"), tmp, dirs_exist_ok=True)
+        with mock.patch.object(config, "PRODUCTS", ("SOL-USD", "ETH-USD", "XRP-USD")):
+            out = io.StringIO()
+            with redirect_stdout(out):
+                code = plists.main([], launchd=tmp)
+            self.assertEqual(code, 1)
+            self.assertIn("plists: com.alexward.jevloop.loop.ETH-USD.plist: missing (bin/plists --write)", out.getvalue())
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(plists.main(["--write"], launchd=tmp), 0)
+            for p in ("ETH-USD", "XRP-USD"):
+                with open(os.path.join(tmp, f"com.alexward.jevloop.loop.{p}.plist"), encoding="utf-8") as fh:
+                    self.assertEqual(fh.read(), plists.render(p, tmp))
+            self.assertFalse(os.path.exists(os.path.join(tmp, "com.alexward.jevloop.loop.SOL-USD.plist")))
+            with open(os.path.join(tmp, "com.alexward.jevloop.loop.XRP-USD.plist"), "a", encoding="utf-8") as fh:
+                fh.write("\n")
+            with open(os.path.join(tmp, "com.alexward.jevloop.loop.BTC-USD.plist"), "w", encoding="utf-8") as fh:
+                fh.write("x")
+            out = io.StringIO()
+            with redirect_stdout(out):
+                self.assertEqual(plists.main([], launchd=tmp), 1)
+            self.assertEqual(out.getvalue().splitlines(), [
+                "plists: com.alexward.jevloop.loop.XRP-USD.plist: differs from loop-product.plist.in for XRP-USD (bin/plists --write)",
+                "plists: com.alexward.jevloop.loop.BTC-USD.plist: BTC-USD is not an added product in config.PRODUCTS"
+                " ('SOL-USD', 'ETH-USD', 'XRP-USD'); remove it by hand"])
+            with redirect_stdout(io.StringIO()):
+                plists.main(["--write"], launchd=tmp)
+            self.assertTrue(os.path.exists(os.path.join(tmp, "com.alexward.jevloop.loop.BTC-USD.plist")))   # never removed
+
+    def test_the_one_process_plist_sets_no_product_and_every_product_loop_its_own(self):
+        # loop.cycle refuses JEVLOOP_PRODUCT beside --every-product (exit 2); each per-product loop names its product
+        for name, want in self.EXPECTED.items():
+            args, env = want["ProgramArguments"], want["EnvironmentVariables"]
+            if "--every-product" in args:
+                self.assertNotIn("JEVLOOP_PRODUCT", env, name)
+            elif want["Label"].startswith("com.alexward.jevloop.loop."):
+                self.assertEqual(want["Label"], "com.alexward.jevloop.loop." + env["JEVLOOP_PRODUCT"], name)
+                self.assertTrue(want["StandardOutPath"].endswith(f"/logs/loop-launchd-{env['JEVLOOP_PRODUCT']}.log"), name)
 
     def test_no_comment_holds_a_double_hyphen(self):
         # the same break as above, named by line: expat says only "not well-formed (invalid token)"

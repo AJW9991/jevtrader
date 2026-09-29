@@ -81,7 +81,11 @@ jev-paper-loop/
   bin/promote            the human apply step
   bin/readers-diff       two trees' readers on one log: counts and tick_ids only (before a pull)
   bin/seal-check         PREREG-v2 §13: the seal's (a)-(e); --draft before the draft tag; --since TAG at v2's make results
-  launchd/com.alexward.jevloop.loop.plist  launchd/com.alexward.jevloop.nightly.plist
+  launchd/com.alexward.jevloop.loop.plist  launchd/com.alexward.jevloop.nightly.plist  launchd/com.alexward.jevloop.backup.plist
+  launchd/loop-product.plist.in  the per-product loop plist (PREREG-v2 §2): bin/plists writes launchd/com.alexward.jevloop.loop.<P>.plist from it
+                         for each P in config.PRODUCTS but SOL-USD (JEVLOOP_PRODUCT=P, logs/loop-launchd-<P>.log); `bin/plists` checks them
+  launchd/one-process/com.alexward.jevloop.loop.every-product.plist  §2's one-process mode (loop.cycle --once --every-product),
+                         installed only instead of every loop plist, never beside them; outside launchd/*.plist on purpose
   prompts/v1.json        frozen (written)   prompts/v2.json (promoted 2026-09-26)   prompts/CURRENT  → "v2" (one line)
   fixtures/              one recorded Coinbase snapshot set, committed
   tests/                 unittest, stdlib; tests/fixture_prompts.py pins a v1-only prompts root and tests/fixture_prereg.py a PREREG.md (dash.PREREG_PATH) (no test depends on what the live prompts/CURRENT names; one checks it builds, whatever it names)

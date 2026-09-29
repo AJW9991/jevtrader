@@ -1,0 +1,106 @@
+#!/opt/homebrew/bin/python3
+"""bin/plists -- the per-product loop plists of PREREG-v2 §2 and §10, written from one checked-in template.
+
+    bin/plists            check: exit 0 when launchd/ holds exactly one com.alexward.jevloop.loop.<P>.plist for each P
+                          in config.PRODUCTS but SOL-USD, each byte for byte launchd/loop-product.plist.in with P in
+                          place of @PRODUCT@; otherwise each difference on its own line, exit 1
+    bin/plists --write    write the missing or differing ones (a per-product plist of a product not in PRODUCTS is
+                          named, never removed: a person removes it), then check
+
+SOL-USD's loop stays launchd/com.alexward.jevloop.loop.plist, as v1 installed it (JEVLOOP_PRODUCT unset is SOL-USD). The
+one-process plist (§2) is a file of its own in launchd/one-process/, not written here and not in launchd/*.plist, which
+switch step 8b copies whole into ~/Library/LaunchAgents: it replaces the loops, never runs beside them. The
+commit that adds the probe's products to config.PRODUCTS runs `bin/plists --write` and commits what it writes;
+tests/test_nightly.py pins every plist it finds in launchd/, these included (LaunchdPlists.EXPECTED, from PRODUCTS). It
+writes under launchd/ only and installs nothing: STEPS.md §10 copies the files to ~/Library/LaunchAgents by hand.
+"""
+import argparse, os, re, sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(HERE)
+sys.path.insert(0, REPO)
+from loop import config                                         # noqa: E402
+
+LAUNCHD = os.path.join(REPO, "launchd")
+TEMPLATE = "loop-product.plist.in"
+PLACEHOLDER = "@PRODUCT@"
+LABEL = "com.alexward.jevloop.loop."
+NAME = re.compile(r"^com\.alexward\.jevloop\.loop\.(.+)\.plist$")
+
+
+def added():
+    """The products with a plist of their own: config.PRODUCTS but SOL-USD (config.PRODUCT), in their order."""
+    return [p for p in config.PRODUCTS if p != config.PRODUCT]
+
+
+def name(product):
+    return f"{LABEL}{product}.plist"
+
+
+def render(product, launchd=None):
+    """The template with `product` in place of every @PRODUCT@ (a product id is letters, digits and one hyphen)."""
+    if not re.fullmatch(r"[A-Z0-9]+-[A-Z]+", product):
+        raise ValueError(f"{product!r} is not a product id")
+    with open(os.path.join(launchd or LAUNCHD, TEMPLATE), encoding="utf-8") as fh:
+        return fh.read().replace(PLACEHOLDER, product)
+
+
+def problems(launchd=None):
+    """One line per difference between launchd/ and what the template writes for config.PRODUCTS."""
+    launchd = launchd or LAUNCHD
+    out = []
+    for p in added():
+        path = os.path.join(launchd, name(p))
+        try:
+            with open(path, encoding="utf-8") as fh:
+                have = fh.read()
+        except FileNotFoundError:
+            out.append(f"{name(p)}: missing (bin/plists --write)")
+            continue
+        if have != render(p, launchd):
+            out.append(f"{name(p)}: differs from {TEMPLATE} for {p} (bin/plists --write)")
+    for n in sorted(os.listdir(launchd)):
+        m = NAME.match(n)
+        if m and m.group(1) not in added():
+            out.append(f"{n}: {m.group(1)} is not an added product in config.PRODUCTS {tuple(config.PRODUCTS)}; remove it by hand")
+    return out
+
+
+def write(launchd=None):
+    launchd = launchd or LAUNCHD
+    wrote = []
+    for p in added():
+        path, text = os.path.join(launchd, name(p)), render(p, launchd)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                if fh.read() == text:
+                    continue
+        except FileNotFoundError:
+            pass
+        with open(path + ".tmp", "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(path + ".tmp", path)
+        wrote.append(name(p))
+    return wrote
+
+
+def main(argv=None, launchd=None):
+    """`launchd` exists for tests (a temporary copy of launchd/); a person never passes one."""
+    ap = argparse.ArgumentParser(prog="plists", description="the per-product loop plists (PREREG-v2 section 2), from "
+                                 "launchd/loop-product.plist.in; checks, or writes with --write")
+    ap.add_argument("--write", action="store_true", help="write the missing or differing per-product plists")
+    a = ap.parse_args(argv)
+    if a.write:
+        for n in write(launchd):
+            print(f"plists: wrote launchd/{n}")
+    bad = problems(launchd)
+    for line in bad:
+        print(f"plists: {line}")
+    if not bad:
+        print(f"plists: launchd/ holds one loop plist for each added product ({', '.join(added()) or 'none yet'}), each"
+              f" the template's")
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

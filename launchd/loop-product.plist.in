@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.alexward.jevloop.loop.@PRODUCT@</string>
+
+  <!-- PREREG-v2 section 2: one loop process per product. This is @PRODUCT@'s, written by
+       bin/plists from launchd/loop-product.plist.in, one per product in config.PRODUCTS but
+       SOL-USD, whose loop stays com.alexward.jevloop.loop.plist (JEVLOOP_PRODUCT unset is
+       SOL-USD, the v1 stream, unbroken). The same tick as SOL's: three public Coinbase GETs,
+       one Jev request, one row appended to data/@PRODUCT@/decisions.jsonl under
+       data/@PRODUCT@/loop.lock. Hand-installed only (STEPS.md section 10), never by a script. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/python3</string>
+    <string>-m</string>
+    <string>loop.cycle</string>
+    <string>--once</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/alexanderward/Projects/jev-paper-loop</string>
+
+  <!-- Every calendar minute at :00, as SOL's loop. -->
+  <key>StartCalendarInterval</key>
+  <dict/>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- JEVLOOP_PRODUCT names the product, and with it the store, lock and heartbeat
+       (config.store). A value not in config.PRODUCTS exits 2 before any directory is made. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>JEVLOOP_PRODUCT</key>
+    <string>@PRODUCT@</string>
+  </dict>
+
+  <!-- Its own log (PREREG-v2 section 10): one summary line a tick, as SOL's loop writes to
+       logs/loop-launchd.log. A comment here may not hold two hyphens in a row (XML 1.0;
+       tests/test_nightly.py parses every rendering). -->
+  <key>StandardOutPath</key>
+  <string>/Users/alexanderward/Projects/jev-paper-loop/logs/loop-launchd-@PRODUCT@.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/alexanderward/Projects/jev-paper-loop/logs/loop-launchd-@PRODUCT@.log</string>
+</dict>
+</plist>

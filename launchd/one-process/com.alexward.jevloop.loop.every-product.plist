@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.alexward.jevloop.loop.every-product</string>
+
+  <!-- PREREG-v2 section 2's one-process mode: one loop process ticks every product in
+       config.PRODUCTS in sequence each minute (loop.cycle with the every-product flag), each
+       product's tick under its own lock and into its own store, as the per-product loops write
+       them. It replaces all of them, never runs beside them: a product ticked by both writes
+       lock rows, so it sits in launchd/one-process/, out of the launchd/*.plist the switch copies.
+       Not installed unless the shakedown shows feed: http-429 lines; moving to it changes launchd
+       only, not the repo (STEPS.md section 10 has the swap). -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/python3</string>
+    <string>-m</string>
+    <string>loop.cycle</string>
+    <string>--once</string>
+    <string>--every-product</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/alexanderward/Projects/jev-paper-loop</string>
+
+  <!-- Every calendar minute at :00. A round keeps one tick's bound: each product's tick gets
+       what is left of the 50 s watchdog from the round's start, and a product reached with under
+       a second left is not ticked that minute (loop/cycle.py). -->
+  <key>StartCalendarInterval</key>
+  <dict/>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- No JEVLOOP_PRODUCT: it names one product, and the every-product mode refuses it (exit 2). -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+
+  <!-- Its own log: one summary line per product a minute. A comment here may not hold two
+       hyphens in a row (XML 1.0; tests/test_nightly.py parses this file). -->
+  <key>StandardOutPath</key>
+  <string>/Users/alexanderward/Projects/jev-paper-loop/logs/loop-launchd-every-product.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/alexanderward/Projects/jev-paper-loop/logs/loop-launchd-every-product.log</string>
+</dict>
+</plist>

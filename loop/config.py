@@ -35,8 +35,9 @@ PROTOCOL = os.path.join(REPO, "PROTOCOL.md")   # jev.ask refuses to send until i
 PRODUCTS = (
     "SOL-USD",
     # >>> THE TWO PROBE PRODUCTS GO HERE (PREREG-v2 §2): the first two candidates that pass every criterion of
-    # >>> `bin/probe summarize probe/2026-09-30`, in its order, each with its TICK_P and atoms below and a RULE_C
-    # >>> pin in tests/test_frozen.py. Fewer than two passing: SOL-USD and what passed (§2).
+    # >>> `bin/probe summarize probe/2026-09-30`, in its order, each with its TICK_P and atoms below, a RULE_C
+    # >>> pin in tests/test_frozen.py and its loop plist (bin/plists --write). Fewer than two passing: SOL-USD and what
+    # >>> passed (§2).
 )
 PROBE_CANDIDATES = ("ETH-USD", "XRP-USD", "DOGE-USD", "AVAX-USD", "LINK-USD", "ADA-USD")   # PREREG-v2 §2, bin/probe's
                                    # order: their bases are product words a prompt file may not carry (loop/prompts.py)
