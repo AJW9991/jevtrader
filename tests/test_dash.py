@@ -13,10 +13,14 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # replays a book, joins a return to an answer, or bins a confidence
 ALLOWED_REPORT = {"health", "days_table", "occupancy", "retest", "in_sample", "tick_epoch", "day_of", "_iso_minute", "_t0", "_tick_of", "last_reached",
                   "_num", "_mean", "_p95", "DAY_TICKS", "SAMPLE_DAYS", "BAD_FILL", "BAD_JEV_ERR", "BAD_DAYS_PAUSE", "OCCUPANCY_FLAG"}
-ALLOWED_IMPORTS = {"config", "outcomes", "report", "state"}
+ALLOWED_IMPORTS = {"config", "outcomes", "prompts", "report", "state"}   # prompts: CURRENT and a pending version's name and
+                                                                        # activation (PREREG-v2 §10), never an answer
 
 
 BANNED_CALLS = {"getattr", "vars", "__import__", "eval", "exec", "globals", "locals", "setattr", "delattr"}
+# what a health page or screen must never print (PREREG-v2 §6, §10): A's agreement with C and arm D's with B
+AGREEMENT_WORDS = ("Agreement(p, v)", "a.argmax == rule_c", "a.argmax \\ rule_c", "arm D", "LOOKUP", "DRIFT", "D NOT READ",
+                   "within-state live consistency", "pair D-B", "pair D-C")
 
 
 def assert_health_only(tc, path, allowed_report, allowed_imports):
@@ -65,6 +69,9 @@ def runtime_health_only(tc, fn):
             mock.patch.object(report, "calibration", _trip), mock.patch.object(report, "agreement", _trip), \
             mock.patch.object(report, "_h2_pair", _trip), mock.patch.object(report, "h2_units", _trip), \
             mock.patch.object(report, "_cell", _trip), mock.patch.object(report, "_blocks", _trip), \
+            mock.patch.object(report, "d_agreement", _trip), mock.patch.object(report, "cadence_table", _trip), \
+            mock.patch.object(report, "render_v2", _trip), mock.patch.object(report, "gap_blocks", _trip), \
+            mock.patch.object(book, "at_cadence", _trip), mock.patch.object(book, "decision_rows", _trip), \
             mock.patch.object(book, "replay", _trip), mock.patch.object(book, "paired", _trip):
         return fn()
 

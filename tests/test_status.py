@@ -1,11 +1,15 @@
 """loop/status.py: the one-screen morning check renders from the log, the heartbeat, HALT, proposals/
 and logs/propose.log, says STOPPED/HALT/MISSING when they apply, and can carry no H1/H2/pair/
 confidence number because it never imports or calls the code that computes one (PREREG §8.4)."""
-import contextlib, datetime, io, os, shutil, tempfile, unittest
+import contextlib, datetime, io, json, os, shutil, tempfile, unittest
 from unittest import mock
 
-from loop import config, dash, outcomes, report, status
-from test_dash import ALLOWED_IMPORTS, ALLOWED_REPORT, assert_health_only, runtime_health_only
+import synth
+from fixture_prereg import pin_prereg_v2
+from fixture_products import add_products
+from loop import config, cycle, dash, outcomes, report, status
+from test_dash import ALLOWED_IMPORTS, ALLOWED_REPORT, AGREEMENT_WORDS, assert_health_only, runtime_health_only
+from test_prompts import _v3
 from test_report import _row, _stopped_with_a_stray, _write
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -286,9 +290,101 @@ class Status(unittest.TestCase):
         # the same static guard as the dash (plus cycle for the spend guard and dash for its readers),
         # and the screen renders on an answered log with every measurement function tripwired
         assert_health_only(self, os.path.join(REPO, "loop", "status.py"), ALLOWED_REPORT | {"days_table", "_pc", "SAMPLE_DAYS", "last_reached"},
-                           ALLOWED_IMPORTS | {"cycle", "dash", "exclusions"})
+                           ALLOWED_IMPORTS | {"cycle", "dash", "exclusions", "exclusions_v2"})
         text2 = runtime_health_only(self, lambda: self._render("2026-09-23T10:42"))
         self.assertEqual(text2, text)
+
+
+class StatusV2(unittest.TestCase):
+    """PREREG-v2 §2, §10: without --log the screen covers every product's store: data/HALT once (REPO/data, never
+    --data), each PAUSE with its reason, CURRENT and a pending prompt version on its own line, today's spend over
+    every product's log as the guard sums it, T0_v2 from §12, each product's heartbeat, last row, today and days,
+    and the exclusions-v2 file beside the recomputed rule. Health only: no agreement, A's or D's."""
+    T0S = "20261024T220000Z"
+    NOW = datetime.datetime(2026, 10, 26, 3, 7, tzinfo=datetime.timezone.utc)
+
+    def setUp(self):
+        self.products = add_products(self)
+        self.data = self.enterContext(tempfile.TemporaryDirectory())
+        for k, v in (("DATA", self.data), ("DECISIONS", os.path.join(self.data, "decisions.jsonl")),
+                     ("HEARTBEAT", os.path.join(self.data, "heartbeat")), ("HALT", os.path.join(self.data, "HALT")),
+                     ("PROPOSALS", os.path.join(self.data, "proposals")), ("REPO", self.data)):
+            self.enterContext(mock.patch.object(config, k, v))
+        os.makedirs(config.PROPOSALS)
+        pin_prereg_v2(self, self.T0S)
+        self.prompts = os.path.join(self.data, "prompts")
+        os.makedirs(self.prompts)
+        for v in ("v1", "v2"):
+            shutil.copy(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prompts", v + ".json"), self.prompts)
+        with open(os.path.join(self.prompts, "v3.json"), "w", encoding="utf-8") as fh:
+            json.dump(_v3(activation_tick="20261027T220000Z", replaces="v2"), fh)
+        with open(os.path.join(self.prompts, "CURRENT"), "w", encoding="utf-8") as fh:
+            fh.write("v3\n")
+        self.enterContext(mock.patch.object(config, "PROMPTS", self.prompts))
+        logs = synth.generate_products(8, self.products, t0=self.T0S, days=1.2, pre_hours=1.0, era="v2", cadence_s=300)
+        synth.write_products(self.data, logs)
+        for p in self.products:
+            with open(dash.store_paths(p)[1], "w", encoding="utf-8") as fh:
+                fh.write("2026-10-26T03:06:00.100Z\n" if p != self.products[2] else "2026-10-26T02:00:00.100Z\n")
+        with open(config.pause(self.products[1]), "w", encoding="utf-8") as fh:
+            fh.write("prereg: 3 bad days\n")
+
+    def _main(self, argv=()):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.assertEqual(status.main(list(argv), now=self.NOW), 0)
+        return buf.getvalue()
+
+    def test_every_store_halt_each_pause_and_the_pending_version(self):
+        text = self._main()
+        lines = text.splitlines()
+        self.assertIn("HALT absent: sends allowed", lines)
+        self.assertIn(f"PAUSE.{self.products[0]}: absent", lines)
+        self.assertTrue(any(l.startswith(f"PAUSE.{self.products[1]} PRESENT since ") and "prereg: 3 bad days" in l for l in lines))
+        self.assertIn("prompt_b CURRENT: v3", lines)
+        self.assertIn("prompt_b pending: v3 (CURRENT) activates at 2026-10-27T22:00Z, replacing v2; until then B asks v2", lines)
+        self.assertIn("sample: day d02 of 28 (T0_v2 2026-10-24T22:00Z, ends 2026-11-21T22:00Z)", lines)
+        for p in self.products:
+            self.assertIn(f"-- {p} ({status._short(dash.store_paths(p)[0])}): rows", text)
+        self.assertEqual(sum(1 for l in lines if l.startswith("  ticking: last tick 60 s ago")), 2)
+        self.assertEqual(sum(1 for l in lines if l.startswith("  STOPPED? last tick 67 min ago")), 1)
+        usd = sum(cycle.spend_today(self.NOW.timestamp(), dash.store_paths(p)[0]) for p in self.products)
+        self.assertGreater(usd, 0.0)
+        self.assertIn(f"spend today ${usd:.4f} over every product's log, of the ${config.DAILY_SPEND_HALT_USD:g} tripwire"
+                      " (as the guard counts it)", lines)
+        self.assertIn(f"exclusions-v2: none ({config.EXCLUSIONS_V2} absent)", lines)
+        self.assertTrue(any(l.startswith("  stop rule 3 (PREREG-v2 §9.3), recomputed from the log, which governs") for l in lines))
+        # HALT is REPO/data's whatever the stores are, and shows first
+        with open(config.HALT, "w", encoding="utf-8") as fh:
+            fh.write("spend: $0.80 of input tokens today\n")
+        self.assertTrue(self._main().splitlines()[1].startswith("HALT PRESENT since "))
+        # after the activation there is nothing pending
+        self.assertIn("prompt_b pending: none (B asks v3 this minute)",
+                      self._main_at(datetime.datetime(2026, 10, 28, 0, 0, tzinfo=datetime.timezone.utc)))
+
+    def _main_at(self, now):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            status.main([], now=now)
+        return buf.getvalue()
+
+    def test_a_listed_day_the_rule_judges_fine_is_named(self):
+        with open(config.EXCLUSIONS_V2, "w", encoding="utf-8") as fh:
+            fh.write(f"day\tproduct\tfill%\tjev-err%\treason\nd01\t{self.products[2]}\t90.0%\t0.0%\tlooked bad\n")
+        text = self._main()
+        self.assertIn(f"exclusions-v2: 1 product-day(s) listed: d01 {self.products[2]}", text)
+        self.assertIn(f"DISAGREE: listed, but the rule does not exclude them (fine or not yet closed), so NOT excluded: d01 {self.products[2]}", text)
+        with open(config.EXCLUSIONS_V2, "w", encoding="utf-8") as fh:
+            fh.write("day\tproduct\tfill%\tjev-err%\treason\nd01\tBTC-USD\t90.0%\t0.0%\tx\n")
+        self.assertIn("exclusions-v2: REFUSED, fix before day 28:", self._main())
+
+    def test_health_only_neither_agreement(self):
+        text = self._main()
+        for word in AGREEMENT_WORDS + ("H1 statistic", "pair B-C", "mean_S", "Pearson", "Brier", "calibration", "confidence"):
+            self.assertNotIn(word, text)
+        self.assertEqual(runtime_health_only(self, self._main), text)       # renders with every measurement tripwired
+        # --log is v1's screen on that one log, as before
+        self.assertIn("jev-paper-loop status at", self._main(["--log", dash.store_paths(self.products[1])[0], "--t0", self.T0S]))
 
 
 if __name__ == "__main__":

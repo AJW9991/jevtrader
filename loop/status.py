@@ -11,10 +11,17 @@ it to that, as test_dash.py holds the dash. It writes nothing. What HANDOFF.md's
 asks a person to read each morning -- `cat data/heartbeat`, `ls proposals/`, `tail
 logs/propose.log`, the per-day table -- is here in one screen, and a stale heartbeat or
 a HALT is in the first lines under the title.
+
+PREREG-v2 (§2, §10): without --log the screen covers every product's store (config.store): data/HALT once,
+each data/PAUSE.<PRODUCT> with its reason line, CURRENT and a pending prompt version on its own line, today's
+spend summed over every product's log as the spend guard sums it, the sample day from PREREG-v2 §12's T0_v2,
+then per product its heartbeat, last row, today's rows and the last days of its stop-rule-3 table, then
+data/exclusions-v2.tsv beside the rule recomputed from the log (which governs), every disagreement named.
+Still health only: no H1, H2, pair, confidence or agreement number. With --log, v1's screen on that one log.
 """
 import argparse, collections, datetime, glob, os, sys
 
-from . import config, cycle, dash, exclusions, outcomes, report
+from . import config, cycle, dash, exclusions, exclusions_v2, outcomes, report
 
 STALE_S = 3 * config.CADENCE_S      # a heartbeat older than three ticks is a stopped loop, not a slow one
 LOG_TAIL = 3                        # lines of logs/propose.log shown
@@ -109,6 +116,84 @@ def _days_lines(rows, outs, t0, now=None):
     return out
 
 
+def _days(rows, outs, t0, now=None):
+    """(the screen's per-day lines, days_table's days) for one log, as _days_lines."""
+    if not rows:
+        return ["per day: no rows"], []
+    clock = now.timestamp() if now is not None else None
+    last = report.last_reached(rows, clock)
+    scope = report.in_sample(rows, t0) if t0 is not None else rows
+    d = report.days_table(scope, outs, t0, last, clock, v2=True)
+    shown = d["days"][-DAYS_SHOWN:]
+    out = [f"per day (last {len(shown)} of {len(d['days'])}; BAD days so far {len(d['bad'])}" + (": " + ", ".join(d["bad"]) if d["bad"] else "")
+           + (f"; NO LIVE ROWS {len(d['empty'])}: " + ", ".join(d["empty"]) + " (excluded whole, PREREG-v2 §9.3)" if d["empty"] else "") + "):"]
+    for x in shown:
+        flag = f"BAD ({', '.join(x['why'])})" if x["bad"] else "NO LIVE ROWS" if x.get("empty") else "open" if x["open"] else "ok"
+        out.append(f"  {x['day']:<9} ticks {x['ticks']:>5} ({report._pc(x['cov']):>6})  live {x['live']:>5}  fill {report._pc(x['fill']):>6}"
+                   f"  pend {x['pending']:>4}  skip {x['skips']:>3}  jev-err {report._pc(x['jev_err']):>6}  {flag}")
+    return out, d["days"]
+
+
+def _rows_today_line(rows, now):
+    """Today's rows of one product's log (UTC date of `now`, on tick_id); the spend is the screen's one line."""
+    day = now.strftime("%Y%m%d")
+    today = [r for r in rows if str(r.get("tick_id", ""))[:8] == day]
+    live = sum(1 for r in today if r.get("mode") == "live" and r.get("absence") is None)
+    absent = collections.Counter(r["absence"] for r in today if r.get("absence"))
+    elapsed = max(1, int((now - now.replace(hour=0, minute=0, second=0, microsecond=0)).total_seconds() // config.CADENCE_S))
+    return (f"today {now.strftime('%Y-%m-%d')}Z: {len(today)} rows in {elapsed} min ({100.0 * len(today) / elapsed:.0f}%), live answered {live},"
+            f" absence " + (", ".join(f"{k} {v}" for k, v in sorted(absent.items())) or "none"))
+
+
+def _spend_line(now):
+    """Today's spend over every product's decision log, as the one tripwire counts it (cycle.spend_today with no
+    path: PREREG-v2 §2)."""
+    usd = cycle.spend_today(now.timestamp())
+    if usd == float("inf"):
+        return "spend today UNREADABLE: a product's log cannot be read, so the next tick's guard trips (HALT) rather than count it"
+    if usd == cycle.SPEND_UNCOUNTED:
+        return "spend today UNCOUNTED: a token count, or today's sum of them, is past a float's range, so the next tick's guard trips (HALT)"
+    return (f"spend today ${usd:.4f} over every product's log, of the ${config.DAILY_SPEND_HALT_USD:g} tripwire"
+            " (as the guard counts it)")
+
+
+def _sample_line_v2(t0, now, why=None):
+    if t0 is None:
+        return "sample: no T0_v2 (" + (why or "PREREG-v2 §12 blank, or --t0 not given") + ")"
+    n = int((now.timestamp() - t0) // 86400) + 1
+    end = report._iso_minute(t0 + report.SAMPLE_DAYS * 86400)
+    if n < 1:
+        return f"sample: not started (T0_v2 {report._iso_minute(t0)})"
+    if n > report.SAMPLE_DAYS:
+        return f"sample: ended {end}"
+    return f"sample: day d{n:02d} of {report.SAMPLE_DAYS} (T0_v2 {report._iso_minute(t0)}, ends {end})"
+
+
+def render_v2(stores, t0, now, proposals_root, propose_log, current, pending, halt_path=None, excl_path=None, t0_why=None):
+    """The v2 screen. stores: [{"product", "log", "rows", "outs", "hb", "unreadable"}], one per config.PRODUCTS."""
+    lines = [f"jev-paper-loop status at {now.strftime('%Y-%m-%dT%H:%MZ')} (health only, PREREG-v2 §9.5; nothing here is H1, H2"
+             " or an agreement)", _halt_line(halt_path)]
+    lines += [dash.pause_line(s["product"]) for s in stores]
+    lines += [f"prompt_b CURRENT: {current or '?'}", pending, _spend_line(now), _sample_line_v2(t0, now, t0_why)]
+    days = {}
+    for s in stores:
+        lines.append(f"-- {s['product']} ({_short(s['log'])}): rows {len(s['rows'])}")
+        if s.get("unreadable"):
+            lines.append("  " + s["unreadable"])
+        body, days[s["product"]] = _days(s["rows"], s["outs"], t0, now)
+        lines += ["  " + l for l in [_age_line(s["hb"], now), _last_row_line(s["rows"]), _rows_today_line(s["rows"], now)] + body]
+    lines.append(exclusions_v2.status_line(excl_path))
+    if t0 is not None:
+        try:
+            listed, _ = exclusions_v2.read(excl_path)
+        except (ValueError, OSError):
+            listed = set()                                  # the line above says why; the recomputed rule governs anyway
+        lines += [l for l in exclusions_v2.lines(listed, exclusions_v2.recompute(days), [], _short(excl_path or config.EXCLUSIONS_V2))
+                  if not l.startswith("    | ")]
+    lines.extend(_nightly_lines(proposals_root, propose_log, now))
+    return "\n".join(lines) + "\n"
+
+
 def _nightly_lines(proposals_root, log_path, now):
     out = []
     md = sorted(os.path.basename(p)[:-3] for p in glob.glob(os.path.join(proposals_root, "????-??-??.md")))
@@ -150,15 +235,35 @@ def render(rows, outs, t0, now, hb, halt_path, log, proposals_root, propose_log,
     return "\n".join(lines) + "\n"
 
 
+def _load(log):
+    """(rows, the UNREADABLE line or None) for one log: a missing log is no rows."""
+    try:
+        return outcomes.load(log, []), None
+    except FileNotFoundError:
+        return [], None
+    except OSError as e:                                    # a 0200 log (write_row still appends), a directory, EIO,
+                                                            # a data/ this user cannot enter (exists() says False there)
+        return [], f"LOG UNREADABLE: {log}: {e.strerror or e}; the next tick's spend guard trips (HALT) until it can be read\n"
+
+
 def main(argv=None, now=None):
     ap = argparse.ArgumentParser(prog="python3 -m loop.status", description="the loop's health in one screen (report §1 only)")
-    ap.add_argument("--log", default=config.DECISIONS)
-    ap.add_argument("--t0", help="PREREG T0 (UTC minute or tick_id); default: read from PREREG.md §11")
+    ap.add_argument("--log", default=None, help="one log, v1's screen on it (default: every product's store, PREREG-v2)")
+    ap.add_argument("--t0", help="T0 (UTC minute or tick_id); default: PREREG.md §11 with --log, PREREG-v2 §12's T0_v2 without")
     ap.add_argument("--prereg", default=dash.PREREG_PATH)
     ap.add_argument("--now", help="override the clock (tests): YYYY-MM-DDTHH:MM UTC")
     args = ap.parse_args(argv)
+    why = None
     try:
-        t0 = report._t0(args.t0) if args.t0 else dash.read_t0(args.prereg)
+        if args.t0:
+            t0 = report._t0(args.t0)
+        elif args.log is not None:
+            t0 = dash.read_t0(args.prereg)
+        else:
+            try:
+                t0 = dash.read_t0_v2()
+            except ValueError as e:                         # a malformed seal: said, and no sample day
+                t0, why = None, str(e)
     except ValueError:
         ap.error(f"--t0 wants YYYY-MM-DDTHH:MM (UTC) or a tick_id, got {args.t0!r}")
     if args.now:
@@ -167,14 +272,17 @@ def main(argv=None, now=None):
         except ValueError:
             ap.error(f"--now wants YYYY-MM-DDTHH:MM (UTC), got {args.now!r}")
     now = now or datetime.datetime.now(datetime.timezone.utc)
-    unreadable = None
-    try:
-        rows = outcomes.load(args.log, [])
-    except FileNotFoundError:
-        rows = []
-    except OSError as e:                                    # a 0200 log (write_row still appends), a directory, EIO,
-                                                            # a data/ this user cannot enter (exists() says False there)
-        rows, unreadable = [], f"LOG UNREADABLE: {args.log}: {e.strerror or e}; the next tick's spend guard trips (HALT) until it can be read\n"
+    if args.log is None:
+        stores = []
+        for p in config.PRODUCTS:
+            log, hb = dash.store_paths(p)
+            rows, bad = _load(log)
+            stores.append({"product": p, "log": log, "rows": rows, "outs": outcomes.join(rows), "hb": dash.heartbeat(hb),
+                           "unreadable": bad.strip() if bad else None})
+        sys.stdout.write(render_v2(stores, t0, now, config.PROPOSALS, os.path.join(config.REPO, "logs", "propose.log"),
+                                   dash.current_version(), dash.pending_line(now), config.HALT, config.EXCLUSIONS_V2, why))
+        return 0
+    rows, unreadable = _load(args.log)
     outs = outcomes.join(rows)
     text = (unreadable or "") + render(rows, outs, t0, now, dash.heartbeat(), config.HALT, args.log, config.PROPOSALS,
                   os.path.join(config.REPO, "logs", "propose.log"), dash.current_version(),

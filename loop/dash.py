@@ -17,7 +17,7 @@ Standard library only; the page carries no script and loads nothing from the net
 it can be opened from a file and shared without reaching for anything."""
 import argparse, collections, datetime, glob, hashlib, html, math, os, re, sys
 
-from . import config, outcomes, report, state
+from . import config, outcomes, prompts, report, state
 
 T0_RE = re.compile(r"T0 \(first tick_id of day 1\): `(\d{8}T\d{6}Z)`")   # PREREG §11's sealed line
 PREREG_PATH = os.path.join(config.REPO, "PREREG.md")   # the repository's PREREG, read at call time (tests pin a fixture)
@@ -301,6 +301,49 @@ def proposals(root=None):
                     "current": cur.group(1) if cur else None, "current_vs_rule": int(cur.group(2)) if cur else None,
                     "current_of": int(cur.group(3)) if cur else None, "candidates": cands})
     return out
+
+
+def pending_line(now, root=None):
+    """prompt_b's pending version on its own line (PREREG-v2 §8, §10): the version CURRENT names while it is not
+    yet active this minute, with its activation tick and the version arm B asks until then; "none" otherwise.
+    A prompts/ that cannot be read is said, never a traceback."""
+    tick = now.strftime("%Y%m%dT%H%M00Z")
+    try:
+        name = prompts.pending(tick, root)
+        asks = prompts.current(tick, root)
+        if name is None:
+            return f"prompt_b pending: none (B asks {asks} this minute)"
+        act, rep = prompts.activation_of(name, root)
+    except prompts.PromptError as e:
+        return f"prompt_b pending: UNREADABLE: {e}"
+    return (f"prompt_b pending: {name} (CURRENT) activates at {report._iso_minute(report.tick_epoch(act))}, replacing {rep};"
+            f" until then B asks {asks}")
+
+
+def pause_line(product, path=None):
+    """data/PAUSE.<PRODUCT> (PREREG-v2 §2), from REPO/data whatever --data says: absent, or since when and its
+    reason line."""
+    path = path or config.pause(product)
+    if not os.path.exists(path):
+        return f"PAUSE.{product}: absent"
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            why = fh.readline().strip()
+        since = datetime.datetime.fromtimestamp(os.path.getmtime(path), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+    except OSError:
+        why, since = "?", "?"
+    return (f"PAUSE.{product} PRESENT since {since}: {why or '(empty file)'} -- {product}'s sends are skipped; its observation"
+            " and outcomes go on (PREREG-v2 §2)")
+
+
+def store_paths(product, data=None):
+    """(decision log, heartbeat) of `product` as config.store places them, under `data` when given (propose.sh's
+    --root passes its own data/) and under config.DATA otherwise."""
+    if data is None:
+        s = config.store(product)
+        return s.decisions, s.heartbeat
+    d = data if product == config.PRODUCT else os.path.join(data, product)
+    return os.path.join(d, "decisions.jsonl"), os.path.join(d, "heartbeat")
 
 
 def current_version(root=None):

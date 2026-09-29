@@ -200,6 +200,12 @@ def pending(tick_id=None, root=None):
     return name
 
 
+def activation_of(version, root=None):
+    """(activation_tick, replaces) of `version`'s file, or None when it carries neither: its two activation keys
+    only, as current() reads a version it walks past (dash and status name a pending version's activation)."""
+    return activation(_parse(version, root)[0], version)
+
+
 def canon(doc):
     """Canonical bytes: sorted keys, no whitespace. A re-save with another indent or
     key order (a hand edit, `python -m json.tool`) leaves the sha alone; a changed
