@@ -32,7 +32,8 @@ feed._get in this process only (the loop's own processes never import this file)
 are not meant to run at the same time. Six candidates are 18 GETs a minute, ~18 s of the 60.
 Writes only DIR/<product>.jsonl, DIR/run.json and DIR/volume.json. DIR is refused (exit 3, before
 anything is created) when it resolves inside the live checkout LIVE_CHECKOUT, under a forbidden
-prefix of loop/config.py, or under any directory named data. Never imports the loop's send path
+prefix of loop/config.py, or under any directory named data or logs (PREREG-v2 §2: nothing under
+any data/ or logs/). Never imports the loop's send path
 (its jev and cycle modules); nothing here sends to Jev or reads a key. Exit 2 on a usage error.
 """
 import argparse, collections, contextlib, datetime as dt, importlib.machinery, importlib.util, json, math, os, re
@@ -56,6 +57,7 @@ STABLECOINS = frozenset({"USDT", "USDC", "DAI", "PYUSD", "EURC", "GUSD", "USDP",
 MIN_GAP_S = 1.0                     # never two requests less than this apart, whatever the endpoint
 LIVE_CHECKOUT = "/Users/alexanderward/Projects/jev-paper-loop"
 FORBIDDEN = (LIVE_CHECKOUT,) + tuple(config.FORBIDDEN_PREFIXES)
+FORBIDDEN_NAMES = ("data", "logs")  # no path component of DIR, typed or resolved, is one of these (any case)
 PRODUCT_RE = re.compile(r"^[A-Z0-9]{2,12}-[A-Z]{3,5}$")
 DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -82,13 +84,14 @@ def refused(path, prefixes=None):
     absolute) and its realpath are both tried, each prefix and its realpath matched on a '/'
     boundary, then each existing ancestor of the realpath compared with each existing prefix by
     (st_dev, st_ino), so a symlink, a '..', or a case-only second name on APFS cannot hide the
-    tree. Any path component named data (any case), typed or resolved, is refused too.
+    tree. Any path component named data or logs (any case), typed or resolved, is refused too.
     prefixes defaults to FORBIDDEN."""
     prefixes = FORBIDDEN if prefixes is None else prefixes
     typed, real = os.path.abspath(path), os.path.realpath(path)
     for p in (typed, real):
-        if any(part.casefold() == "data" for part in p.split(os.sep)):
-            return f"{p} has a directory named data in it"
+        for part in p.split(os.sep):
+            if part.casefold() in FORBIDDEN_NAMES:
+                return f"{p} has a directory named {part.casefold()} in it"
     for pre in prefixes:
         for q in {pre.rstrip(os.sep), os.path.realpath(pre).rstrip(os.sep)}:
             for p in (typed, real):

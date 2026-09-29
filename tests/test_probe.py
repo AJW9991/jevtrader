@@ -282,6 +282,17 @@ class Guard(unittest.TestCase):
         self.assertIsNone(probe.refused(os.path.join(self.tmp, "database", "out"), ()))
         self.assertIsNone(probe.refused(os.path.join(self.tmp, "probe-2026-10-01"), ()))
 
+    def test_any_directory_named_logs(self):
+        # PREREG-v2 section 2: nothing under any data/ or logs/
+        for parts in (("logs",), ("logs", "probe"), ("Logs", "probe"), ("a", "LOGS", "b")):
+            self.assertIsNotNone(probe.refused(os.path.join(self.tmp, *parts), ()), parts)
+        self.assertIsNotNone(probe.refused(os.path.join(REPO, "logs", "probe")))
+        os.makedirs(os.path.join(self.tmp, "logs"))
+        os.symlink(os.path.join(self.tmp, "logs"), os.path.join(self.tmp, "plain"))
+        self.assertIsNotNone(probe.refused(os.path.join(self.tmp, "plain", "out"), ()))
+        self.assertIsNone(probe.refused(os.path.join(self.tmp, "logsheet", "out"), ()))
+        self.assertIsNone(probe.refused(os.path.join(self.tmp, "catalogs", "out"), ()))
+
     def test_run_and_volume_exit_3_and_create_nothing(self):
         def main(argv):                                     # a guard that let it through would run one cycle and stop
             c, err = Clock(T_FIX), io.StringIO()
