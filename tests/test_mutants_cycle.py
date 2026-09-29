@@ -36,7 +36,7 @@ ANSWERS = {"a_action": {"choice": "buy", "probabilities": {"buy": 0.7, "sell": 0
            "b_action": {"choice": "hold", "probabilities": {"buy": 0.3, "sell": 0.1, "hold": 0.6},
                         "confidence": 0.55},
            "skip": {"noul": 0.1}, "up15": {"noul": 0.6}, "down15": {"noul": 0.05}}
-OVER = 3_000_000                                     # x2 rows = $0.252, over the $0.25 tripwire
+OVER = 3_000_000 * len(config.PRODUCTS)              # x2 rows = $0.252 a product, over the tripwire of $0.25 a product
 
 
 def _usd(tokens):

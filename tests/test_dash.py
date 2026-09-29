@@ -256,7 +256,7 @@ class Dash(unittest.TestCase):
         page = dash.render(rows, outcomes.join(rows), now=datetime.datetime(2026, 9, 24, 12, 0, tzinfo=datetime.timezone.utc))
         self.assertIn("<span class='badge crit'>1 day(s) not charted</span> 20260923: the input tokens logged that day sum past a float's range.", page)
         self.assertIn("title='20260923: input tokens summed past a float&#x27;s range, not charted'><div class='vbar' style='height:0%'>", page)
-        self.assertIn("title='20260924: $0.0000 of the $0.25 tripwire'", page)                # the other day keeps its bar
+        self.assertIn(f"title='20260924: $0.0000 of the ${config.DAILY_SPEND_HALT_USD:g} tripwire'", page)   # the other day's bar
         self.assertIn("<td>past range</td>", page)                                            # the per-day table
         self.assertIn('<div class="tile crit"><div class="k">spend, whole log</div><div class="v">past range</div>', page)
         self.assertNotIn("$inf", page)                                                       # no dollar figure anywhere reads inf
@@ -282,7 +282,7 @@ class Dash(unittest.TestCase):
         self.assertIn("<span class='badge crit'>2 day(s) not charted</span> 20260922, 20260923: the input tokens", page)
         for d in ("20260922", "20260923"):
             self.assertIn(f"title='{d}: input tokens summed past a float&#x27;s range, not charted'><div class='vbar' style='height:0%'>", page)
-        self.assertIn("title='20260924: $0.0001 of the $0.25 tripwire'", page)                 # the ordinary day keeps its bar
+        self.assertIn(f"title='20260924: $0.0001 of the ${config.DAILY_SPEND_HALT_USD:g} tripwire'", page)   # the ordinary day's
         self.assertEqual(page.count("<td>past range</td>"), 2)                                # the per-day table
         self.assertIn('<div class="tile crit"><div class="k">spend, whole log</div><div class="v">past range</div>', page)
         self.assertNotIn("$inf", page)

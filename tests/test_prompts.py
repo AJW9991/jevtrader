@@ -417,6 +417,6 @@ class Tables(unittest.TestCase):
             fh.write("{not json")
         with self.assertRaises(prompts.PromptError):
             prompts.table("v2", "SOL-USD", self.root)
-        for version, product in (("v2", "ETH-USD"), ("../v2", "SOL-USD"), ("v2", "../SOL-USD")):
+        for version, product in (("v2", "BTC-USD"), ("../v2", "SOL-USD"), ("v2", "../SOL-USD")):   # BTC: never a product
             with self.assertRaises(prompts.PromptError):
                 prompts.table(version, product, self.root)

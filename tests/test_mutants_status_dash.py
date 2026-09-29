@@ -254,8 +254,9 @@ class DashPage(_Isolated):
         rows.append(_at(d2 + 300, jev=dict(rows[-1]["jev"], input_tokens=1)))
         self.assertEqual(dash.spend_by_day(rows), {"20260923": 36000 * config.USD_PER_MTOK / 1e6, "20260924": 5001 * config.USD_PER_MTOK / 1e6})
         page = self._render(rows, now=_dt("2026-09-24T11:00"))
-        self.assertIn("<h2>spend per day &middot; max $0.0015, tripwire $0.25</h2>", page)
-        self.assertEqual(_tiles(page)["spend, whole log"], (False, "$0.0017", "$0.0009 per logged day; tripwire $0.25/day"))
+        limit = f"{config.DAILY_SPEND_HALT_USD:g}"                                           # $0.25 a product
+        self.assertIn(f"<h2>spend per day &middot; max $0.0015, tripwire ${limit}</h2>", page)
+        self.assertEqual(_tiles(page)["spend, whole log"], (False, "$0.0017", f"$0.0009 per logged day; tripwire ${limit}/day"))
 
     def test_latency_chart_and_column_show_each_days_p95(self):
         # CONTRACT §4.1 latency p95, per day (dash.latency_by_day: day -> (mean, p95, n)); the chart's heading names the tallest bar

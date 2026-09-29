@@ -39,8 +39,9 @@ ANSWERS = {"a_action": {"choice": "buy", "probabilities": {"buy": 0.7, "sell": 0
 GOOD = {"model": config.MODEL, "usage": {"input_tokens": 480, "output_tokens": 9}, "answers": ANSWERS}
 QIDS = ("a_action", "b_action", "skip", "up15", "down15")
 # tokens * 0.042 / 1e6 >= 0.25  <=>  tokens >= 5,952,381
-OVER = 3_000_000                                      # x2 rows = $0.252, over the $0.25 tripwire
-UNDER = 2_900_000                                     # x2 rows = $0.2436, under it
+OVER = 3_000_000 * len(config.PRODUCTS)               # x2 rows = $0.252 a product, over the tripwire of $0.25 a product
+UNDER = 2_900_000 * len(config.PRODUCTS)              # x2 rows = $0.2436 a product, under it (PREREG-v2 §2: 0.25 x products)
+OUTSIDE = "BTC-USD"                                   # never in PRODUCTS: neither SOL-USD nor a probe candidate (test_config)
 
 
 class _Resp:
@@ -475,8 +476,8 @@ class CycleTest(unittest.TestCase):
         buf, cut = cycle._tail(config.DECISIONS, cycle.TAIL_BYTES)
         self.assertTrue(cut)
         self.assertTrue(json.loads(buf.split(b"\n", 1)[0])["tick_id"].startswith("20260922"))   # the tail's first row
-        with mock.patch.object(cycle, "_tail", wraps=cycle._tail) as tail:
-            self.assertAlmostEqual(cycle.spend_today(NOW), 600 * 1000 * config.USD_PER_MTOK / 1e6)
+        with mock.patch.object(cycle, "_tail", wraps=cycle._tail) as tail:                    # SOL's log, one read
+            self.assertAlmostEqual(cycle.spend_today(NOW, config.DECISIONS), 600 * 1000 * config.USD_PER_MTOK / 1e6)
         self.assertEqual([c.args for c in tail.call_args_list], [(config.DECISIONS, cycle.TAIL_BYTES)])
 
     def test_spend_with_today_overflowing_the_tail_widens_to_the_whole_file(self):
@@ -489,8 +490,8 @@ class CycleTest(unittest.TestCase):
         buf, cut = cycle._tail(config.DECISIONS, cycle.TAIL_BYTES)
         self.assertTrue(cut)
         self.assertTrue(json.loads(buf.split(b"\n", 1)[0])["tick_id"].startswith(DAY))
-        with mock.patch.object(cycle, "_tail", wraps=cycle._tail) as tail:
-            self.assertAlmostEqual(cycle.spend_today(NOW), 1440 * 100 * config.USD_PER_MTOK / 1e6)
+        with mock.patch.object(cycle, "_tail", wraps=cycle._tail) as tail:                    # SOL's log, two reads
+            self.assertAlmostEqual(cycle.spend_today(NOW, config.DECISIONS), 1440 * 100 * config.USD_PER_MTOK / 1e6)
         self.assertEqual([c.args for c in tail.call_args_list],
                          [(config.DECISIONS, cycle.TAIL_BYTES), (config.DECISIONS, 0)])
 
@@ -1244,7 +1245,7 @@ class V2TickTest(unittest.TestCase):
 
     # -- JEVLOOP_PRODUCT ------------------------------------------------------------------------------------
     def test_a_product_outside_products_exits_2_before_any_directory(self):
-        for bad in ("DOGE-USD", "", "sol-usd", "../data"):
+        for bad in (OUTSIDE, "", "sol-usd", "../data"):
             with self.subTest(bad=bad), mock.patch.dict(os.environ, {config.ENV_PRODUCT: bad}):
                 self.assertEqual(cycle.main(["--once"]), 2)
                 self.assertFalse(os.path.exists(self.data))
@@ -1340,10 +1341,11 @@ class V2TickTest(unittest.TestCase):
         with open(eth.decisions, "w", encoding="utf-8") as fh:
             fh.write(json.dumps(_row(DAY + "T010000Z", UNDER)) + "\n")
         usd = 2 * UNDER * config.USD_PER_MTOK / 1e6
-        self.assertAlmostEqual(cycle.spend_today(NOW), usd)                      # $0.2436 < $0.25, over two logs
+        self.assertAlmostEqual(cycle.spend_today(NOW), usd)                      # $0.2436 a product: under, over two logs
         self.assertAlmostEqual(cycle.spend_today(NOW, config.DECISIONS), usd / 2)    # one log, as status reads it
         with open(eth.decisions, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(_row(DAY + "T010100Z", 200_000)) + "\n")
+            past = int((config.DAILY_SPEND_HALT_USD - usd) / config.USD_PER_MTOK * 1e6) + 1000   # ETH's next row crosses it
+            fh.write(json.dumps(_row(DAY + "T010100Z", past)) + "\n")
         self.assertGreaterEqual(cycle.spend_today(NOW), config.DAILY_SPEND_HALT_USD)
         self.assertEqual(cycle.main(["--once"]), 0)                              # SOL's tick trips on ETH's spend
         with open(config.HALT, encoding="utf-8") as fh:

@@ -77,7 +77,8 @@ class Status(unittest.TestCase):
         self.assertIn("last row: 20260923T104100Z live ok state=deep organic flat violent c=sell prompt_b=v2 jev=141ms/1000tok err=None key=env:TYPESAFE_API_KEY_LOOP DRIFT", text)
         # today: 42 distinct minutes elapsed at 10:42, 42 rows (the torn line is not one); 36 live answered
         # (5 dry, 1 jev absence); spend as the guard counts it: 36 x 1000 + 2000 for the failed send
-        self.assertIn("today 2026-09-23Z: 42 rows in 642 min (7%), live answered 36, absence jev 1; spend $0.0016 of the $0.25 tripwire", text)
+        self.assertIn("today 2026-09-23Z: 42 rows in 642 min (7%), live answered 36, absence jev 1; spend $0.0016 of the "
+                      f"${config.DAILY_SPEND_HALT_USD:g} tripwire", text)                     # $0.25 a product
         self.assertIn("sample: day d01 of 28 (T0 2026-09-23T10:00Z, ends 2026-10-21T10:00Z)", text)
         self.assertIn("prompt_b CURRENT: v1; rows 42 in the log", text)
         self.assertIn("per day (last 1 of 1; BAD days so far 0):", text)
@@ -223,7 +224,7 @@ class Status(unittest.TestCase):
                                           "--now", "2026-09-23T10:42"]), 0)
         out = buf.getvalue()
         self.assertNotIn("UNREADABLE", out)
-        self.assertIn("spend $0.0000 of the $0.25 tripwire (as the guard counts it)", out)
+        self.assertIn(f"spend $0.0000 of the ${config.DAILY_SPEND_HALT_USD:g} tripwire (as the guard counts it)", out)
 
     def test_an_unreadable_log_is_named_not_a_traceback(self):
         # a 0200 log (write_row still appends to it) or a directory: the spend guard trips on it, and
@@ -260,7 +261,7 @@ class Status(unittest.TestCase):
         self.assertIn("; spend UNCOUNTED: ", line)
         self.assertTrue(line.endswith(" past a float's range, so the next tick's guard trips (HALT)"), line)
         self.assertNotIn("spend $", line)
-        self.assertIn("; spend $0.0001 of the $0.25 tripwire", self._today([1000]))   # a count in range is still priced
+        self.assertIn(f"; spend $0.0001 of the ${config.DAILY_SPEND_HALT_USD:g} tripwire", self._today([1000]))   # still priced
 
     def test_counts_that_fit_a_float_but_sum_past_one_are_named_as_the_sum(self):
         # two server replies of 1e308 (jev._parse int()s them): each fits a float, today's sum does not; the

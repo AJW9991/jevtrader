@@ -6,6 +6,7 @@ from loop import config
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TWO = ("SOL-USD", "ETH-USD")                         # a stand-in second product; the probe names the real ones
+OUTSIDE = "BTC-USD"                                  # never in PRODUCTS: neither SOL-USD nor a probe candidate
 
 
 class Products(unittest.TestCase):
@@ -52,6 +53,7 @@ class Products(unittest.TestCase):
         self.assertEqual(config.PROBE_CANDIDATES, eval(m.group(1), {}))
         for p in config.PRODUCTS[1:]:
             self.assertIn(p, config.PROBE_CANDIDATES)
+        self.assertNotIn(OUTSIDE, ("SOL-USD",) + config.PROBE_CANDIDATES)   # so the tests' example outside PRODUCTS stays outside
 
 
 class Stores(unittest.TestCase):
@@ -75,7 +77,8 @@ class Stores(unittest.TestCase):
             self.assertEqual(config.pause("SOL-USD"), "/d/PAUSE.SOL-USD")
 
     def test_a_product_outside_products_is_refused_not_made_a_path(self):
-        for bad in ("ETH-USD", "../x", "", "SOL-USD/..", None):
+        unchosen = tuple(p for p in config.PROBE_CANDIDATES if p not in config.PRODUCTS)   # a candidate the probe did not pick
+        for bad in (OUTSIDE, "../x", "", "SOL-USD/..", None) + unchosen:
             with self.assertRaises(ValueError, msg=bad):
                 config.store(bad)
             with self.assertRaises(ValueError, msg=bad):
@@ -102,7 +105,8 @@ class LoopProduct(unittest.TestCase):
             self.assertEqual(config.loop_product({"JEVLOOP_PRODUCT": "ETH-USD"}), "ETH-USD")
 
     def test_anything_else_is_refused(self):
-        for bad in ("ETH-USD", "sol-usd", "", "SOL", "SOL-USD ", "../data"):
+        unchosen = tuple(p for p in config.PROBE_CANDIDATES if p not in config.PRODUCTS)
+        for bad in (OUTSIDE, "sol-usd", "", "SOL", "SOL-USD ", "../data") + unchosen:
             with self.assertRaises(ValueError, msg=bad):
                 config.loop_product({"JEVLOOP_PRODUCT": bad})
 

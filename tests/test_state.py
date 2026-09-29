@@ -213,7 +213,7 @@ class Boundaries(unittest.TestCase):
                 self.assertEqual(state.adjectives(feat(fill1k_bps=15.0, mid=200.0), "ETH-USD")["liq"], "thin")  # 6.0
             self.assertEqual(state.adjectives(feat(fill1k_bps=15.0, mid=200.0), "ETH-USD")["liq"], "normal")
         with self.assertRaises(KeyError):
-            state.adjectives(feat(), "ETH-USD")                   # no tick for a product outside PRODUCTS
+            state.adjectives(feat(), "BTC-USD")                   # no tick for a product outside PRODUCTS (never a candidate)
 
     def test_liq_is_bin_fill1k_quantiles_own_rule_and_sols_atoms_are_the_quoted_output(self):
         # one rule in two places (the tool imports nothing from loop/): the same h, the same word, and
