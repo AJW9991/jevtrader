@@ -153,6 +153,11 @@ class Scratch(unittest.TestCase):
         self.assertEqual(text.count(old), 1, old)
         self.write(name, text.replace(old, new))
 
+    def filled(self):
+        """§12 filled and committed: the seal's own precondition, before a test's changes."""
+        self.fill()
+        return self.commit("§12 filled")
+
     def fill(self, fee=None, rebuild="no", seal=("20261024T213000Z", "20261025T213100Z", "Alex", "2026-10-25")):
         fee = fee or ("2026-10-24T09:00Z", "$0-$10K / 0.60 % / 1.20 %; $10K+ / 0.40 % / 0.80 %")
         self.replace("PREREG-v2.md", FEE_LINE, f"Fee tiers (30-day band / maker / taker, read UTC `{fee[0]}`): `{fee[1]}`")
@@ -212,16 +217,38 @@ class Seal(Scratch):
         self.assertIn("    | +++ b/prompts/v3.json", text)
         for excluded in ("RESULTS.md", "HANDOFF.md", "proposals/2026-10-01.md", "data/exclusions.tsv"):
             self.assertNotIn(f"+++ b/{excluded}", text)
+        self.assertIn("(§12) PASS: PREREG-v2.md §12 is filled: no ________ left, T0_v2 20261025T213100Z and 2 fee tier(s)"
+                      " read as loop.dash reads them", text)
         self.assertIn("(e) PASS: `make test` exited 0", text)
         self.assertNotIn("NOTE", text)
 
-    def test_a_blank_left_in_section_12_is_a_note_not_a_failure(self):
+    def test_a_blank_left_in_section_12_fails(self):
+        # the header: prereg-v2-seal is made "once §12's fields are filled, tagged only after bin/seal-check exits 0";
+        # after the tag --since refuses any edit of PREREG-v2.md, so a blank left then stays blank (the S5 refuter's
+        # defect 2: T0_v2 blank for good, bin/promote refusing for the whole block)
         self.fill(rebuild=None)
         self.commit("§12 but the rebuild line")
-        text = self.assertPasses()
-        self.assertIn("NOTE: §12 of PREREG-v2.md still holds 1 blank(s)", text)
+        self.assertFails(says=["(§12) FAIL: PREREG-v2.md §12 still holds 1 ________ (the seal is made once §12 is filled;"
+                               " after it, --since refuses any edit of PREREG-v2.md)", "(e) NOT RUN: (§12) failed already"],
+                         failed="§12")
+        self.write("PREREG-v2.md", PREREG)
+        self.commit("§12 blank again")
+        self.assertFails(says=["still holds 7 ________", "T0_v2 is blank"], failed="§12")
+
+    def test_a_section_12_its_readers_cannot_read_fails(self):
+        # T0_v2 and the fee tiers are read by bin/promote, the report, the dash and v2's make results (loop.dash): a
+        # field filled in a form they refuse is as unfillable after the tag as a blank
+        self.fill(seal=("20261024T213000Z", "20261025T2130Z", "Alex", "2026-10-25"))
+        self.commit("T0_v2 not a tick_id")
+        self.assertFails(says=["(§12) FAIL:", "T0_v2 '20261025T2130Z' is not a tick_id on a minute boundary"], failed="§12")
+        self.write("PREREG-v2.md", PREREG)
+        self.commit("back")
+        self.fill(fee=("2026-10-24T09:00Z", "$0-$10K / 0.60 / 1.20"))
+        self.commit("fees without their unit")
+        self.assertFails(says=["(§12) FAIL:", "fee-tier row '$0-$10K / 0.60 / 1.20'"], failed="§12")
 
     def test_a_no_draft_tag_on_head_fails_a_and_nothing_is_judged(self):
+        self.filled()
         self.git("tag", "-d", "prereg-v2-draft")
         text = self.assertFails(says=["(a) FAIL", "(c) NOT RUN: there is no draft tag", "(e) NOT RUN: (a) failed already"],
                                  failed="a")
@@ -233,6 +260,7 @@ class Seal(Scratch):
         self.assertFails(says=["(a) FAIL: `git merge-base --is-ancestor refs/tags/prereg-v2-draft HEAD` exited 1"])
 
     def test_b_a_dirty_tree_fails(self):
+        self.filled()
         self.write("stray.txt", "x\n")
         self.assertFails(says=["(b) FAIL: `git status --porcelain` lists 1: ?? stray.txt", "(c) PASS"], failed="b")
 
@@ -244,10 +272,12 @@ class Seal(Scratch):
                                "prompts/v3.json: added after prereg-v2-draft and named by prompts/CURRENT"])
 
     def test_e_a_failing_suite_fails(self):
+        self.filled()
         os.environ["SEALTEST_EXIT"] = "1"
         self.assertFails(says=["(e) FAIL: `make test` exited 2"], failed="e")
 
     def test_c_refuses_code_a_changed_version_and_a_moved_file(self):
+        self.filled()
         self.replace("loop/code.py", "Y = 2", "Y = 3")
         self.commit("a code change")
         self.assertFails(says=["loop/code.py: changed after prereg-v2-draft, which §13 (c) does not allow"], failed="c")
@@ -279,6 +309,7 @@ class Seal(Scratch):
         self.assertFails(says=["is not a blank field of §12"])
 
     def test_c_errata_only_additions_at_the_end(self):
+        self.filled()
         self.write("ERRATA.md", ERRATA + "| more |\n")
         self.commit("a row under the deviations heading")
         self.assertFails(says=["ERRATA.md's v2 deviations row '| more |' names no commit in its first cell"])
@@ -290,6 +321,7 @@ class Seal(Scratch):
         self.assertFails(says=["ERRATA.md: a hunk that is not a pure addition at the end"])
 
     def test_c_test_frozen_only_the_pins_of_prereg_v2_and_the_tables(self):
+        self.filled()
         self.write("tests/test_frozen.py", frozen(prereg="c" * 64, table="d" * 64))
         self.commit("re-pinned")
         self.assertPasses()
@@ -301,6 +333,7 @@ class Seal(Scratch):
         self.assertFails(says=["tests/test_frozen.py @@ -3,2 +3,2 @@: a change beyond the sha of a pin"])
 
     def test_c_a_version_file_v1_added_and_not_current_passes_and_v2s_own_does_not(self):
+        self.filled()
         self.write("prompts/v4.json", "{}\n")
         self.commit("v1's promote")
         self.assertPasses()
@@ -379,6 +412,7 @@ class Deviations(Scratch):
     """ERRATA.md's "v2 deviations" table: a listed commit's diff is taken out before (c) judges the rest."""
 
     def test_a_listed_fix_passes_and_is_printed_an_unlisted_one_fails(self):
+        self.filled()
         self.replace("loop/code.py", "Y = 2", "Y = 3")
         fix = self.commit("a fix")
         self.assertFails(says=["loop/code.py: changed after prereg-v2-draft"])
@@ -391,6 +425,7 @@ class Deviations(Scratch):
         self.assertNotIn("READ", text)
 
     def test_a_listed_deviation_in_a_voiding_file_is_named(self):
+        self.filled()
         self.replace("loop/book.py", "return 1", "return 2")
         fix = self.commit("at_cadence changed")
         self.write("ERRATA.md", ERRATA + f"| {fix} | at_cadence | a fix |\n")
@@ -417,6 +452,7 @@ class Deviations(Scratch):
         self.git("merge", "-q", "--no-edit", "main")                     # switch step (4)
         self.git("checkout", "-q", "main")
         self.git("merge", "-q", "--ff-only", "prereg-v2")                # switch step (6)
+        self.filled()
         text = self.assertPasses()
         self.assertIn(f"(c) listed deviation {fix} (ERRATA.md's v2 deviations table), taken out before the judgement:", text)
         self.assertIn("(1 listed deviation(s) taken out)", text)

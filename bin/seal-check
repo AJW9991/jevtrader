@@ -41,9 +41,13 @@ The seal (no flag) exits 0 only when all of §13's five hold:
     inference, the pooling or exclusion readers, rule_c, the alphabet or its cuts, PROMPT.md v2, the digest, promote's
     schedule) is named on a READ line: a file is coarser than what it holds, so the reading is the author's;
 (d) prompts/CURRENT names v2 (prompts.named);
-(e) `make test` exits 0 in the tree (its last lines are printed). NOT RUN when (a)-(d) already failed: the verdict is
-    FAIL either way, and the suite takes minutes. (c) is NOT RUN without a draft tag on HEAD.
-§12's blanks left at the seal are counted on a NOTE line (§13 seals "once §12 is filled"; (a)-(e) do not include it).
+(§12) §12 of PREREG-v2.md in HEAD is filled: no ________ left in it, and its T0_v2 and fee tiers read as loop.dash reads
+    them for bin/promote, the report, status, the dash and v2's make results (a malformed field raises there). Not one of
+    (a)-(e), but the seal's own precondition: the header has prereg-v2-seal made "once §12's fields are filled, tagged
+    only after bin/seal-check exits 0", §13 seals "once §12 is filled", and after the tag --since refuses any edit of
+    PREREG-v2.md, so a field left blank or unreadable at the seal could never be filled;
+(e) `make test` exits 0 in the tree (its last lines are printed). NOT RUN when (a)-(d) or (§12) already failed: the
+    verdict is FAIL either way, and the suite takes minutes. (c) is NOT RUN without a draft tag on HEAD.
 
 --draft exits 0 only when all of §13's three hold:
 - no ________ remains in PREREG-v2.md outside §12: searched in the header and §0-§11, where §1, §2, §3 and §8 write
@@ -61,12 +65,12 @@ allowlist: prompts/v<N>.json and prompts/v<N>.table.<p>.json with N >= 3 and p i
 (bin/promote's commits), HANDOFF.md, proposals/, data/exclusions-v2.tsv and data/looks.tsv. Untracked files are named on
 a NOTE line and not judged (RESULTS-v2.md is one until it is committed).
 """
-import argparse, datetime, json, os, re, subprocess, sys, tempfile
+import argparse, datetime, json, os, re, subprocess, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 sys.path.insert(0, REPO)
-from loop import config, prompts                                # noqa: E402
+from loop import config, dash, prompts                          # noqa: E402
 
 DRAFT_TAG = "refs/tags/prereg-v2-draft"
 DOC_TAG = "refs/tags/prereg-v2-doc"
@@ -349,6 +353,30 @@ def judge_frozen(hs):
     return bad
 
 
+def section12_unfilled(text):
+    """Why §12 of `text` (PREREG-v2.md) is not filled, one reason a line; empty when it is: no ________ left, and T0_v2
+    and the fee tiers read by loop.dash's readers (None there is a blank or a missing field; ValueError a malformed one).
+    Returns (reasons, what was read)."""
+    why, n = [], section(text, 12).count(BLANK)
+    if n:
+        why.append(f"{PREREG} §12 still holds {n} {BLANK} (the seal is made once §12 is filled; after it, --since refuses"
+                   f" any edit of {PREREG})")
+    read = {}
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, PREREG)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        for name, reader in (("T0_v2", dash.read_t0_v2), ("fee tiers", dash.read_fee_tiers)):
+            try:
+                read[name] = reader(path)
+            except ValueError as e:
+                why.append(str(e))
+                continue
+            if read[name] is None:
+                why.append(f"{PREREG} §12's {name} is blank or absent, as loop.dash reads it")
+    return why, read
+
+
 def current_name(repo, rev):
     text = blob(repo, rev, CURRENT)
     names = [l.strip() for l in (text or "").splitlines() if l.strip()]
@@ -445,9 +473,12 @@ def seal(repo, products, out):
         name, why = None, str(e)
     verdict("d", name == "v2", "prompts/CURRENT names v2" if name == "v2" else
             f"prompts/CURRENT names {name!r}, not v2" if name else f"prompts/CURRENT cannot be read: {why}")
-    blanks = section(blob(repo, "HEAD", PREREG) or "", 12).count(BLANK)
-    if blanks:
-        _say(out, f"NOTE: §12 of PREREG-v2.md still holds {blanks} blank(s): §13 seals once §12 is filled")
+    why, read = section12_unfilled(blob(repo, "HEAD", PREREG) or "")
+    t0 = read.get("T0_v2")
+    verdict("§12", not why, f"{PREREG} §12 is filled: no {BLANK} left, T0_v2 "
+            f"{time.strftime('%Y%m%dT%H%M00Z', time.gmtime(t0)) if t0 is not None else '?'} and "
+            f"{len((read.get('fee tiers') or {}).get('tiers', []))} fee tier(s) read as loop.dash reads them" if not why
+            else "; ".join(why))
     if fails:
         _say(out, f"(e) NOT RUN: ({'), ('.join(fails)}) failed already, and the suite takes minutes")
     else:
