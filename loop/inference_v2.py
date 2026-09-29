@@ -333,8 +333,9 @@ def beside_h1(ct, gaps, pool):
             "    beside it: gap_blocks at 900 s: " + ", ".join(f"{p} {len(ks)}" for p, ks in gaps[900].items())]
 
 
-def tested_lines(cells, pool, excluded, void, promoted, beside=None):
-    """§2 (H1, with `beside`, beside_h1's lines, when the descriptive table ran) and §3 (family F)."""
+def tested_lines(cells, pool, excluded, void, beside=None):
+    """§2 (H1, with `beside`, beside_h1's lines, when the descriptive table ran) and §3 (family F). B - A is called
+    test-retest only when F4 is withdrawn (§9.2's NO PROMOTION on a pooled row set); a void block has no row set to read."""
     v = "VOID: " if void else ""
 
     def verdict(x):
@@ -368,7 +369,7 @@ def tested_lines(cells, pool, excluded, void, promoted, beside=None):
               " bootstrap's actual size may exceed nominal, most at 14,400 s (§7); H1 is not a member of F"]
     for name in ("F1", "F2", "F3", "F4"):
         lines += cell_lines(cells[name])
-    if not promoted:
+    if cells["F4"]["withdrawn"]:
         lines.append(f"    F4's B - A is test-retest, descriptive only: before any promotion A and B ask the same wording as two questions (§9.2)")
     return lines
 
@@ -538,7 +539,7 @@ def run(stores, t0, now, resamples=RESAMPLES, accept=False, listed=None, tiers=N
                  f" prompt_a_sha: {promoted} -> " + ("not read: the block is void" if void else
                                                      "a promotion took effect: F4 is read" if promoted else
                                                      "NO PROMOTION (CURRENT never left v2): F4 is withdrawn, B - A is test-retest"))
-    lines += [""] + tested_lines(cells, pool, excluded, void, promoted > 0, beside_h1(ct, gaps, pool) if ct else None)
+    lines += [""] + tested_lines(cells, pool, excluded, void, beside_h1(ct, gaps, pool) if ct else None)
     lines += [""] + reading(cells, rules, void, promoted > 0, da["reading"] if da else None,
                             fee_reading(ct["fee_arithmetic"], used) if ct else None)
     lines += [""] + power_lines(cells, pool, excluded, gaps)

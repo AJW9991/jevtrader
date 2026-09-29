@@ -147,6 +147,7 @@ class NoPromotion(unittest.TestCase):
         self.assertIn("stop rule 2 (§9.2): NO PROMOTION: no live row on a kept product-day of a pooled product has prompt_b_sha", text)
         self.assertIn("never as the rewrite", text)
         self.assertNotIn("F4 rejected", text)
+        self.assertIn("    F4's B - A is test-retest, descriptive only: before any promotion A and B ask the same wording", text)
 
     def test_the_withdrawn_cell_draws_nothing(self):
         seeds = []
@@ -188,6 +189,7 @@ class NoPromotion(unittest.TestCase):
         self.assertIs(out["rules"]["rule2"], False)                                      # B - A > 0: does not fire
         self.assertIn("a promotion took effect: F4 is read", out["text"])
         self.assertIn("-> does not fire (> 0)", out["text"])
+        self.assertNotIn("F4's B - A is test-retest", out["text"])
 
 
 class StopRules(unittest.TestCase):
@@ -265,6 +267,10 @@ class Void(unittest.TestCase):
         self.assertIn("-> not read: the block is void", text)
         self.assertIn("no blocks: nothing to test", text)
         self.assertIn("§8. Descriptive", text)                                           # the descriptive sections still print
+        # a void block has no §9.2 row set (§1 says "not read: the block is void"), so F4 is not withdrawn and §3 does not
+        # call B - A test-retest "before any promotion": that reading is NO PROMOTION's alone
+        self.assertFalse(out["cells"]["F4"]["withdrawn"])
+        self.assertNotIn("F4's B - A is test-retest", text)
 
 
 class Rule3AndTheFile(unittest.TestCase):
