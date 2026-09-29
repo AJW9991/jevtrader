@@ -342,6 +342,26 @@ class Seal(Scratch):
         self.commit("a comment on the pin line")
         self.assertFails(says=["tests/test_frozen.py @@ -3,2 +3,2 @@: a change beyond the sha of a pin"])
 
+    def test_c_test_frozen_the_pin_is_its_key_not_a_mention(self):
+        # a pin line is PREREG-v2.md's or a product's v2 table's by its key, "<path>": "<sha256>": a SPEC.md pin whose
+        # comment names PREREG-v2.md, and the table pin of a product not in config.PRODUCTS, stay frozen (the S5
+        # refuter's defect 12)
+        self.filled()
+        pins = frozen().replace('"SPEC.md": "' + "b" * 64 + '",', '"SPEC.md": "' + "b" * 64 + '",   # SPEC v2, PREREG-v2.md §10')
+        pins = pins.replace("}\n", f'    "prompts/v2.table.BTC-USD.json": "{"e" * 64}",\n}}\n')
+        self.write("tests/test_frozen.py", pins)
+        self.commit("pins with a comment, and a table pin of no product")
+        self.git("tag", "-f", "-a", "prereg-v2-draft", "-m", "draft")
+        self.write("tests/test_frozen.py", pins.replace("b" * 64, "d" * 64))
+        self.commit("only the SPEC pin moved")
+        self.assertFails(says=["tests/test_frozen.py @@ -2,1 +2,1 @@: a change beyond the sha of a pin"], failed="c")
+        self.write("tests/test_frozen.py", pins.replace("e" * 64, "f" * 64))
+        self.commit("the table pin of no product moved")
+        self.assertFails(says=["tests/test_frozen.py @@ -5,1 +5,1 @@: a change beyond the sha of a pin"], failed="c")
+        self.write("tests/test_frozen.py", pins.replace(PIN, "c" * 64))
+        self.commit("PREREG-v2.md's and SOL-USD's table pins moved")
+        self.assertPasses()
+
     def test_c_a_version_file_v1_added_and_not_current_passes_and_v2s_own_does_not(self):
         self.filled()
         self.write("prompts/v4.json", "{}\n")

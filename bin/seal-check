@@ -34,8 +34,9 @@ The seal (no flag) exits 0 only when all of §13's five hold:
     - prompts/CURRENT: any hunk (its value is (d));
     - prompts/v<N>.json with N >= 3: added after the tag (v1's bin/promote) and not the version CURRENT names;
     - ERRATA.md: pure additions at the end (HEAD's text begins with the tag's whole text, which ends in a line break);
-    - tests/test_frozen.py: every hunk replaces lines one for one, each line naming PREREG-v2.md or prompts/v2.table.,
-      each pair differing only in its 64-hex-digit shas (the pins of PREREG-v2.md and of those tables);
+    - tests/test_frozen.py: every hunk replaces lines one for one, each line a pin whose key is PREREG-v2.md or
+      prompts/v2.table.<p>.json for p in config.PRODUCTS (`"<path>": "<sha256>"`, the form STEPS §10.4 keeps them in;
+      a line that only mentions one is not its pin), each pair differing only in that sha;
     - any other path: none.
     A listed deviation that touches a file holding what §13 says voids the draft tag (at_cadence, replay/paired,
     inference, the pooling or exclusion readers, rule_c, the alphabet or its cuts, PROMPT.md v2, the digest, promote's
@@ -98,9 +99,8 @@ PROBE_DAY_RE = re.compile(r"\*\*D = (\d{4}-\d{2}-\d{2})\*\*")
 DEVIATIONS_RE = re.compile(r"^(#{1,6}) .*\bv2 deviations\b", re.I)
 COMMIT_CELL = re.compile(r"[0-9a-f]{7,40}")
 PRODUCT_NAME = re.compile(r"[A-Z0-9]{2,12}-[A-Z]{3,5}")      # a run.json candidate, joined into a path (bin/probe's form)
-SHA64 = re.compile(r"[0-9a-f]{64}")
 HEX12 = re.compile(r"[0-9a-f]{12,64}")
-PIN_NAME = re.compile(r"PREREG-v2\.md|prompts/v2\.table\.")
+PIN_LINE = re.compile(r'^(\s*"(?:PREREG-v2\.md|prompts/v2\.table\.([^"/\s]+)\.json)"\s*:\s*")([0-9a-f]{64})(".*)$')
 HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 VERSION_FILE = re.compile(r"^prompts/v(\d+)\.json$")
 VERSION_TABLE = re.compile(r"^prompts/v(\d+)\.table\.(.+)\.json$")
@@ -360,12 +360,20 @@ def judge_errata(draft_text, new_text):
     return [] if new_text.startswith(draft_text) else [f"{ERRATA}: a hunk that is not a pure addition at the end"]
 
 
-def judge_frozen(hs):
+def judge_frozen(hs, products):
+    """tests/test_frozen.py's hunks: each line a pin whose KEY is PREREG-v2.md or a product's v2 table, only its sha
+    changed; a line that merely mentions one (a comment, another file's pin) stays as the draft tag has it."""
+    def pin(line):
+        m = PIN_LINE.match(line)
+        return m if m and (m.group(2) is None or m.group(2) in products) else None
+
+    def same_pin(o, n):
+        mo, mn = pin(o), pin(n)
+        return bool(mo and mn) and (mo.group(1), mo.group(4)) == (mn.group(1), mn.group(4))
+
     bad = []
     for h in hs:
-        pairs = list(zip(h["minus"], h["plus"]))
-        if h["old_n"] != h["new_n"] or h["old_n"] == 0 or any(
-                not (PIN_NAME.search(o) and PIN_NAME.search(n)) or SHA64.sub("", o) != SHA64.sub("", n) for o, n in pairs):
+        if h["old_n"] != h["new_n"] or h["old_n"] == 0 or not all(same_pin(o, n) for o, n in zip(h["minus"], h["plus"])):
             bad.append(f"{FROZEN_TEST} {_at(h)}: a change beyond the sha of a pin of PREREG-v2.md or of v2's tables")
     return bad
 
@@ -423,7 +431,7 @@ def judge(repo, tree, products):
         elif path == ERRATA:
             bad += judge_errata(blob(repo, DRAFT_TAG, path) or "", blob(repo, tree, path) or "")
         elif path == FROZEN_TEST:
-            bad += judge_frozen(hunks(d))
+            bad += judge_frozen(hunks(d), products)
         else:
             bad.append(f"{path}: {'added' if status == 'A' else 'removed' if status == 'D' else 'changed'} after "
                        "prereg-v2-draft, which §13 (c) does not allow")
