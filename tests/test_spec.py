@@ -22,8 +22,9 @@ WHERE = re.compile(r"`((?:loop|nightly)/[a-z_0-9]+)\.py`|`(bin/[a-z0-9-]+)`")   
 # The modules whose every capitalised constant §14 names (loop/config.py has its own test, below), but these, each with
 # the reason §14 leaves it out (the S6 refuter's defect 3: report.ERRATA_TIER hard-coded a fee §14 did not name, and
 # ten other v2 constants were in no row, so nothing pinned them by value)
-IN_14 = ("loop.book", "loop.cycle", "loop.prompts", "loop.report", "loop.inference_v2", "loop.exclusions_v2",
-         "nightly.digest", "nightly.policy_table", "nightly.slow_model", "bin/promote")
+IN_14 = ("loop.book", "loop.cycle", "loop.prompts", "loop.report", "loop.inference_v2", "loop.exclusions_v2", "loop.looks",
+         "nightly.digest", "nightly.policy_table", "nightly.slow_model", "nightly.answered_model", "nightly.capped",
+         "bin/promote")
 _EXIT, _WORDS = "an exit code", "printed words"
 _DIGEST = "the digest's layout: nightly/digest.py's source is pinned by sha (tests/test_frozen.py FILES)"
 _TABLE = "nightly/policy_table.py's source is pinned by sha (tests/test_frozen.py FILES)"
@@ -45,7 +46,12 @@ NOT_IN_14 = {
                              "TABLE_SHA_LINE": "the .md line that carries the table's sha; " + _TABLE, "EXIT_INCOMPLETE": _EXIT,
                              "FATAL_KINDS": "cycle.UNSENT_KINDS and http-429; " + _TABLE, "TRANSIENT_KINDS": "the retried kinds; " + _TABLE,
                              "HALT_STATUS": "401 and 403, cycle's HALT rule; " + _TABLE},
+    "loop.looks": {"HEADER": "data/looks.tsv's columns (CONTRACT §2)"},
     "nightly.slow_model": {"ID_FORM": "answered_model.MODEL_ID's pattern; tests/test_slow_model.py holds it"},
+    "nightly.answered_model": {"MODEL_ID": "the pattern of an id on a `claude model` line (logged, not fixed: PREREG-v2 §8)",
+                               "MAX_BYTES": "how much of the CLI's transcript it reads to log what answered"},
+    "nightly.capped": {"EXIT_CAPPED": _EXIT, "FORWARDED": "the signals passed on to the capped group",
+                       "GRACE_S": "SIGTERM to SIGKILL; nightly/capped.py's source is pinned by sha (tests/test_frozen.py FILES)"},
     "bin/promote": {"HERE": "a path", "REPO": "a path"},
 }
 _SCRIPTS = {}
@@ -466,6 +472,17 @@ class Constants(unittest.TestCase):
         self.assertLessEqual(set(NOT_IN_14), set(IN_14))
         self.assertIn(("loop.report", "ERRATA_TIER"), named)
         self.assertIn(("bin/promote", "E_MIN"), named)
+
+    def test_section_14_names_the_modules_it_is_held_to_and_claims_no_more(self):
+        # 605f56a opened §14 with "Every constant a row, a v2 reading, the treatment or bin/promote's schedule depends
+        # on", which jev.TRANSIENT and outcomes.GAP, in no row, contradict; the opening now names the modules IN_14
+        # covers, and this holds the list to IN_14
+        intro = " ".join(section(spec_text(), 14).split("\n| where |", 1)[0].split())
+        self.assertNotIn("Every constant a row", intro)
+        listed = re.search(r"of `loop/config\.py` \(but its paths\) and of (.*?) to this table", intro)
+        self.assertIsNotNone(listed)
+        self.assertEqual(sorted(re.findall(r"`([a-z_/0-9]+)`", listed.group(1))),
+                         sorted(m if m.startswith("bin/") else m.split(".", 1)[1] for m in IN_14))
 
     def test_every_value_in_section_14_is_the_codes(self):
         # the S6 refuter's defect 2: this class held only that each §14 name exists and test_frozen's SPEC14 pins the

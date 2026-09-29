@@ -595,14 +595,16 @@ answer to, and with them `table_sha` and `columns.d`.
 
 ## 14. Every constant, in one place
 
-Every constant a row, a v2 reading, the treatment or `bin/promote`'s schedule depends on. A `where`
-cell left blank is the row above's file. `tests/test_spec.py` holds every name here to the module
-named and every value cell to the code's value, and holds every capitalised constant of
+A `where` cell left blank is the row above's file. `tests/test_spec.py` holds every name here to
+the module named and every value cell to the code's value, and holds every capitalised constant of
 `loop/config.py` (but its paths) and of `book`, `cycle`, `prompts`, `report`, `inference_v2`,
-`exclusions_v2`, `digest`, `policy_table`, `slow_model` and `bin/promote` to this table, but those it
-lists as exit codes, file formats, printed words, aliases or parts of a constant named here;
-`tests/test_frozen.py` pins each by value. v2's rows are marked (v2); a v1 constant that v2 left
-alone keeps its v1 row.
+`exclusions_v2`, `looks`, `digest`, `policy_table`, `slow_model`, `answered_model`, `capped` and
+`bin/promote` to this table, but those it lists as exit codes, file formats, printed words,
+aliases, parts of a constant named here, or held with a source pinned by sha;
+`tests/test_frozen.py` pins each by value. The other modules' capitalised names are not all here:
+those v1's §14 left out stay out (a v1 constant that v2 left alone keeps its v1 row), and `dash`'s
+and `status`'s are page layout and the patterns `dash.read_t0_v2` and `dash.read_fee_tiers` read
+PREREG-v2 §12 with (`tests/test_prereg_line.py`). v2's rows are marked (v2).
 
 | where | name | value |
 |---|---|---|
