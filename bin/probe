@@ -8,35 +8,36 @@
 run: every --every seconds, at wall second --start-second (with the defaults, at :30 of every
 minute), takes each candidate in order through loop/feed.py::snapshot (the three public GETs the
 loop uses: book, candles, ticker; 10 s timeout; no retry) and loop/state.py::features (the numbers
-only), and appends one JSON line to DIR/<product>.jsonl: tick_id (the minute floor of ts_rx),
-ts_rx, ok, mid, spread_bps, fill1k_bps, fill1k_short, vol5_usd, trades_5m, feed_age_s and
-tick_est, the smallest positive price step between consecutive levels of the book, one for the
-asks and one for the bids, and gets: what each GET did, "ok" or the feed's error text (a transport
-failure; the feed tolerates a failed ticker, so only this record shows one). A snapshot or a features() call that raises writes a row with ok false
-and the exception's one-line text (no traceback), and the next candidate goes on. It samples the
-UTC day --day only: before it, it waits; it exits 0 after the day's last slot (23:59:30 with the
-defaults), and refuses a day that is already over. SIGTERM finishes the row being written and exits
-0. No request of a cycle starts later than 60 - start_second - LIVE_GUARD_S seconds after its slot
-(at the defaults :58, two seconds before the live loop's :00, which a slow cycle would otherwise
-reach: 18 GETs of up to 10 s each): a candidate not begun by then gets no row that minute (counted
-as skipped), and a GET that would start after it is not sent (the row's record says "deadline",
-which is no transport failure). One line an hour goes to stderr with the counts so far. DIR/run.json records the day, the
-candidates, --every and --start-second; a restart into the same DIR continues the run only when
-all four are the same (PREREG-v2 §2: a restart within D continues it), and is refused otherwise.
+only), and appends one JSON line to DIR/<product>.jsonl: tick_id (the minute floor of ts_rx), ts_rx,
+ok, mid, spread_bps, fill1k_bps, fill1k_short, vol5_usd, trades_5m, feed_age_s and tick_est, the
+smallest positive price step between consecutive levels of the book, one for the asks and one for
+the bids, and gets: what each GET did, "ok" or the feed's error text (a transport failure; the feed
+tolerates a failed ticker, so only this record shows one). A snapshot or a features() call that
+raises writes a row with ok false and the exception's one-line text (no traceback), and the next
+candidate goes on. It samples the UTC day --day only: before it, it waits; it exits 0 after the
+day's last slot (23:59:30 with the defaults), and refuses a day that is already over. SIGTERM
+finishes the row being written and exits 0. No request of a cycle starts later than 60 -
+start_second - LIVE_GUARD_S seconds after its slot (at the defaults :58, two seconds before the live
+loop's :00, which a slow cycle would otherwise reach: 18 GETs of up to 10 s each): a candidate not
+begun by then gets no row that minute (counted as skipped), and a GET that would start after it is
+not sent (the row's record says "deadline", which is no transport failure). One line an hour goes to
+stderr with the counts so far. DIR/run.json records the day, the candidates, --every and
+--start-second; a restart into the same DIR continues the run only when all four are the same
+(PREREG-v2 §2: a restart within D continues it), and is refused otherwise.
 volume: once, after D closes (PREREG-v2 §2: on the next UTC day), the 30 closed ONE_DAY candles
 ending with D (starts D-29 ... D) per candidate, from the venue's public candles endpoint ->
 DIR/volume.json: D and the window, and per product the daily rows found in it, the raw candles and
 sum(volume * close) / 30 in USD a day, which is null unless the rows are exactly those 30 days
 (fewer rows fail criterion (2)). Refused (exit 2, nothing written) before D closes, when DIR's
-run.json is of another day, and when volume.json exists: it runs once. Exit 1 when the endpoint
-did not answer for a candidate (its entry holds the error; §2: criterion (2) is then restated).
+run.json is of another day, and when volume.json exists: it runs once. Exit 1 when the endpoint did
+not answer for a candidate (its entry holds the error; §2: criterion (2) is then restated).
 summarize: offline, from DIR alone (run.json names the day and the candidates; a DIR without it is
 refused): D's minutes with a row for any candidate, the transport failures summed over the
-candidates, and whether D stands (PREREG-v2 §2: void when the probe wrote rows in fewer than 95 %
-of its 1,440 minutes, or transport failures exceed 5 % of its minutes summed over the candidates);
-per product the rows (one a minute: a repeated minute is counted and dropped), the ok rows (the
-three public GETs answered and features computed) as a share of those minutes, the tick size (the
-mode of the ok rows' tick_est values, both sides, ties the smaller, or --tick-override), the median
+candidates, and whether D stands (PREREG-v2 §2: void when the probe wrote rows in fewer than 95 % of
+its 1,440 minutes, or transport failures exceed 5 % of its minutes summed over the candidates); per
+product the rows (one a minute: a repeated minute is counted and dropped), the ok rows (the three
+public GETs answered and features computed) as a share of those minutes, the tick size (the mode of
+the ok rows' tick_est values, both sides, ties the smaller, or --tick-override), the median
 fill1k_bps, the nearest-rank quantiles of h and the atoms, the liq occupancy of the ok rows under
 the h-rule of bin/fill1k-quantiles (imported from it: one rule, one place), the 30-day volume,
 PASS/FAIL per criterion with the failing value, and the first two passing products in candidate
@@ -44,18 +45,18 @@ order, or none when D is void (exit 1).
 
 Rate: this process never starts two requests less than MIN_GAP_S = 1 s apart. feed.snapshot sends
 its three GETs back to back, so the probe routes each of them through its pacer by wrapping
-feed._get in this process only (the loop's own processes never import this file). So that the
-rate holds overall and not per process, one run or volume at a time: each holds an exclusive
-flock on this file itself (LOCK_PATH, opened read-only: no lock file is written) for its whole
-life, and a second run or volume, into any DIR, is refused (exit 2) before it creates anything.
-Six candidates are 18 GETs a minute, ~18 s of the 60.
-Writes only DIR/<product>.jsonl, DIR/run.json and DIR/volume.json, each opened without following
-a symlink and written only when it is a regular file with one link (a file in DIR that is a symlink
-or a hard link to somewhere else is refused, exit 3, and nothing is written through it). DIR is refused (exit 3, before
-anything is created) when it resolves inside the live checkout LIVE_CHECKOUT, under a forbidden
-prefix of loop/config.py, or under any directory named data or logs (PREREG-v2 §2: nothing under
-any data/ or logs/). Never imports the loop's send path
-(its jev and cycle modules); nothing here sends to Jev or reads a key. Exit 2 on a usage error.
+feed._get in this process only (the loop's own processes never import this file). So that the rate
+holds overall and not per process, one run or volume at a time: each holds an exclusive flock on
+this file itself (LOCK_PATH, opened read-only: no lock file is written) for its whole life, and a
+second run or volume, into any DIR, is refused (exit 2) before it creates anything. Six candidates
+are 18 GETs a minute, ~18 s of the 60.
+Writes only DIR/<product>.jsonl, DIR/run.json and DIR/volume.json, each opened without following a
+symlink and written only when it is a regular file with one link (a file in DIR that is a symlink or
+a hard link to somewhere else is refused, exit 3, and nothing is written through it). DIR is refused
+(exit 3, before anything is created) when it resolves inside the live checkout LIVE_CHECKOUT, under
+a forbidden prefix of loop/config.py, or under any directory named data or logs (PREREG-v2 §2:
+nothing under any data/ or logs/). Never imports the loop's send path (its jev and cycle modules);
+nothing here sends to Jev or reads a key. Exit 2 on a usage error.
 """
 import argparse, collections, contextlib, datetime as dt, fcntl, importlib.machinery, importlib.util, json, math, os, re
 import signal, stat, statistics, sys, time
