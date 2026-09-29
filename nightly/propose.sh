@@ -16,6 +16,8 @@
 # nothing may be written before the path guard, which needs it, so that one is a stderr line launchd keeps). The two
 # non-zero exits are the usage error (2) and the path guard (3), both before any work.
 # One run per date: a DATE whose proposals/<date>.json or .md exists is refused (one FAIL line).
+# The slow model is pinned (PREREG-v2 §8): `--model` takes nightly/slow_model.py's MODEL_ID, the one place the id lives;
+# while it is blank (until §8 names it) or not an id, a live night fails at its start and sends nothing.
 #
 # Usage: nightly/propose.sh [--date YYYY-MM-DD] [--root DIR] [--dry (with --root DIR outside the repo)]
 #   --date  the UTC day to digest; default: yesterday
@@ -166,6 +168,20 @@ PREV="$("$PY" -c 'import datetime as d, sys; print((d.date.fromisoformat(sys.arg
 [ -e "$ROOT/proposals/$PREV.json" ] || [ -e "$ROOT/proposals/$PREV.md" ] || [ -e "$REPO/proposals/$PREV.md" ] \
   || log "note: no proposal exists for $PREV (a missed slot?); this run is for $DATE only"
 
+# 0. the slow model's id (PREREG-v2 §8), read from ONE place, nightly/slow_model.py, before anything of the night is
+#    made: blank (until §8 names it) or not an id, the night fails here, with no digest, no claude call and no Jev
+#    send. Isolated like the guard, so the repo's module and nothing else answers. --dry makes no call and needs none.
+MODEL_ID=""
+if [ $DRY -eq 0 ]; then
+  MODEL_ID="$("$PY" -I -B -c 'import re, sys; sys.path.insert(0, sys.argv[1]); from nightly import slow_model as s; m = s.MODEL_ID
+print("blank" if m == "" else "id:" + m if isinstance(m, str) and re.fullmatch(s.ID_FORM, m) else "bad")' "$REPO" 2>/dev/null)"
+  case "$MODEL_ID" in
+    id:*) MODEL_ID="${MODEL_ID#id:}" ;;
+    blank) fail "no slow model id: nightly/slow_model.py MODEL_ID is blank until PREREG-v2 §8 names it; no claude call, nothing sent" ;;
+    *) fail "nightly/slow_model.py MODEL_ID is not a model id (or could not be read); no claude call, nothing sent" ;;
+  esac
+fi
+
 # 1. digest: exit 4 = the day has no rows, so there is nothing for the model to read.
 DIGEST="$ROOT/data/digest-$DATE.md"
 "$PY" -m nightly.digest --date "$DATE" ${PROMPTS_ROOT:+--prompts "$PROMPTS_ROOT"} \
@@ -241,19 +257,20 @@ $(cat "$DIGEST")"
   # night, since launchd never starts a second instance while one runs. caffeinate stays outermost.
   T_START=$(date +%s)
   ( cd "$WORK" || exit 125; exec "$CAFFEINATE" -i "$PY" "$REPO/nightly/capped.py" "$CLAUDE_CAP_S" -- \
-    "$CLAUDE" -p "$PROMPT" --tools "" --restricted --strict-mcp-config \
+    "$CLAUDE" -p "$PROMPT" --model "$MODEL_ID" --tools "" --restricted --strict-mcp-config \
     --settings "$REPO/nightly/settings.json" --output-format text ) >"$RAW" 2>"$LOGS/claude-$DATE.err"
   rc=$?
   unset CLAUDE_CODE_OAUTH_TOKEN
   rm -rf "$WORK"
   log "claude exit $rc after $(( $(date +%s) - T_START )) s wall clock (cap $CLAUDE_CAP_S s awake)"
-  # Which model answered, read AFTER the call from the CLI's own transcript of it (the call names
-  # none and stays as it was: HANDOFF decision 4, record not pin, approved 2026-09-28). Capped
-  # like --version; it only reads, and says nothing rather than fail the night.
+  # Which model answered, read AFTER the call from the CLI's own transcript of it: the call asks for
+  # MODEL_ID (PREREG-v2 §8), and what answered is logged beside it each night, not fixed (§8: "the
+  # answering model line each night"). Capped like --version; it only reads, and says nothing rather
+  # than fail the night.
   WROTE="$("$PY" "$REPO/nightly/capped.py" 10 -- "$PY" -I -B "$REPO/nightly/answered_model.py" \
     "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" "$WORK" 2>/dev/null | head -1)"
   WROTE="${WROTE:-unrecorded}"
-  log "claude model $WROTE (read from the CLI's transcript of this call, which names no model)"
+  log "claude model $WROTE (read from the CLI's transcript of this call; requested --model $MODEL_ID)"
   [ $rc -eq 124 ] && fail "claude capped at $CLAUDE_CAP_S s awake (see $LOGS/claude-$DATE.err)"
   [ $rc -eq 0 ] || fail "claude exit $rc (see $LOGS/claude-$DATE.err)"
 fi

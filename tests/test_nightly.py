@@ -123,6 +123,27 @@ def _tree_copy(tc):
     return copy
 
 
+STUB_MODEL = "claude-stub-pinned-1"                 # the slow model id a live-branch test's tree copy is pinned to
+
+
+def _live_tree(tc, model_id=STUB_MODEL):
+    """_tree_copy with SPEC.md beside it (the digest keeps the rows of this tree's SPEC sha) and nightly/slow_model.py's
+    MODEL_ID set to `model_id`: propose.sh's live branch calls `claude -p --model <MODEL_ID>` and fails the night while
+    the id is blank (PREREG-v2 §8), which the checkout's is until §8 names it. The id has no other source, so a test sets
+    it in a copy, never in the checkout."""
+    copy = _tree_copy(tc)
+    shutil.copy(os.path.join(REPO, "SPEC.md"), copy)
+    p = os.path.join(copy, "nightly", "slow_model.py")
+    with open(p, encoding="utf-8") as fh:
+        src = fh.read()
+    src, n = re.subn(r'(?m)^MODEL_ID = "[^"\n]*"', lambda m: "MODEL_ID = " + json.dumps(model_id), src)
+    if n != 1:
+        raise AssertionError("nightly/slow_model.py has no one MODEL_ID line")
+    with open(p, "w", encoding="utf-8") as fh:
+        fh.write(src)
+    return copy
+
+
 def _second_name(tc, path, env):
     """(argv prefix, alias): a second name for the existing directory `path` that os.path.realpath does
     not unify with it, and what a command must be started under to see it by that name. On the Mac:
@@ -1238,6 +1259,7 @@ class LiveBranch(unittest.TestCase):
         self.saw = os.path.join(self.tmp, "saw")                         # what the stub saw: argv, cwd, token
         os.makedirs(self.saw)
         self.prompts = pin_v1(self)                                      # the digest in the prompt quotes v1
+        self.repo = _live_tree(self)                                     # a copy whose slow model id is STUB_MODEL
 
     def _stub(self, body):
         p = os.path.join(self.tmp, "claude")
@@ -1249,8 +1271,8 @@ class LiveBranch(unittest.TestCase):
     def _run(self, stub, cap="2700", **extra):
         env = _sh_env(self, self.tmp, JEVLOOP_CLAUDE=stub, JEVLOOP_TOKEN_FILE=self.token, JEVLOOP_CLAUDE_CAP_S=cap,
                       JEVLOOP_PROMPTS=self.prompts, **extra)
-        return subprocess.run(["/bin/bash", os.path.join(REPO, "nightly", "propose.sh"), "--date", DAY.isoformat(), "--root", self.tmp],
-                              capture_output=True, text=True, timeout=120, env=env, cwd=REPO)
+        return subprocess.run(["/bin/bash", os.path.join(self.repo, "nightly", "propose.sh"), "--date", DAY.isoformat(), "--root", self.tmp],
+                              capture_output=True, text=True, timeout=120, env=env, cwd=self.repo)
 
     def _home(self, memory=None):
         """A HOME for the run: empty, or with ~/.claude/CLAUDE.md holding `memory`."""
@@ -1296,12 +1318,12 @@ class LiveBranch(unittest.TestCase):
         # the flags, exactly: no tool, no MCP, no settings file but ours, text out
         with open(os.path.join(self.saw, "argv"), "rb") as fh:
             argv = fh.read().decode("utf-8").split("\0")[:-1]
-        repo = os.path.realpath(REPO)
+        repo = os.path.realpath(self.repo)
         self.assertEqual(argv[0], "-p")
         with open(os.path.join(REPO, "nightly", "PROMPT.md"), encoding="utf-8") as fh:
             self.assertTrue(argv[1].startswith(fh.read().rstrip("\n") + "\n\n"))   # PROMPT.md, then the digest
         self.assertIn("B disagreements", argv[1])
-        self.assertEqual(argv[2:], ["--tools", "", "--restricted", "--strict-mcp-config",
+        self.assertEqual(argv[2:], ["--model", STUB_MODEL, "--tools", "", "--restricted", "--strict-mcp-config",
                                     "--settings", os.path.join(repo, "nightly", "settings.json"), "--output-format", "text"])
         for a in argv:
             self.assertNotIn(self.TOKEN, a)
@@ -1341,11 +1363,11 @@ class LiveBranch(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         with open(os.path.join(self.tmp, "logs", "propose.log"), encoding="utf-8") as fh:
             log = fh.read()
-        self.assertIn("claude model claude-stub-1 (read from the CLI's transcript of this call, which names no model)", log)
+        self.assertIn(f"claude model claude-stub-1 (read from the CLI's transcript of this call; requested --model {STUB_MODEL})", log)
         self.assertIn("$PY -m nightly.policy_table --writer-model claude-stub-1 --out proposals/", log.replace(sys.executable, "$PY"))
         with open(os.path.join(self.saw, "argv"), "rb") as fh:
             argv = fh.read().decode("utf-8").split("\0")[:-1]
-        self.assertNotIn("--model", argv)                                     # recorded, not pinned
+        self.assertEqual(argv[argv.index("--model") + 1], STUB_MODEL)         # pinned (PREREG-v2 §8), and recorded
         self.assertEqual(argv[-2:], ["--output-format", "text"])
         projects = os.listdir(os.path.join(home, ".claude", "projects"))             # the temp HOME's, nowhere else
         self.assertEqual(len(projects), 1, projects)
@@ -1452,6 +1474,24 @@ class LiveBranch(unittest.TestCase):
         with open(os.path.join(self.tmp, "logs", "propose.log"), encoding="utf-8") as fh:
             self.assertIn("FAIL invalid proposal", fh.read())
         self.assertEqual([f for f in os.listdir(os.path.join(self.tmp, "proposals")) if f.startswith(DAY.isoformat())], [])
+
+    def test_a_blank_or_malformed_slow_model_id_fails_the_night_before_anything_is_sent(self):
+        # PREREG-v2 §8: the id is read from nightly/slow_model.py alone; blank until §8 names it, or not an id, the night
+        # fails at its start: no digest, no --version, no token read, no claude call, no proposal
+        stub = self._stub('echo called >"%s/called"\n' % self.saw)
+        for mid, why in (("", "no slow model id: nightly/slow_model.py MODEL_ID is blank until PREREG-v2 §8 names it"),
+                         ("x; rm -rf /", "nightly/slow_model.py MODEL_ID is not a model id")):
+            self.repo = _live_tree(self, mid)
+            r = self._run(stub, HOME=self._home())
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn(f"FAIL {why}", r.stderr)
+            self.assertIn("no claude call, nothing sent", r.stderr)
+            self.assertEqual(os.listdir(self.saw), [], mid)                    # the stub never ran, not even --version
+            self.assertFalse(os.path.exists(os.path.join(self.tmp, "data", f"digest-{DAY.isoformat()}.md")))
+            self.assertFalse(os.path.exists(os.path.join(self.tmp, "proposals", f"{DAY.isoformat()}.json")))
+            self.assertTrue(os.path.exists(os.path.join(self.tmp, "data", "dash.html")))   # the night still rebuilds it
+        with open(os.path.join(REPO, "nightly", "slow_model.py"), encoding="utf-8") as fh:
+            self.assertIn(f"MODEL_ID = {json.dumps(__import__('nightly.slow_model').slow_model.MODEL_ID)}", fh.read())
 
     def test_a_day_that_has_a_json_spends_no_claude_call(self):
         prop = os.path.join(self.tmp, "proposals", f"{DAY.isoformat()}.json")
