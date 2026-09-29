@@ -55,6 +55,22 @@ class ProductsCommit(unittest.TestCase):
         self.assertIn("§13 (0)", text[:text.index(first)])
 
 
+    def test_a_merge_that_changes_prereg_v2_moves_its_pin_in_the_merge_commit(self):
+        # tests/test_frozen.py pins PREREG-v2.md (PREREG-v2 §10), and main has edited PREREG-v2.md since the build last
+        # took it, so 10.1's merge fails make test on that pin; the pin moves in the commit that changes the file
+        text = " ".join(subsection("10.1").split())
+        self.assertIn("`tests/test_frozen.py` pins PREREG-v2.md's bytes", text)
+        self.assertIn("git add tests/test_frozen.py && git commit --amend --no-edit && make test", text)
+        self.assertIn("Every later edit of PREREG-v2.md before the draft tag (each a §14 entry) moves the pin in its own"
+                      " commit the same way", text)
+
+    def test_the_products_commit_writes_specs_rows_and_its_pin(self):
+        # SPEC v2 §5 gives each product's TICK_P and atoms, and tests/test_spec.py holds that table to config.PRODUCTS
+        text = " ".join(subsection("10.1").split())
+        self.assertIn("SPEC.md §5's per-product table", text)
+        self.assertIn("and SPEC.md's sha", text)
+
+
 class DraftTag(unittest.TestCase):
     """10.4: what main takes before the draft tag."""
 

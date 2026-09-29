@@ -1,7 +1,8 @@
 """The suite holds once the probe's products are in config.PRODUCTS (PREREG-v2 §2). The commit that adds them
 writes loop/config.py (PRODUCTS, TICK_P, LIQ_ATOMS, LIQ_THIN_FALLBACK, and with them DAILY_SPEND_HALT_USD,
-0.25 x the products), the pins in tests/test_frozen.py and the loop plists `bin/plists --write` writes for them (their
-EXPECTED entries in tests/test_nightly.py follow PRODUCTS), and nothing else. So no other test may assume one
+0.25 x the products), SPEC.md §5's rows for them (tests/test_spec.py's LiqTable), the pins in tests/test_frozen.py
+(SPEC.md's sha among them) and the loop plists `bin/plists --write` writes for them (their EXPECTED entries in
+tests/test_nightly.py follow PRODUCTS), and nothing else. So no other test may assume one
 product: not the $0.25 tripwire (it is $0.25 a product), not a probe candidate as the example of a product
 outside PRODUCTS (the tests use BTC-USD, neither SOL-USD nor a candidate: test_config checks it). At S1 of the
 v2 build 18 tests outside the pins failed with ETH-USD and XRP-USD added (the refuter's three-product run).

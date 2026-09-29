@@ -387,6 +387,12 @@ it "before any further edit of PREREG-v2.md on the build branch", and this step 
 cd ~/Projects/jev-paper-loop-v2 && git merge --no-edit main && make test
 ```
 
+`tests/test_frozen.py` pins PREREG-v2.md's bytes, so a merge that brings `main`'s edits of it fails `make test` on
+that one pin: put the new sha (`shasum -a 256 PREREG-v2.md`) on the `"PREREG-v2.md": "…",` line and fold it into the
+merge commit (`git add tests/test_frozen.py && git commit --amend --no-edit && make test`), so the pin changes in the
+commit that changes the file. Every later edit of PREREG-v2.md before the draft tag (each a §14 entry) moves the pin
+in its own commit the same way.
+
 Then, on 2026-10-01 (UTC), once (PREREG-v2 §2):
 
 ```bash
@@ -404,9 +410,10 @@ cd ~/Projects/jev-paper-loop-v2 && git add probe/2026-09-30 && git commit -m "pr
 ```
 
 Then one commit adds the products (tests/test_products_added.py says what it holds): `loop/config.py` (`PRODUCTS` in
-summarize's order, `TICK_P`, `LIQ_ATOMS` from its a10/a90, `LIQ_THIN_FALLBACK`), the pins in `tests/test_frozen.py`
-(`THRESHOLDS`, `RULE_C` per product), and the two loop plists; PREREG-v2.md §2's Products, `TICK_p` and Atoms fields
-and their §14 entry go with it or right after:
+summarize's order, `TICK_P`, `LIQ_ATOMS` from its a10/a90, `LIQ_THIN_FALLBACK`), SPEC.md §5's per-product table (a row
+each, `tests/test_spec.py` holds it to config), the pins in `tests/test_frozen.py` (`THRESHOLDS`, `RULE_C` per product,
+`SPEC14`'s per-product values and `DAILY_SPEND_HALT_USD`, and SPEC.md's sha), and the two loop plists; PREREG-v2.md §2's
+Products, `TICK_p` and Atoms fields and their §14 entry go with it or right after, with PREREG-v2.md's pin:
 
 ```bash
 cd ~/Projects/jev-paper-loop-v2 && bin/plists --write && plutil -lint launchd/*.plist && make test
