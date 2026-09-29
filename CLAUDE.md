@@ -6,7 +6,9 @@ Three arms once a minute on Coinbase SOL-USD (A frozen v1, B the rewritten CURRE
 no-model rule), a nightly Claude proposal, a person promotes. Read `PROTOCOL.md` (the eleven
 conditions), `PREREG.md` (sealed `prereg-v1`, T0 2026-09-25 21:40Z, sample ends 2026-10-23
 21:40Z), `SPEC.md` (what a row means), `CONTRACT.md` (module interfaces), `STEPS.md` (what a
-person installs), and `HANDOFF.md` (where the last session left off).
+person installs), and `HANDOFF.md` (the dated record: decisions, procedures, write-up notes). Where the
+last session left off is the brain's baton block, `~/Projects/Claude/state/blocks/jev-paper-loop.md`;
+Mac only from 2026-09-29, the GitHub remote is the code's off-machine copy and CI.
 
 ## What must not change during the sample (until 2026-10-23 21:40Z)
 - `SPEC.md` (every row carries its sha), `prompts/` (only `bin/promote`, run by Alex, writes

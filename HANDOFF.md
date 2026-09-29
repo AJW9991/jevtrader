@@ -1,12 +1,13 @@
-# HANDOFF — where the last session left off
+# HANDOFF — the repo's dated record
 
-Written 2026-09-28 ~21:50Z by Claude (Fable 5.1) on Alex's Mac, the session that PULLED the cloud
-merge onto the Mac. Supersedes the cloud session's handoff of 2026-09-28 (branch
-`claude/cool-lamport-7sirtw`, merged to `main` by fast-forward at 183db6b); its record of what the
-branch changed is kept below unchanged. Update this file at the end of every session that changes
-state; whichever session ends last pushes. The cloud session handed off to this one on 2026-09-29:
-its branch is fully merged and nothing is pending there; what it knew that this file did not say is
-in "What tonight's log should show" (State), "Known residuals" and the prereg-v2 notes.
+**Mac only from 2026-09-29** (Alex). The baton — where the last session left off, what the next one does,
+what waits on Alex — is the brain's block, `~/Projects/Claude/state/blocks/jev-paper-loop.md`, and
+only that. This file is the record that outlives a block: decisions with their dates, the procedures
+(pulling a merge, day 28), the treatment-context notes and the prereg-v2 notes for the write-up. It
+changes when a decision or a procedure lands, not at every session end. The GitHub remote stays as
+the off-machine copy of the code and for CI; push after a commit, expect no cloud session to read it.
+The cloud session of 2026-09-28 (branch `claude/cool-lamport-7sirtw`) is fully merged at 183db6b and
+nothing is pending there; its record of what the branch changed is kept below unchanged.
 
 ## State
 - **The Mac runs 183db6b since 2026-09-28 21:31:50Z.** `git pull --ff-only` between ticks (heartbeat
