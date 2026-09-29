@@ -1300,6 +1300,8 @@ class LiveBranch(unittest.TestCase):
                           'printf "%s\\0" "$@" >"{saw}/argv"\n'
                           'pwd -P >"{saw}/cwd"\n'
                           'ls -A >"{saw}/ls"\n'
+                          'printf "%s" "$CLAUDE_CONFIG_DIR" >"{saw}/cfg"\n'
+                          'ls -A "$CLAUDE_CONFIG_DIR" >"{saw}/cfg-ls"\n'
                           'cat <<"EOF"\nreply\n\n```json\n{{"candidates": [{{"rationale": "t", "instructions": "Decide.",'
                           ' "criteria": {{"buy": "pumping", "sell": "dumping", "hold": "else"}}}}]}}\n```\nEOF\n'.format(saw=self.saw))
         memory = "user memory the CLI loads\n"
@@ -1341,9 +1343,20 @@ class LiveBranch(unittest.TestCase):
                 break
             d = os.path.dirname(d)
         self.assertFalse(os.path.exists(cwd), "the empty cwd was not removed")
-        # and the night's record: that cwd, the user memory's sha, the CLI's version
-        self.assertIn("(empty); user memory ", log)
-        self.assertIn("CLAUDE.md sha256 " + hashlib.sha256(memory.encode()).hexdigest()[:12] + "; cli 9.9.9 (stub claude)", log)
+        # the config dir (PREREG-v2 §8): a fresh one, not HOME's ~/.claude with its CLAUDE.md, outside the repo, empty
+        # when the call ran, gone after; the night's record says user memory was not loaded, beside the CLI's version
+        with open(os.path.join(self.saw, "cfg"), encoding="utf-8") as fh:
+            cfg = fh.read()
+        self.assertTrue(os.path.isabs(cfg), cfg)
+        self.assertNotEqual(os.path.realpath(cfg), os.path.realpath(os.path.join(self._home(), ".claude")))
+        self.assertFalse((cfg + os.sep).startswith(repo + os.sep), cfg)
+        self.assertRegex(os.path.basename(cfg), r"^jevloop-config\.[A-Za-z0-9]+$")
+        with open(os.path.join(self.saw, "cfg-ls"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "")
+        self.assertFalse(os.path.exists(cfg), "the fresh config dir was not removed")
+        self.assertIn(f"(empty); config dir {cfg} (fresh; no CLAUDE.md, CLAUDE.local.md, rules, skills, agents or plugins): "
+                      "user memory not loaded; cli 9.9.9 (stub claude)", log)
+        self.assertNotIn(hashlib.sha256(memory.encode()).hexdigest()[:12], log)       # v1 logged the memory's sha: not read now
 
     REPLY = ('cat <<"EOF"\nreply\n\n```json\n{"candidates": [{"rationale": "t", "instructions": "Decide.",'
              ' "criteria": {"buy": "pumping", "sell": "dumping", "hold": "else"}}]}\n```\nEOF\n')
@@ -1369,9 +1382,7 @@ class LiveBranch(unittest.TestCase):
             argv = fh.read().decode("utf-8").split("\0")[:-1]
         self.assertEqual(argv[argv.index("--model") + 1], STUB_MODEL)         # pinned (PREREG-v2 §8), and recorded
         self.assertEqual(argv[-2:], ["--output-format", "text"])
-        projects = os.listdir(os.path.join(home, ".claude", "projects"))             # the temp HOME's, nowhere else
-        self.assertEqual(len(projects), 1, projects)
-        self.assertRegex(projects[0], r"-jevloop-claude-[A-Za-z0-9]+$")
+        self.assertFalse(os.path.exists(os.path.join(home, ".claude", "projects")))   # in the fresh config dir, not HOME's
 
     def test_a_night_whose_transcript_is_not_found_logs_unrecorded(self):
         stub = self._stub('[ "$1" = --version ] && { echo "9.9.9 (stub claude)"; exit 0; }\n' + self.REPLY)
@@ -1431,6 +1442,40 @@ class LiveBranch(unittest.TestCase):
             self.assertTrue(fh.read().startswith(os.path.realpath("/tmp") + os.sep))
         self.assertTrue(os.path.exists(os.path.join(self.tmp, "proposals", f"{DAY.isoformat()}.json")))
 
+    def test_a_config_dir_that_holds_user_memory_fails_the_night_before_the_call(self):
+        # PREREG-v2 §8: the fresh CLAUDE_CONFIG_DIR must hold none of CLAUDE.md, CLAUDE.local.md, rules/, skills/, agents/,
+        # plugins/ when the call is due. The stub's --version (which runs with it set, as the CLI's would) plants one: the
+        # night fails, the token is never read into the call, the -p call never runs, and the dir is removed.
+        for name, make in (("CLAUDE.md", "file"), ("CLAUDE.local.md", "file"), ("rules", "dir"), ("skills", "dir"),
+                           ("agents", "dir"), ("plugins", "dir")):
+            plant = f'touch "$CLAUDE_CONFIG_DIR/{name}"' if make == "file" else f'mkdir "$CLAUDE_CONFIG_DIR/{name}"'
+            stub = self._stub('[ "$1" = --version ] && { printf "%s" "$CLAUDE_CONFIG_DIR" >"' + self.saw + '/cfg"; '
+                              + plant + '; echo "9.9.9 (stub claude)"; exit 0; }\n'
+                              'echo called >"' + self.saw + '/called"\n' + self.REPLY)
+            r = self._run(stub, HOME=self._home())
+            self.assertEqual(r.returncode, 0, r.stderr)
+            with open(os.path.join(self.saw, "cfg"), encoding="utf-8") as fh:
+                cfg = fh.read()
+            self.assertIn(f"FAIL claude's fresh config dir holds {name} ({cfg}/{name}): user memory would load; nothing sent",
+                          r.stderr)
+            self.assertNotIn("user memory not loaded", r.stderr)
+            self.assertFalse(os.path.exists(os.path.join(self.saw, "called")), name)    # the call never ran
+            self.assertFalse(os.path.exists(cfg), name)                                  # removed however the night ended
+            self.assertFalse(os.path.exists(os.path.join(self.tmp, "proposals", f"{DAY.isoformat()}.json")))
+            os.unlink(os.path.join(self.saw, "cfg"))
+
+    def test_a_config_dir_inside_the_repo_fails_the_night(self):
+        # "a fresh mktemp -d outside the repo": a TMPDIR inside the tree would put it there
+        tmpdir = os.path.join(self.repo, "tmp")
+        os.makedirs(tmpdir)
+        stub = self._stub('echo called >"' + self.saw + '/called"\n' + self.REPLY)
+        r = self._run(stub, TMPDIR=tmpdir)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f"FAIL claude's config dir {os.path.realpath(tmpdir)}/jevloop-config.", r.stderr)
+        self.assertIn("is inside the repo; nothing sent", r.stderr)
+        self.assertEqual(os.listdir(self.saw), [])
+        self.assertEqual(os.listdir(tmpdir), [])                                         # work dir and config dir removed
+
     def test_a_hung_claude_is_one_fail_line_and_the_night_ends_clean(self):
         stub = self._stub('[ "$1" = --version ] && { echo "9.9.9 (stub claude)"; exit 0; }\nsleep 30\n')
         t = time.monotonic()
@@ -1450,7 +1495,7 @@ class LiveBranch(unittest.TestCase):
         with open(os.path.join(self.tmp, "logs", "propose.log"), encoding="utf-8") as fh:
             log = fh.read()
         self.assertIn("FAIL claude exit 7", log)
-        self.assertIn("CLAUDE.md absent; cli unknown", log)                  # no user memory; --version failed too
+        self.assertIn("user memory not loaded; cli unknown", log)            # --version failed too
         with open(os.path.join(self.saw, "cwd"), encoding="utf-8") as fh:
             self.assertFalse(os.path.exists(fh.read().strip()), "a failed night left its empty cwd behind")
         self.assertTrue(os.path.exists(os.path.join(self.tmp, "data", "dash.html")))   # a failed night rebuilds it too

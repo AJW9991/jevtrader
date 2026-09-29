@@ -18,6 +18,9 @@
 # One run per date: a DATE whose proposals/<date>.json or .md exists is refused (one FAIL line).
 # The slow model is pinned (PREREG-v2 §8): `--model` takes nightly/slow_model.py's MODEL_ID, the one place the id lives;
 # while it is blank (until §8 names it) or not an id, a live night fails at its start and sends nothing.
+# No user memory (PREREG-v2 §8): the call and answered_model.py run with CLAUDE_CONFIG_DIR a fresh mktemp -d outside the
+# repo, made and removed each night; one holding CLAUDE.md, CLAUDE.local.md, rules/, skills/, agents/ or plugins/ when
+# the call is due fails the night, sending nothing. The log says "user memory not loaded".
 #
 # Usage: nightly/propose.sh [--date YYYY-MM-DD] [--root DIR] [--dry (with --root DIR outside the repo)]
 #   --date  the UTC day to digest; default: yesterday
@@ -131,7 +134,7 @@ fail() { log "FAIL $*"; exit 0; }
 #    of every nightly"). Non-fatal: a dash failure is one log line, never a FAIL, and the night's
 #    exit status is kept. The trap is installed here, after the usage (2) and guard (3) exits and
 #    once logs/ exists; it also removes the claude call's empty cwd however the night ended.
-WORK=""
+WORK=""; CFG=""
 rebuild_dash() {
   [ -x "$PY" ] || return 0
   ( cd "$REPO" && "$PY" -m loop.dash --log "$ROOT/data/decisions.jsonl" --out "$ROOT/data/dash.html" \
@@ -141,6 +144,7 @@ rebuild_dash() {
 on_exit() {
   st=$?
   [ -n "$WORK" ] && rm -rf "$WORK"
+  [ -n "$CFG" ] && rm -rf "$CFG"
   rebuild_dash
   exit $st
 }
@@ -222,12 +226,18 @@ else
   # from then on saw. Note what this does and does not restore: the CLI's own per-machine
   # context (cwd, git status, memory paths) differs between the repo and an empty non-git
   # directory, so the night this is deployed is a change of the model's context either way
-  # (2026-09-28; HANDOFF records the date). The CLI still loads the user's own memory,
-  # ~/.claude/CLAUDE.md, so its sha256 is logged each night, beside the CLI version, so which
-  # input and which CLI wrote each night is on record. Any CLAUDE.md, CLAUDE.local.md or .claude
-  # in an ancestor of the temp directory (a shared /tmp is world-writable) would be loaded too:
-  # the ancestors are walked and the night fails rather than send with one. capped.py is run
-  # by path: `-m nightly.capped` resolves against the cwd, and it imports only the standard library.
+  # (2026-09-28; HANDOFF records the date). Any CLAUDE.md, CLAUDE.local.md or .claude in an
+  # ancestor of the temp directory (a shared /tmp is world-writable) would be loaded too: the
+  # ancestors are walked and the night fails rather than send with one. capped.py is run by path:
+  # `-m nightly.capped` resolves against the cwd, and it imports only the standard library.
+  # No user memory (PREREG-v2 §8). v1's nights loaded ~/.claude/CLAUDE.md, the user's own memory,
+  # and logged its sha. The CLI reads user memory, settings, rules, skills, agents and plugins from
+  # its config dir, ~/.claude unless CLAUDE_CONFIG_DIR names another, and keeps the session's
+  # transcript there. So CLAUDE_CONFIG_DIR is a fresh `mktemp -d` outside the repo, made and removed
+  # each night like the work dir, for --version, the call and answered_model.py; if it holds
+  # CLAUDE.md, CLAUDE.local.md, rules/, skills/, agents/ or plugins/ when the call is due (the CLI's
+  # --version runs in it first and may write there), the night fails and nothing is sent. The log
+  # says "user memory not loaded"; the OAuth token is the environment's, not the config dir's.
   TMPBASE="${TMPDIR:-/tmp}"
   WORK="$(mktemp -d "${TMPBASE%/}/jevloop-claude.XXXXXX")" || fail "cannot make an empty cwd for claude"
   ANC="$(cd "$WORK" && pwd -P)"
@@ -238,16 +248,19 @@ else
     [ "$ANC" = "/" ] && break
     ANC="$(dirname "$ANC")"
   done
-  MEM="$HOME/.claude/CLAUDE.md"
-  if [ -f "$MEM" ]; then
-    MEMSHA="$("$PY" -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest()[:12])' "$MEM" 2>/dev/null)"
-    MEMSHA="sha256 ${MEMSHA:-unreadable}"
-  else
-    MEMSHA="absent"
-  fi
+  CFG="$(mktemp -d "${TMPBASE%/}/jevloop-config.XXXXXX")" || { CFG=""; fail "cannot make a fresh config dir for claude; nothing sent"; }
+  CFG_REAL="$(realpath_py "$CFG")"
+  [ -n "$CFG_REAL" ] || fail "cannot resolve claude's config dir $CFG; nothing sent"
+  case "$CFG_REAL/" in "$REPO_REAL"/*) fail "claude's config dir $CFG_REAL is inside the repo; nothing sent" ;; esac
+  CLAUDE_CONFIG_DIR="$CFG_REAL"; export CLAUDE_CONFIG_DIR
   # capped too: a --version that hung would hold the night, and launchd every night after it
   CLI="$(cd "$WORK" && "$PY" "$REPO/nightly/capped.py" 10 -- "$CLAUDE" --version 2>/dev/null | head -1)"
-  log "claude cwd $WORK (empty); user memory $MEM $MEMSHA; cli ${CLI:-unknown}"
+  for f in CLAUDE.md CLAUDE.local.md rules skills agents plugins; do
+    if [ -e "$CFG_REAL/$f" ] || [ -L "$CFG_REAL/$f" ]; then
+      fail "claude's fresh config dir holds $f ($CFG_REAL/$f): user memory would load; nothing sent"
+    fi
+  done
+  log "claude cwd $WORK (empty); config dir $CFG_REAL (fresh; no CLAUDE.md, CLAUDE.local.md, rules, skills, agents or plugins): user memory not loaded; cli ${CLI:-unknown}"
   CLAUDE_CODE_OAUTH_TOKEN="$(tr -d '\r\n' <"$TOKEN_FILE")"; export CLAUDE_CODE_OAUTH_TOKEN
   PROMPT="$(cat "$REPO/nightly/PROMPT.md")
 
@@ -268,8 +281,10 @@ $(cat "$DIGEST")"
   # answering model line each night"). Capped like --version; it only reads, and says nothing rather
   # than fail the night.
   WROTE="$("$PY" "$REPO/nightly/capped.py" 10 -- "$PY" -I -B "$REPO/nightly/answered_model.py" \
-    "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" "$WORK" 2>/dev/null | head -1)"
+    "$CFG_REAL" "$WORK" 2>/dev/null | head -1)"
   WROTE="${WROTE:-unrecorded}"
+  unset CLAUDE_CONFIG_DIR
+  rm -rf "$CFG"; CFG=""
   log "claude model $WROTE (read from the CLI's transcript of this call; requested --model $MODEL_ID)"
   [ $rc -eq 124 ] && fail "claude capped at $CLAUDE_CAP_S s awake (see $LOGS/claude-$DATE.err)"
   [ $rc -eq 0 ] || fail "claude exit $rc (see $LOGS/claude-$DATE.err)"
