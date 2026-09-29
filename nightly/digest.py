@@ -32,6 +32,8 @@ from loop import book, config, outcomes, prompts, state
 DISAGREE_CONF = 0.85       # the c85 column's cut (config.CONF_THRESHOLDS[2]); a lower cut would list
                            # answers no column ever acts on
 DISAGREE_MAX = 25          # CONTRACT §5: "up to 25"; ~1.7% of a full day, enough to read, not a log
+ARMS = ("a", "b", "c")      # the arms the summary replays: v1's three. book.ARMS gained d (PREREG-v2 §10); whether
+                            # the v2 digest shows D is §8's content, not the book's, so this list is the digest's own
 COLUMN = "argmax"          # the A/B column the summary replays: the model's bare answer. PREREG names
                            # the primary cell; until it does the digest shows the column every other
                            # column is derived from
@@ -124,7 +126,7 @@ def occupancy(day):
 def arms(day, fee):
     """{arm: (trades, pnl_bps)} at `fee`, the day replayed from flat."""
     out = {}
-    for arm in book.ARMS:
+    for arm in ARMS:
         rep = book.replay(day, None, arm, COLUMN, fee)
         out[arm] = (len(rep["trades"]), rep["equity"][-1][1] if rep["equity"] else 0.0)
     return out

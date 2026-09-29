@@ -27,7 +27,9 @@ from loop import config
 
 NOTIONAL = config.NOTIONAL_USD
 INTENTS = ("buy", "sell", "hold")      # buy = want long, sell = want flat, hold = no change
-ARMS = ("a", "b", "c")                 # a/b read row["columns"][arm][column]; c reads row["rule_c"]
+ARMS = ("a", "b", "c", "d")            # a/b read row["columns"][arm][column]; c reads row["rule_c"];
+                                       # d reads row["columns"]["d"], the CURRENT table's answer, at argmax only
+D_COLUMN = "argmax"                    # arm D's table holds the action choice alone (PREREG-v2 §6, §10)
 
 
 def _px(x):
@@ -60,20 +62,34 @@ def apply(pos, intent, bid, ask, fee_bps):
     return pos, None
 
 
+def _null(x):
+    """An arm's model columns absent, or the null_columns() shape (argmax null)."""
+    return x is None or (isinstance(x, dict) and x.get("argmax") is None)
+
+
+def _answered(row):
+    """Whether the row carries a decision at all: a live row with no absence whose columns.a and
+    columns.b are not both null. On any other row every arm, C and D included, is a forced hold."""
+    if row.get("absence") is not None or row.get("mode") != "live":
+        return False
+    cols = row.get("columns") or {}
+    return not (_null(cols.get("a")) and _null(cols.get("b")))
+
+
 def _intent(row, arm, column):
     """The logged intent for this arm on this row, or None when the row
     carries no decision for it (absence set, not a live row, columns null).
     A dry row is a forced hold for EVERY arm, C included: it carries rule_c but
     no model columns, so letting C act on it would hand C a trade A and B could
     never make (a `make dry` between two live ticks would manufacture a B-C
-    disagreement). Same rule as an outage."""
-    if row.get("absence") is not None or row.get("mode") != "live":
-        return None
-    cols = row.get("columns") or {}
-
-    def null(x):                               # the arm's columns absent, or the null_columns() shape
-        return x is None or (isinstance(x, dict) and x.get("argmax") is None)
-    if null(cols.get("a")) and null(cols.get("b")):
+    disagreement). Same rule as an outage.
+    Arm D (PREREG-v2 §10) reads columns.d, the CURRENT table's answer for the state, and has no
+    column but argmax: any other column raises, on every row. The every-arm forced hold applies
+    to D; a null columns.d on an otherwise answered row (no table, a refused table, a state the
+    table lacks) is a hold for D only, counted in D's forced holds."""
+    if arm == "d" and column != D_COLUMN:
+        raise ValueError(f"arm d has only the {D_COLUMN!r} column (its table holds the action choice alone), not {column!r}")
+    if not _answered(row):
         return None                            # SPEC §10: null columns are a forced hold for EVERY arm, C included.
                                                # cycle.py writes that shape only with absence set or in dry mode, so
                                                # on a live row it is a writer bug, and C must not get a trade A and
@@ -81,6 +97,9 @@ def _intent(row, arm, column):
                                                # the other's present is not a shape the tick writes; only that arm holds.
     if arm == "c":
         return row.get("rule_c")
+    cols = row.get("columns") or {}
+    if arm == "d":
+        return cols.get("d")                   # null (or a v1 row with no d key): D alone holds
     cols = cols.get(arm)
     if cols is None:
         return None
@@ -110,6 +129,8 @@ def replay(rows, outcomes, arm, column, fee_bps):
     needs no t+h join, and using one here would let t see t+h."""
     if arm not in ARMS:
         raise ValueError(f"arm {arm!r} not in {ARMS}")
+    if arm == "d" and column != D_COLUMN:      # loud on an empty log too, as _intent is on every row
+        raise ValueError(f"arm d has only the {D_COLUMN!r} column, not {column!r}")
     if outcomes is not None and not isinstance(outcomes, dict):
         raise TypeError("outcomes must be the dict from outcomes.join() or None")
     pos, last_mid, equity, forced = None, None, 0.0, 0

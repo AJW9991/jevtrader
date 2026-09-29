@@ -17,7 +17,7 @@ def _cols(intent):
     return {k: intent for k in COLS}
 
 
-def _row(i, bid, ask, a=None, b=None, c="hold", absence=None, dry=False):
+def _row(i, bid, ask, a=None, b=None, c="hold", absence=None, dry=False, d="absent"):
     """A full CONTRACT row. a/b are the intent every column of that arm carries
     (None = the arm's columns are null); prices None = unpriced (failed before feed)."""
     priced = bid is not None and ask is not None
@@ -32,7 +32,7 @@ def _row(i, bid, ask, a=None, b=None, c="hold", absence=None, dry=False):
             "model_requested": config.MODEL, "model_answered": None, "drift": False,
             "jev": {"latency_ms": None, "input_tokens": None, "error": None, "key_path": None},
             "answers": None, "rule_c": c if priced else None,
-            "columns": {"a": _cols(a) if a else None, "b": _cols(b) if b else None},
+            "columns": {"a": _cols(a) if a else None, "b": _cols(b) if b else None, **({} if d == "absent" else {"d": d})},
             "absence": absence}
 
 
@@ -165,7 +165,7 @@ class Replay(unittest.TestCase):
         with self.assertRaises(KeyError):
             book.replay(self.ROWS, None, "a", "argmaxx", 60.0)
         with self.assertRaises(ValueError):
-            book.replay(self.ROWS, None, "d", "argmax", 60.0)
+            book.replay(self.ROWS, None, "e", "argmax", 60.0)
         with self.assertRaises(TypeError):
             book.replay(self.ROWS, [], "a", "argmax", 60.0)
 
@@ -250,6 +250,56 @@ class Paired(unittest.TestCase):
         self.assertEqual(book.paired(self.ROWS, None, "b", "b", "c50v", 60.0),
                          [(r["tick_id"], 0.0) for r in self.ROWS])
         self.assertEqual(book.replay(self.ROWS, None, "b", "c50v", 60.0)["forced_hold"], len(self.ROWS))
+
+
+class ArmD(unittest.TestCase):
+    """PREREG-v2 §10's book bullet: ARMS gains d; D reads columns.d (the CURRENT table's answer, no call) at
+    argmax and raises on any other column; the every-arm forced hold applies to D; a null columns.d on an
+    otherwise answered row is a hold for D only, counted in D's forced holds."""
+
+    def test_d_is_an_arm_and_reads_columns_d(self):
+        self.assertEqual(book.ARMS, ("a", "b", "c", "d"))
+        rows = [_row(1, 99.0, 101.0, a="hold", b="hold", d="buy"), _row(2, 101.0, 103.0, a="hold", b="hold", d="hold"),
+                _row(3, 103.0, 105.0, a="hold", b="buy", d="sell")]
+        r = book.replay(rows, None, "d", "argmax", 0.0)
+        self.assertEqual([(t["tick_id"], t["side"]) for t in r["trades"]], [("20260923T100100Z", "buy"), ("20260923T100300Z", "sell")])
+        self.assertEqual(r["forced_hold"], 0)
+        # D and B differ only where their intents do: B buys at :03, D sold there
+        d = dict(book.paired(rows, None, "d", "b", "argmax", 0.0))
+        self.assertEqual(d["20260923T100100Z"], r["pnl_bps_per_tick"]["20260923T100100Z"])
+
+    def test_d_has_no_column_but_argmax(self):
+        rows = [_row(1, 99.0, 101.0, a="hold", b="hold", d="buy")]
+        for col in ("c50", "noultail", "argmaxx"):
+            with self.assertRaises(ValueError):
+                book.replay(rows, None, "d", col, 0.0)
+            with self.assertRaises(ValueError):
+                book.replay([], None, "d", col, 0.0)                          # loud on an empty log too
+            with self.assertRaises(ValueError):
+                book._intent(_row(2, None, None, absence="feed"), "d", col)    # and on a forced-hold row
+
+    def test_the_every_arm_forced_hold_applies_to_d(self):
+        rows = [_row(1, 99.0, 101.0, a="hold", b="hold", d="hold"),
+                _row(2, 99.0, 101.0, d="buy", dry=True),                          # dry: forced for D
+                _row(3, 99.0, 101.0, a="hold", b="hold", d="buy", absence="jev"), # absence: forced for D
+                _row(4, 99.0, 101.0, d="buy"),                                    # live, a and b null: forced for D
+                _row(5, None, None, a="hold", b="hold", d="buy"),                 # unpriced: forced for D
+                _row(6, 99.0, 101.0, a="hold", b="hold", d="hold")]
+        r = book.replay(rows, None, "d", "argmax", 0.0)
+        self.assertEqual(r["trades"], [])
+        self.assertEqual(r["forced_hold"], 4)
+
+    def test_a_null_d_on_an_answered_row_holds_d_only(self):
+        rows = [_row(1, 99.0, 101.0, a="buy", b="buy", c="buy", d=None),            # no table: D alone holds
+                _row(2, 104.0, 106.0, a="hold", b="hold", c="hold", d="hold"),
+                _row(3, 109.0, 111.0, a="sell", b="sell", c="sell")]               # a v1 row: no d key at all
+        dr = book.replay(rows, None, "d", "argmax", 0.0)
+        self.assertEqual(dr["trades"], [])
+        self.assertEqual(dr["forced_hold"], 2)                                     # the null and the absent d
+        for arm in ("a", "b", "c"):
+            rep = book.replay(rows, None, arm, "argmax", 0.0)
+            self.assertEqual(len(rep["trades"]), 2, arm)
+            self.assertEqual(rep["forced_hold"], 0, arm)
 
 
 if __name__ == "__main__":
