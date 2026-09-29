@@ -1254,6 +1254,27 @@ class TrialNight(unittest.TestCase):
         self.assertIn(" propose FAIL no slow model id", r.stdout)
         self.assertFalse(os.path.exists(os.path.join(self.saw, "called")))
 
+    def test_the_claude_model_line_must_name_exactly_one_id(self):
+        # §8: "`claude model` must log exactly one id". Everything else passes here (exit 0, claude exit 0, the memory
+        # line), so only that criterion can fail the trial: two ids in the transcript, or none ("unrecorded")
+        two = self.ANSWER.replace("SAW", self.saw).replace(
+            '"claude-stub-1","content":[]}}\' >"$d/0.jsonl"\n',
+            '"claude-stub-1","content":[]}}\' >"$d/0.jsonl"\n'
+            'printf "%s\\n" \'{"type":"assistant","message":{"model":"claude-other-2","content":[]}}\' >>"$d/0.jsonl"\n')
+        none = self.ANSWER.replace("SAW", self.saw).replace('>"$d/0.jsonl"', '>/dev/null')
+        self.assertNotEqual(two, self.ANSWER.replace("SAW", self.saw))
+        self.assertNotEqual(none, self.ANSWER.replace("SAW", self.saw))
+        for body, model in ((two, "claude-other-2,claude-stub-1"), (none, "unrecorded")):
+            r, _ = self._run(self._tree(), self._stub(body))
+            self.assertEqual(r.returncode, 1, model + "\n" + r.stdout + r.stderr)
+            self.assertIn("propose.sh exit 0\n", r.stdout)
+            self.assertRegex(r.stdout, r" propose claude exit 0 after ")
+            self.assertIn("user memory not loaded", r.stdout)
+            self.assertNotIn(" propose FAIL ", r.stdout)
+            self.assertIn(f" propose claude model {model} (read from", r.stdout)
+            self.assertNotIn("PASS", r.stdout)
+            self.assertIn("\nFAIL: see the lines above", r.stdout)
+
 
 class Capped(unittest.TestCase):
     """nightly/capped.py: the claude call's cap on awake seconds (propose.sh wires it in)."""
