@@ -490,7 +490,12 @@ unpriced one; equal ranks keep the first in file order. A line that is not one J
 (`outcomes.load`, folded from ERRATA.md): whole rows on it are read, forward from its start (rows
 that lost only their newlines), then, after a torn row, each whole row that carries the writer's
 keys and ends where the next one begins; an object nested inside a row is never read as a row;
-the line counts as one skip. Forward only: t sees t+h, never the reverse.
+the line counts as one skip. Forward only: t sees t+h, never the reverse. A pending outcome is
+not yet a gap (folded from ERRATA.md): `loop.inference_v2 --sample` refuses (exit 3) while the
+sample's last day is open, until some product's log has reached a tick at or after T0_v2 + 28 d +
+h + 30 s, where `report.days_table` closes d28; `--accept-pending` says the logs stopped (itself
+refused until a minute after the minute that tick falls in), judges every sample day closed, counts
+a live row whose t + h never came as a gap, and the output's header says so (CONTRACT §4).
 
 ## 12. The Jev call (`loop/jev.py`) — the only code that sees the key
 

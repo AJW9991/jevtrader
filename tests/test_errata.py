@@ -101,9 +101,12 @@ class Errata(unittest.TestCase):
         # PREREG-v2 §10: "ERRATA.md's SPEC and PREREG rows that describe what the code already does are folded into the
         # text"; the rows stay (v1's sample is read by v1's documents), each marked with where it went. A SPEC row goes
         # to SPEC v2, whose section says "folded from ERRATA.md" where it landed; a PREREG row names the PREREG-v2
-        # section that settled it, or says it was not folded and why
+        # section that settled it, or the SPEC v2 section it was folded into, which says so. Every row describes what the
+        # code does, so none is left unfolded (the S6 refuter's defect 5: the PREREG §5 row, inference's d28-open refusal
+        # and --accept-pending, was marked "Not folded" and written only into CONTRACT §4)
         errata, spec, prereg_v2 = _read("ERRATA.md"), _read("SPEC.md"), _read("PREREG-v2.md")
-        mark = re.compile(r"\*\*(?:Folded into (SPEC v2|PREREG-v2) §(\d+)\b|Not folded:)")
+        mark = re.compile(r"\*\*Folded into (SPEC v2|PREREG-v2) §(\d+)\b")
+        self.assertEqual([l[:60] for l in errata.splitlines() if "Not folded" in l], [])
         for heading in ("PREREG.md", "SPEC.md"):
             part = errata.split(f"## {heading}\n", 1)[1].split("\n## ", 1)[0]
             rows = [l for l in part.splitlines() if re.match(r"\| §\d", l)]          # not the header row
@@ -114,9 +117,10 @@ class Errata(unittest.TestCase):
                     self.assertIsNotNone(m)
                     if heading == "SPEC.md":
                         self.assertEqual(m.group(1), "SPEC v2")
+                    if m.group(1) == "SPEC v2":
                         body = spec.split(f"\n## {m.group(2)}. ", 1)[1].split("\n## ", 1)[0]
                         self.assertIn("folded from errata.md", body.lower())
-                    elif m.group(1):
+                    else:
                         self.assertIn(f"\n## {m.group(2)}. ", prereg_v2)
 
     def test_the_v2_deviations_table_exists_and_each_row_names_one_commit(self):
