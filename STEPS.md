@@ -321,6 +321,30 @@ missing minutes are the honest record.
 on the loop (a tick is seconds; the nightly already wraps its one long call)
 or for any change to a security setting.
 
+## 9. The backup copy  (~2 min; hand-installed)
+
+The sealed sample lives in one place: `data/decisions.jsonl` on this Mac, with no Time Machine
+destination and no iCloud mirror (checked 2026-09-28). `bin/backup-data` copies `data/` and
+`logs/` with rsync to the iCloud Drive folder `jevtrader-backup` (beside the crypto repo's
+mirror), sends nothing, and writes nothing under the repo but one line per run in
+`logs/backup.log`. It refuses a destination inside the repo or under the crypto repo. A file
+appended mid-copy arrives torn at its end; the readers keep every whole row before the tear
+and the next run replaces the file. `tests/test_backup.py` covers the copy and the refusals.
+
+First copy by hand, then install the hourly job (at :45, and once at load):
+
+```bash
+cd ~/Projects/jev-paper-loop && make backup && ls -la "$HOME/Library/Mobile Documents/com~apple~CloudDocs/jevtrader-backup/data/" | head -5
+```
+
+```bash
+cd ~/Projects/jev-paper-loop && plutil -lint launchd/com.alexward.jevloop.backup.plist && cp launchd/com.alexward.jevloop.backup.plist ~/Library/LaunchAgents/ && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.alexward.jevloop.backup.plist && sleep 3 && launchctl print gui/$(id -u)/com.alexward.jevloop.backup | grep -E 'state =|last exit' && tail -1 logs/backup.log
+```
+
+Undo: `launchctl bootout gui/$(id -u)/com.alexward.jevloop.backup`. Another destination:
+`bin/backup-data /Volumes/<disk>/jevtrader-backup` (edit the plist's ProgramArguments to
+match, and `tests/test_nightly.py` pins the plist).
+
 ---
 
 Not happening, on purpose: no script installs a plist, no plist writes

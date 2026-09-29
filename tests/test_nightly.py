@@ -1891,6 +1891,15 @@ class LaunchdPlists(unittest.TestCase):
             "StandardOutPath": HOME + "/logs/nightly-launchd.log",
             "StandardErrorPath": HOME + "/logs/nightly-launchd.log",
             "RunAtLoad": False},
+        "com.alexward.jevloop.backup.plist": {
+            "Label": "com.alexward.jevloop.backup",
+            "ProgramArguments": ["/bin/bash", HOME + "/bin/backup-data"],
+            "WorkingDirectory": HOME,
+            "StartCalendarInterval": {"Minute": 45},
+            "EnvironmentVariables": {"PATH": PATH},
+            "StandardOutPath": HOME + "/logs/backup-launchd.log",
+            "StandardErrorPath": HOME + "/logs/backup-launchd.log",
+            "RunAtLoad": True},
     }
 
     @staticmethod

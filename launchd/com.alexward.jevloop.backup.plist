@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.alexward.jevloop.backup</string>
+
+  <!-- Every hour at :45 (and once at load), bin/backup-data copies data/ and logs/ to the
+       iCloud Drive folder jevtrader-backup with rsync: the sealed sample's only other copy.
+       It sends nothing, touches nothing under the repo but logs/backup.log, and refuses a
+       destination inside the repo or under the crypto repo. Hand-installed only (STEPS §9). -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/alexanderward/Projects/jev-paper-loop/bin/backup-data</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/alexanderward/Projects/jev-paper-loop</string>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Minute</key>
+    <integer>45</integer>
+  </dict>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/alexanderward/Projects/jev-paper-loop/logs/backup-launchd.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/alexanderward/Projects/jev-paper-loop/logs/backup-launchd.log</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>

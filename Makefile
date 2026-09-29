@@ -6,7 +6,7 @@
 # CI) uses the python3 on PATH. `make PY=... test` overrides either.
 PY ?= $(shell test -x /opt/homebrew/bin/python3 && echo /opt/homebrew/bin/python3 || command -v python3)
 
-.PHONY: test test-mode test-modes dry run report health dash status inference-smoke results
+.PHONY: test test-mode test-modes dry run report health dash status inference-smoke results backup
 
 test:
 	$(PY) -m unittest discover -s tests
@@ -71,3 +71,6 @@ inference-smoke:
 # (§10). By hand, once; the stop rules (PREREG §8) are read from its output.
 results:
 	$(PY) -m loop.inference --sample --out RESULTS.md
+
+backup:
+	bash bin/backup-data

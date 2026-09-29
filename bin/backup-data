@@ -1,0 +1,69 @@
+#!/bin/bash
+# bin/backup-data [--root DIR] [DEST]
+#
+# Copies the loop's own store -- data/ (decision log, ledger, heartbeat, digests, dash, HALT) and
+# logs/ -- to DEST with rsync, so the sealed sample exists in more than one place. PROTOCOL §3
+# keeps the store out of git; this is a plain copy, never a commit or a send. The default DEST is
+# the iCloud Drive folder jevtrader-backup (the crypto repo's mirror already lives beside it).
+# The Mac's loop is untouched: nothing under --root is written except one line per run in
+# logs/backup.log. A file appended mid-copy arrives torn at its end; the readers keep every
+# whole row before the tear, and the next run replaces the file whole.
+#
+# Refused, exit 2, nothing written or created: no DEST or --root, a path holding a newline, a
+# DEST inside the --root or the repo, one that is an ancestor of the --root, or one under
+# ~/Projects/crypto-trading-system. Exit 1: rsync failed, or the copy of decisions.jsonl is
+# shorter than the source was when the copy began (the log names it).
+# Hand-installed only: launchd/com.alexward.jevloop.backup.plist runs it hourly at :45 (STEPS §9).
+set -u
+usage() { echo "usage: $0 [--root DIR] [DEST]" >&2; exit 2; }
+ROOT=""; DEST=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --root) [ $# -ge 2 ] || usage; ROOT="$2"; shift 2 ;;
+    -h|--help) usage ;;
+    -*) usage ;;
+    *) [ -z "$DEST" ] || usage; DEST="$1"; shift ;;
+  esac
+done
+REPO="$(cd "$(dirname "$0")/.." && pwd -P)"
+[ -n "$ROOT" ] || ROOT="$REPO"
+[ -n "$DEST" ] || DEST="$HOME/Library/Mobile Documents/com~apple~CloudDocs/jevtrader-backup"
+refuse() { echo "backup-data: $1; nothing written" >&2; exit 2; }
+case "$DEST$ROOT" in *$'\n'*) refuse "a newline in a path" ;; esac
+[ -d "$ROOT/data" ] || refuse "no data/ under $ROOT"
+ROOT_REAL="$(cd "$ROOT" && pwd -P)"
+CTS="$HOME/Projects/crypto-trading-system"
+case "$DEST" in
+  "$ROOT"|"$ROOT"/*|"$ROOT_REAL"|"$ROOT_REAL"/*) refuse "DEST $DEST is inside the root" ;;
+  "$REPO"|"$REPO"/*) refuse "DEST $DEST is inside the repo" ;;
+  "$CTS"|"$CTS"/*) refuse "DEST $DEST is under the crypto repo" ;;
+esac
+CREATED=0
+if [ ! -d "$DEST" ]; then
+  mkdir -p "$DEST" 2>/dev/null || { echo "backup-data: cannot create $DEST" >&2; exit 1; }
+  CREATED=1
+fi
+DEST_REAL="$(cd "$DEST" && pwd -P)"
+undo() { [ $CREATED -eq 1 ] && rmdir "$DEST" 2>/dev/null; refuse "$1"; }
+case "$DEST_REAL" in
+  "$ROOT_REAL"|"$ROOT_REAL"/*) undo "DEST $DEST resolves inside the root" ;;
+  "$CTS"|"$CTS"/*) undo "DEST $DEST resolves under the crypto repo" ;;
+esac
+case "$ROOT_REAL" in "$DEST_REAL"/*) undo "DEST $DEST is an ancestor of the root" ;; esac
+mkdir -p "$ROOT/logs" 2>/dev/null
+LOG="$ROOT/logs/backup.log"
+now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+SRC_BYTES=0
+[ -f "$ROOT/data/decisions.jsonl" ] && SRC_BYTES="$(wc -c < "$ROOT/data/decisions.jsonl" | tr -d ' ')"
+if ! rsync -a "$ROOT/data/" "$DEST/data/"; then
+  echo "$(now) backup FAIL rsync data/ -> $DEST" | tee -a "$LOG" >&2; exit 1
+fi
+if [ -d "$ROOT/logs" ] && ! rsync -a "$ROOT/logs/" "$DEST/logs/"; then
+  echo "$(now) backup FAIL rsync logs/ -> $DEST" | tee -a "$LOG" >&2; exit 1
+fi
+DST_BYTES=0
+[ -f "$DEST/data/decisions.jsonl" ] && DST_BYTES="$(wc -c < "$DEST/data/decisions.jsonl" | tr -d ' ')"
+if [ "$DST_BYTES" -lt "$SRC_BYTES" ]; then
+  echo "$(now) backup FAIL decisions.jsonl copy $DST_BYTES bytes < source $SRC_BYTES -> $DEST" | tee -a "$LOG" >&2; exit 1
+fi
+echo "$(now) backup OK decisions.jsonl $DST_BYTES bytes -> $DEST" | tee -a "$LOG"
