@@ -42,6 +42,12 @@ def git(*args):
     return r.returncode, r.stdout.decode("utf-8", "replace")
 
 
+def _products_added_parts():
+    """The classes of its left-out modules that tests/test_products_added.py runs anyway."""
+    import test_products_added
+    return [c for classes in test_products_added.PARTS.values() for c in classes]
+
+
 class ProductsCommit(unittest.TestCase):
     """10.1: the probe's volume and the products' commit."""
 
@@ -70,7 +76,12 @@ class ProductsCommit(unittest.TestCase):
         text = " ".join(subsection("10.1").split())
         self.assertNotIn("on that one pin", text)
         self.assertIn("`tests/test_slow_model.py` holds `nightly/slow_model.py`'s `MODEL_ID` and `NIGHT` to §8's", text)
-        self.assertIn("`test_products_added` runs it again", text)
+        self.assertIn("which four tests hold to §8 (`test_slow_model`, SPEC §14's value check in `test_spec`, SPEC14 in"
+                      " `test_frozen`, and `test_products_added`, which runs the first two again)", text)
+        # and those are the tests that read slow_model's two values against §8 (SPEC §14 names them as §8's)
+        import test_spec
+        self.assertEqual(test_spec.spec14_values()[("nightly.slow_model", "MODEL_ID")].split(" (")[0], "PREREG-v2 §8's id")
+        self.assertIn("test_spec.Constants", _products_added_parts())
         self.assertIn("set `MODEL_ID` and `NIGHT` in `nightly/slow_model.py` to §8's id and night", text)
         self.assertIn("git add tests/test_frozen.py nightly/slow_model.py && git commit --amend --no-edit && make test", text)
         import test_products_added

@@ -389,8 +389,9 @@ cd ~/Projects/jev-paper-loop-v2 && git merge --no-edit main && make test
 
 `tests/test_frozen.py` pins PREREG-v2.md's bytes, and `tests/test_slow_model.py` holds `nightly/slow_model.py`'s
 `MODEL_ID` and `NIGHT` to §8's "**id `…` (night …).**" line, so a merge that brings `main`'s edits of it fails
-`make test` on two things: that pin, and, since `main`'s §8 names the slow model (95454c8, 2026-09-29), the slow-model
-test (twice: `test_products_added` runs it again), while `slow_model.py` is still blank. Put the new sha
+`make test` on two things: that pin, and, since `main`'s §8 names the slow model (95454c8, 2026-09-29),
+`slow_model.py`'s blank `MODEL_ID` and `NIGHT`, which four tests hold to §8 (`test_slow_model`, SPEC §14's value check
+in `test_spec`, SPEC14 in `test_frozen`, and `test_products_added`, which runs the first two again). Put the new sha
 (`shasum -a 256 PREREG-v2.md`) on the `"PREREG-v2.md": "…",` line, set `MODEL_ID` and `NIGHT` in
 `nightly/slow_model.py` to §8's id and night (the night as §8 writes it, up to its `;`), and fold both into the merge
 commit (`git add tests/test_frozen.py nightly/slow_model.py && git commit --amend --no-edit && make test`), so the pin
