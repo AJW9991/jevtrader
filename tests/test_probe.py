@@ -31,6 +31,21 @@ def _load_probe():
 
 
 probe = _load_probe()
+_LOCK_DIR = None
+
+
+def setUpModule():
+    # the suite's runs take a lock of their own: a real probe run holds bin/probe's all day on D, and
+    # `make test` in this worktree must still pass then (and must never stall or refuse that run)
+    global _LOCK_DIR
+    _LOCK_DIR = tempfile.mkdtemp()
+    probe.LOCK_PATH = os.path.join(_LOCK_DIR, "probe.lock")
+    with open(probe.LOCK_PATH, "w", encoding="utf-8"):
+        pass
+
+
+def tearDownModule():
+    shutil.rmtree(_LOCK_DIR, ignore_errors=True)
 
 
 class Clock:
@@ -331,13 +346,25 @@ class Harness(unittest.TestCase):
 class OneAtATime(Offline):
     """The rate is one request a second overall: a second run or volume, into any DIR, is refused while
     one is running (both flock bin/probe itself, read-only)."""
-    def hold(self):
-        fd = os.open(TOOL, os.O_RDONLY)
+    def hold(self, path=None):
+        fd = os.open(path or probe.LOCK_PATH, os.O_RDONLY)
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         return fd
 
+    def test_the_lock_is_bin_probe_itself(self):
+        self.assertEqual(os.path.realpath(_load_probe().LOCK_PATH), os.path.realpath(TOOL))   # not the suite's
+
+    def test_the_suite_runs_while_a_real_probe_holds_the_lock(self):
+        fd = self.hold(TOOL)                                # as bin/probe run does all day on D
+        try:
+            self.refuse = lambda url: "http-503 /product_book"
+            code, err = self.main(["run", "--day", DAY, "--out", os.path.join(self.tmp, "out"), "--max-minutes", "1",
+                                   "--every", "1"], Clock(T_FIX))
+            self.assertEqual(code, 0, err)
+        finally:
+            os.close(fd)
+
     def test_a_second_run_or_volume_is_refused_and_creates_nothing(self):
-        self.assertEqual(os.path.realpath(probe.LOCK_PATH), os.path.realpath(TOOL))
         fd = self.hold()
         try:
             for cmd in (["run", "--day", DAY, "--max-minutes", "1", "--every", "1"], ["volume", "--day", "2026-09-23"]):
