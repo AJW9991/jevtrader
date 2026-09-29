@@ -340,7 +340,7 @@ class OneAtATime(Offline):
         self.assertEqual(os.path.realpath(probe.LOCK_PATH), os.path.realpath(TOOL))
         fd = self.hold()
         try:
-            for cmd in (["run", "--day", DAY, "--max-minutes", "1", "--every", "1"], ["volume"]):
+            for cmd in (["run", "--day", DAY, "--max-minutes", "1", "--every", "1"], ["volume", "--day", "2026-09-23"]):
                 out = os.path.join(self.tmp, cmd[0])
                 code, err = self.main(cmd + ["--out", out], Clock(T_FIX))
                 self.assertEqual(code, 2, cmd)
@@ -437,7 +437,7 @@ class Guard(unittest.TestCase):
             c, err = Clock(T_FIX), io.StringIO()
             with mock.patch.object(feed, "_get", side_effect=feed.FeedError("a request")):
                 return probe.main(argv, wall=c.now, mono=c.now, sleep=c.sleep, err=err), err.getvalue()
-        for cmd in (["run", "--day", DAY, "--max-minutes", "1"], ["volume"]):
+        for cmd in (["run", "--day", DAY, "--max-minutes", "1"], ["volume", "--day", "2026-09-23"]):
             code, err = main(cmd + ["--out", os.path.join(self.tmp, "data", "probe")])
             self.assertEqual(code, 3, cmd)
             self.assertIn("refusing --out", err)
@@ -500,42 +500,95 @@ class Files(Offline):
         self.assertTargetUntouched()
         vol = os.path.join(self.tmp, "vol")
         os.makedirs(vol)
-        os.symlink(self.target, os.path.join(vol, "volume.json"))
+        os.symlink(self.target, os.path.join(vol, "volume.json.tmp"))
         c = Clock(T_FIX)
         with mock.patch.object(feed, "_get", lambda url: {"candles": []}):
-            code = probe.main(["volume", "--out", vol, "--candidates", "ETH-USD"], wall=c.now, mono=c.now,
-                              sleep=c.sleep, err=io.StringIO())
+            code = probe.main(["volume", "--day", "2026-09-23", "--out", vol, "--candidates", "ETH-USD"], wall=c.now,
+                              mono=c.now, sleep=c.sleep, err=io.StringIO())
         self.assertEqual(code, 3)
         self.assertTargetUntouched()
 
 
 class Volume(Offline):
-    def test_thirty_closed_days_per_candidate(self):
-        clock, out = Clock(T_FIX), os.path.join(self.tmp, "out")
-        days = [{"start": str(D0 - 86400 * k), "low": "1", "high": "3", "open": "2", "close": "2000",
-                 "volume": "1000"} for k in range(0, 32)]  # k = 0 is the open day, k = 31 is before the window
+    DAYS = [{"start": str(D0 - 86400 * k), "low": "1", "high": "3", "open": "2", "close": "2000", "volume": "1000"}
+            for k in range(0, 32)]                            # k = 0 is 09-24, open at T_FIX; k = 30, 31 are before
 
+    def volume(self, argv, clock, get=None):
+        err = io.StringIO()
+        with mock.patch.object(feed, "_get", get or self.days_get(clock)):
+            code = probe.main(["volume", *argv], wall=clock.now, mono=clock.now, sleep=clock.sleep, err=err)
+        return code, err.getvalue()
+
+    def days_get(self, clock, days=None):
         def get(url):
             self.calls.append((clock.now(), url))
             if "XRP-USD" in url:
                 raise feed.FeedError("http-404 /products/XRP-USD/candles")
-            return {"candles": days}
-        err = io.StringIO()
-        with mock.patch.object(feed, "_get", get):
-            code = probe.main(["volume", "--out", out, "--candidates", "ETH-USD,XRP-USD"], wall=clock.now,
-                              mono=clock.now, sleep=clock.sleep, err=err)
-        self.assertEqual(code, 0, err.getvalue())
+            return {"candles": self.DAYS if days is None else days}
+        return get
+
+    def read(self, out):
         with open(os.path.join(out, "volume.json"), encoding="utf-8") as fh:
-            v = json.load(fh)
-        self.assertEqual(v["products"]["ETH-USD"]["usd_per_day"], 2e6)       # 30 x 1000 x 2000 / 30
-        self.assertEqual(v["products"]["ETH-USD"]["rows"], 30)
-        self.assertEqual(v["products"]["ETH-USD"]["candles"], days)          # the raw candles, as sent
+            return json.load(fh)
+
+    def test_the_thirty_days_ending_with_d_per_candidate(self):
+        clock, out = Clock(T_FIX), os.path.join(self.tmp, "out")     # D = 09-23, run on 09-24 at 02:28:49
+        code, err = self.volume(["--day", "2026-09-23", "--out", out, "--candidates", "ETH-USD,XRP-USD"], clock)
+        self.assertEqual(code, 1, err)                        # XRP's endpoint did not answer
+        self.assertIn("did not answer for XRP-USD", err)
+        v = self.read(out)
+        self.assertEqual(v["products"]["ETH-USD"], {"usd_per_day": 2e6, "rows": 30, "candles": self.DAYS})
         self.assertEqual(v["products"]["XRP-USD"], {"error": "FeedError: http-404 /products/XRP-USD/candles"})
-        self.assertEqual((v["start"], v["end"], v["days"]), ("2026-08-25T00:00:00.000Z", "2026-09-24T00:00:00.000Z", 30))
+        self.assertEqual((v["day"], v["start"], v["end"], v["days"]),
+                         ("2026-09-23", "2026-08-25T00:00:00.000Z", "2026-09-24T00:00:00.000Z", 30))
         self.assertEqual([u for _, u in self.calls], [
             f"{feed.BASE}/products/{p}/candles?start={D0 - 30 * 86400}&end={D0}&granularity=ONE_DAY"
             for p in ("ETH-USD", "XRP-USD")])
         self.assertEqual(self.calls[1][0] - self.calls[0][0], 1.0)
+
+    def test_the_window_is_d_s_whenever_it_runs(self):
+        # the refuter: at 09-24 01:00Z it asked for end=1790208000, at 09-29 for end=1790640000
+        urls = []
+        for when in (D0 + 3600, D0 + 5 * 86400 + 3600):
+            self.calls = []
+            code, err = self.volume(["--day", "2026-09-23", "--out", os.path.join(self.tmp, str(when)),
+                                     "--candidates", "ETH-USD"], Clock(when))
+            self.assertEqual(code, 0, err)
+            urls.append(self.calls[0][1])
+        self.assertEqual(urls, [f"{feed.BASE}/products/ETH-USD/candles?start={D0 - 30 * 86400}&end={D0}"
+                                "&granularity=ONE_DAY"] * 2)
+
+    def test_refused_before_d_closes_a_second_time_and_into_another_day_s_run(self):
+        out = os.path.join(self.tmp, "out")
+        code, err = self.volume(["--day", DAY, "--out", out], Clock(D0 + 86400 - 1))     # 09-24 23:59:59
+        self.assertEqual(code, 2)
+        self.assertIn("closes at 2026-09-25T00:00:00.000Z", err)
+        self.assertFalse(os.path.exists(out))
+        self.assertEqual(self.volume(["--day", DAY, "--out", out, "--candidates", "ETH-USD"], Clock(D0 + 86400))[0], 0)
+        before = self.read(out)
+        code, err = self.volume(["--day", DAY, "--out", out, "--candidates", "ETH-USD"], Clock(D0 + 2 * 86400))
+        self.assertEqual(code, 2)
+        self.assertIn("runs once", err)
+        self.assertEqual(self.read(out), before)
+        other = os.path.join(self.tmp, "other")
+        os.makedirs(other)
+        with open(os.path.join(other, "run.json"), "w", encoding="utf-8") as fh:
+            json.dump({"day": "2026-09-22", "candidates": ["ETH-USD"], "every": 60, "start_second": 30}, fh)
+        code, err = self.volume(["--day", DAY, "--out", other, "--candidates", "ETH-USD"], Clock(D0 + 86400))
+        self.assertEqual(code, 2)
+        self.assertIn("holds the run of 2026-09-22", err)
+        self.assertEqual(os.listdir(other), ["run.json"])
+
+    def test_fewer_than_thirty_days_give_no_figure(self):
+        # the refuter: zero candles gave usd_per_day 0.0, and five rows a figure that passed
+        clock = Clock(T_FIX)
+        for days, rows in (([], 0), (self.DAYS[1:6], 5), (self.DAYS[2:32], 29)):
+            out = os.path.join(self.tmp, str(rows))
+            code, err = self.volume(["--day", "2026-09-23", "--out", out, "--candidates", "ETH-USD"], clock,
+                                    self.days_get(clock, days))
+            self.assertEqual(code, 0, err)
+            self.assertEqual(self.read(out)["products"]["ETH-USD"], {"usd_per_day": None, "rows": rows, "candles": days})
+            self.assertIn(f"{rows} daily rows, not the 30 days ending with 2026-09-23: no figure", err)
 
 
 ALL_OK = {"book": "ok", "candles": "ok", "ticker": "ok"}
@@ -581,7 +634,8 @@ def _write_dir(d, products, volumes, errors=None):
     for p, fills in products.items():
         _write_product(d, p, fills, (errors or {}).get(p, ()))
     with open(os.path.join(d, "volume.json"), "w", encoding="utf-8") as fh:
-        json.dump({"products": {p: {"usd_per_day": v, "rows": 30, "candles": []} for p, v in volumes.items()}}, fh)
+        json.dump({"day": DAY, "start": VOL_START, "end": VOL_END, "days": 30,
+                   "products": {p: {"usd_per_day": v, "rows": 30, "candles": []} for p, v in volumes.items()}}, fh)
 
 
 def _summarize(d, *extra):
@@ -591,8 +645,9 @@ def _summarize(d, *extra):
 
 
 CRITERIA = ("criteria: (1) ok rows (the three public GETs answered, features computed) >= 99% of D's minutes with a"
-            " row for any candidate; (2) volume >= 50000000 USD/day over 30 days; (3) each liq word in [3%, 90%] of"
-            " D's ok rows under the h-rule; (4) not a stablecoin")
+            " row for any candidate; (2) sum(volume x close)/30 over exactly the 30 daily candles ending with D >="
+            " 50000000 USD/day; (3) each liq word in [3%, 90%] of D's ok rows under the h-rule; (4) not a stablecoin")
+VOL_START, VOL_END = "2026-08-26T00:00:00.000Z", "2026-09-25T00:00:00.000Z"     # D = 2026-09-24: 08-26 ... 09-24
 VOID = "chosen: none (D is void; PREREG-v2 §2: D becomes the next UTC day, once, named in §14)"
 
 
@@ -619,6 +674,7 @@ class Summarize(unittest.TestCase):
             "minutes_with_rows: 1440/1440 100.00% (D is void below 95%)",
             "transport_failures: 30/5760 0.52% of D's minutes summed over 4 candidates (D is void above 5%)",
             "day_valid: yes",
+            f"volume_window: {VOL_START} <= daily candle start < {VOL_END}",
             "== ETH-USD",                                   # ten transport failures: 1430 ok minutes, 99.31 %
             f"rows: 1440 (features computed 1430, error 10; {seen}", "transport_failures: 10",
             "ok_rows: 1430/1440 99.31%", "tick: 0.0001 (mode of 2860 per-side minimum steps, 2858 at the mode)",
@@ -707,6 +763,28 @@ class Summarize(unittest.TestCase):
         self.assertEqual([probe.transport_failed(r) for r in (good, quiet, no_ticker, no_list, refused)],
                          [False, False, True, False, True])
 
+    def test_volume_must_be_d_s_thirty_days(self):
+        d = os.path.join(self.tmp, "probe")
+        _write_dir(d, {"ETH-USD": PASSING, "XRP-USD": PASSING}, {"ETH-USD": 60e6, "XRP-USD": 60e6})
+        path = os.path.join(d, "volume.json")
+        with open(path, encoding="utf-8") as fh:
+            v = json.load(fh)
+        v["products"]["XRP-USD"] = {"usd_per_day": 52e6, "rows": 5, "candles": []}      # the refuter's S2
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(v, fh)
+        lines = _summarize(d)[1].splitlines()
+        self.assertIn("criterion_volume: PASS", lines[lines.index("== ETH-USD"):lines.index("== XRP-USD")])
+        self.assertIn("criterion_volume: FAIL 5 daily rows, not the 30 days ending with D", lines)
+        self.assertEqual(lines[-1], "chosen: ETH-USD (only 1 of 2 passed; v2 runs on what passed)")
+        v.update(day="2026-09-23", start="2026-08-25T00:00:00.000Z", end="2026-09-24T00:00:00.000Z")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(v, fh)
+        lines = _summarize(d)[1].splitlines()
+        wrong = ("criterion_volume: FAIL volume.json is for 2026-09-23 (2026-08-25T00:00:00.000Z to"
+                 f" 2026-09-24T00:00:00.000Z), not 2026-09-24 ({VOL_START} to {VOL_END})")
+        self.assertEqual([l for l in lines if l.startswith("criterion_volume")], [wrong, wrong])
+        self.assertEqual(lines[-1], "chosen: none (only 0 of 2 passed; v2 runs on what passed)")
+
     def test_the_first_two_passing_in_candidate_order(self):
         d = os.path.join(self.tmp, "probe")
         order = {"ETH-USD": PASSING, "XRP-USD": PASSING, "DOGE-USD": FLAT, "AVAX-USD": PASSING, "LINK-USD": PASSING}
@@ -741,10 +819,10 @@ class Summarize(unittest.TestCase):
     def test_a_stablecoin_fails(self):
         rows = [_prow(m, f) for m, f in enumerate(PASSING)]
         counts = {"bad": 0, "outside": 0, "repeated": 0}
-        lines, passed = probe.summarize_product("USDT-USD", rows, counts, 1440, None, {"USDT-USD": {"usd_per_day": 1e9}})
+        lines, passed = probe.summarize_product("USDT-USD", rows, counts, 1440, None, {"USDT-USD": {"usd_per_day": 1e9, "rows": 30}})
         self.assertFalse(passed)
         self.assertIn("criterion_stablecoin: FAIL USDT is a stablecoin", lines)
-        lines, passed = probe.summarize_product("ETH-USD", rows, counts, 1440, None, {"ETH-USD": {"usd_per_day": 1e9}})
+        lines, passed = probe.summarize_product("ETH-USD", rows, counts, 1440, None, {"ETH-USD": {"usd_per_day": 1e9, "rows": 30}})
         self.assertTrue(passed, lines)
 
     def test_criteria_constants_are_the_prereg_revision(self):

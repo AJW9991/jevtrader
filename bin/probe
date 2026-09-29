@@ -2,7 +2,7 @@
 """bin/probe -- PREREG-v2 §2's product probe: two added products, chosen by its criteria over ONE fixed UTC day.
 
     bin/probe run --day YYYY-MM-DD --out DIR [--candidates ETH-USD,XRP-USD,...] [--start-second 30] [--every 60] [--max-minutes N]
-    bin/probe volume --out DIR [--candidates ...]
+    bin/probe volume --day YYYY-MM-DD --out DIR [--candidates ...]
     bin/probe summarize DIR [--tick-override ETH-USD=0.01,...]
 
 run: every --every seconds, at wall second --start-second (with the defaults, at :30 of every
@@ -23,9 +23,13 @@ as skipped), and a GET that would start after it is not sent (the row's record s
 which is no transport failure). One line an hour goes to stderr with the counts so far. DIR/run.json records the day, the
 candidates, --every and --start-second; a restart into the same DIR continues the run only when
 all four are the same (PREREG-v2 §2: a restart within D continues it), and is refused otherwise.
-volume: once, 30 closed ONE_DAY candles per candidate (the venue's candles endpoint, public) ->
-DIR/volume.json: per product sum(volume * close) / 30 in USD a day, the number of daily rows, and
-the raw candles.
+volume: once, after D closes (PREREG-v2 §2: on the next UTC day), the 30 closed ONE_DAY candles
+ending with D (starts D-29 ... D) per candidate, from the venue's public candles endpoint ->
+DIR/volume.json: D and the window, and per product the daily rows found in it, the raw candles and
+sum(volume * close) / 30 in USD a day, which is null unless the rows are exactly those 30 days
+(fewer rows fail criterion (2)). Refused (exit 2, nothing written) before D closes, when DIR's
+run.json is of another day, and when volume.json exists: it runs once. Exit 1 when the endpoint
+did not answer for a candidate (its entry holds the error; §2: criterion (2) is then restated).
 summarize: offline, from DIR alone (run.json names the day and the candidates; a DIR without it is
 refused): D's minutes with a row for any candidate, the transport failures summed over the
 candidates, and whether D stands (PREREG-v2 §2: void when the probe wrote rows in fewer than 95 %
@@ -449,28 +453,61 @@ def daily_rows(j, start, end):
     return [seen[s] for s in sorted(seen)]
 
 
+def volume_window(day):
+    """[start, end) of the VOLUME_DAYS daily candles ending with the UTC day `day`: D-29 00:00Z to D+1 00:00Z."""
+    end = int(dt.datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=dt.timezone.utc).timestamp()) + 86400
+    return end - VOLUME_DAYS * 86400, end
+
+
 def volume(args, wall, mono, sleep, err):
+    start, end = volume_window(args.day)
+    now = wall()
+    if now < end:                                            # D's own candle is still open
+        err.write(f"probe: {args.day} closes at {iso(end)}; volume runs once after it; refusing\n")
+        return 2
     out = prepare_out(args.out, err)
     if out is None:
         return 3
-    now = wall()
-    end = int(now // 86400) * 86400                          # today 00:00Z: the open day is never counted
-    start = end - VOLUME_DAYS * 86400
-    pacer, products = Pacer(MIN_GAP_S, mono, sleep), {}
+    try:
+        with open(os.path.join(out, "run.json"), encoding="utf-8") as fh:
+            ran = json.load(fh).get("day")
+    except FileNotFoundError:
+        ran = args.day
+    except (OSError, ValueError, AttributeError) as e:
+        err.write(f"probe: {out}/run.json cannot be read ({one_line(e)}); refusing\n")
+        return 2
+    if ran != args.day:
+        err.write(f"probe: {out} holds the run of {ran}, not {args.day}; refusing\n")
+        return 2
+    vpath = os.path.join(out, "volume.json")
+    if os.path.lexists(vpath):
+        err.write(f"probe: {vpath} exists; volume runs once; refusing\n")
+        return 2
+    want = [start + k * 86400 for k in range(VOLUME_DAYS)]
+    pacer, products, silent = Pacer(MIN_GAP_S, mono, sleep), {}, []
     with paced_feed(pacer):
         for p in args.candidates:
             url = f"{feed.BASE}/products/{p}/candles?start={start}&end={end}&granularity=ONE_DAY"
             try:
                 j = feed._get(url)
                 rows = daily_rows(j, start, end)
-                products[p] = {"usd_per_day": sum(v * px for _, v, px in rows) / VOLUME_DAYS, "rows": len(rows),
-                               "candles": j["candles"]}
             except Exception as e:
                 products[p] = {"error": one_line(e)}
-            err.write(f"probe: volume {p}: " + (f"${products[p]['usd_per_day']:,.0f}/day over {products[p]['rows']} rows"
-                                                  if "error" not in products[p] else products[p]["error"]) + "\n")
-    _write_json(os.path.join(out, "volume.json"), {"generated": iso(now), "start": iso(start), "end": iso(end),
-                                                    "days": VOLUME_DAYS, "products": products})
+                silent.append(p)
+                err.write(f"probe: volume {p}: {products[p]['error']}\n")
+                continue
+            whole = [s for s, _, _ in rows] == want
+            products[p] = {"rows": len(rows), "candles": j["candles"],
+                           "usd_per_day": sum(v * px for _, v, px in rows) / VOLUME_DAYS if whole else None}
+            err.write(f"probe: volume {p}: " + (f"${products[p]['usd_per_day']:,.0f}/day over {len(rows)} rows" if whole
+                                                  else f"{len(rows)} daily rows, not the {VOLUME_DAYS} days ending with"
+                                                       f" {args.day}: no figure") + "\n")
+    _write_json(vpath, {"generated": iso(now), "day": args.day, "start": iso(start), "end": iso(end),
+                        "days": VOLUME_DAYS, "products": products})
+    if silent:
+        err.write(f"probe: the candles endpoint did not answer for {' '.join(silent)} (PREREG-v2 §2: criterion (2)"
+                  " is then restated in §14)\n")
+        return 1
     return 0
 
 
@@ -589,15 +626,17 @@ def summarize_product(p, rows, counts, minutes, tick_override, vol):
         crit["occupancy"] = None if occ["within"] else ", ".join(off) + f" outside [{OCC_LO_PCT}%, {OCC_HI_PCT}%]"
     else:
         crit["occupancy"] = "no usable fill1k_bps in an ok row" if not fills else "no tick size"
-    v = (vol or {}).get(p) if isinstance(vol, dict) else None
+    v = vol.get(p) if isinstance(vol, dict) else None
     if vol is None:
         crit["volume"] = "no volume.json"
+    elif isinstance(vol, str):                               # a volume.json that is not D's
+        crit["volume"] = vol
     elif not isinstance(v, dict):
         crit["volume"] = "not in volume.json"
     elif "error" in v:
         crit["volume"] = f"volume.json: {v['error']}"
-    elif not _num(v.get("usd_per_day")):
-        crit["volume"] = "volume.json: no usd_per_day"
+    elif v.get("rows") != VOLUME_DAYS or not _num(v.get("usd_per_day")):
+        crit["volume"] = f"{v.get('rows')} daily rows, not the {VOLUME_DAYS} days ending with D"
     else:
         lines.append(f"volume_usd_per_day: {v['usd_per_day']:.0f} ({v.get('rows')} daily rows / {VOLUME_DAYS})")
         crit["volume"] = None if v["usd_per_day"] >= MIN_USD_PER_DAY else f"{v['usd_per_day']:.0f} < {MIN_USD_PER_DAY:.0f}"
@@ -638,28 +677,33 @@ def summarize(args, out, err):
     except (OSError, ValueError, KeyError, TypeError) as e:
         err.write(f"probe: {mpath} cannot be read ({one_line(e)})\n")
         return 2
-    vol = None
+    vol, (vstart, vend) = None, volume_window(day)
     vpath = os.path.join(d, "volume.json")
     if os.path.exists(vpath):
         try:
             with open(vpath, encoding="utf-8") as fh:
-                vol = json.load(fh).get("products")
+                vj = json.load(fh)
+            vol = vj.get("products")
         except (OSError, ValueError, AttributeError) as e:
             err.write(f"probe: {vpath} cannot be read ({one_line(e)})\n")
             return 2
+        if (vj.get("day"), vj.get("start"), vj.get("end")) != (day, iso(vstart), iso(vend)):
+            vol = (f"volume.json is for {vj.get('day')} ({vj.get('start')} to {vj.get('end')}),"
+                   f" not {day} ({iso(vstart)} to {iso(vend)})")
     read = {p: read_rows(os.path.join(d, f"{p}.jsonl"), day) for p in candidates}
     minutes = len({r["tick_id"] for rows, _ in read.values() for r in rows})
     transport = sum(1 for rows, _ in read.values() for r in rows if transport_failed(r))
     void = day_verdict(minutes, transport, len(candidates))
     lines = [f"dir: {d}", f"day: {day}", f"candidates: {' '.join(candidates)}",
              f"criteria: (1) ok rows (the three public GETs answered, features computed) >= {OK_ROWS_MIN_PCT}%"
-             f" of D's minutes with a row for any candidate; (2) volume >= {MIN_USD_PER_DAY:.0f} USD/day over"
-             f" {VOLUME_DAYS} days; (3) each liq word in [{OCC_LO_PCT}%, {OCC_HI_PCT}%] of D's ok rows under the"
+             f" of D's minutes with a row for any candidate; (2) sum(volume x close)/{VOLUME_DAYS} over exactly the"
+             f" {VOLUME_DAYS} daily candles ending with D >= {MIN_USD_PER_DAY:.0f} USD/day; (3) each liq word in [{OCC_LO_PCT}%, {OCC_HI_PCT}%] of D's ok rows under the"
              " h-rule; (4) not a stablecoin",
              f"minutes_with_rows: {_pct(minutes, DAY_MINUTES)} (D is void below {DAY_ROWS_MIN_PCT}%)",
              f"transport_failures: {_pct(transport, DAY_MINUTES * len(candidates))} of D's minutes summed over"
              f" {len(candidates)} candidates (D is void above {TRANSPORT_MAX_PCT}%)",
-             "day_valid: " + ("no (" + "; ".join(void) + ")" if void else "yes")]
+             "day_valid: " + ("no (" + "; ".join(void) + ")" if void else "yes"),
+             f"volume_window: {iso(vstart)} <= daily candle start < {iso(vend)}"]
     passing = []
     for p in candidates:
         rows, counts = read[p]
@@ -744,7 +788,8 @@ def main(argv=None, wall=time.time, mono=time.monotonic, sleep=time.sleep, out=N
     r.add_argument("--every", type=_positive, default=60)
     r.add_argument("--max-minutes", type=_positive, default=None,
                    help="stop after N cycles (one pass over the candidates; one a minute at the default --every); for tests")
-    v = sub.add_parser("volume", help="30 daily candles per candidate -> DIR/volume.json")
+    v = sub.add_parser("volume", help="once, after D: the 30 daily candles ending with D -> DIR/volume.json")
+    v.add_argument("--day", required=True, type=_day)
     v.add_argument("--out", required=True)
     v.add_argument("--candidates", type=_candidates, default=DEFAULT_CANDIDATES)
     s = sub.add_parser("summarize", help="offline: the criteria per candidate and the two chosen")
