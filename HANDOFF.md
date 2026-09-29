@@ -106,7 +106,13 @@ tags; §14 logs every edit after the doc tag. The code is built in the worktree
 `bin/probe run` from the worktree under `caffeinate -i`, public GETs only, 1 req/s, nothing under
 data/. **Alex's blanks before the draft tag:** the header's disclosure line (did he open a digest or
 nightly transcript directly before 09-29), the probe approval date (§2). The model id fills §8 from
-the 2026-09-29 08:30Z night's `claude model` line.
+the 2026-09-29 08:30Z night's `claude model` line. **Probe armed 2026-09-29 ~07:40Z** (Alex approved
+~07:00Z; Claude started it): `caffeinate -i python3 bin/probe run --day 2026-09-30 --out probe/2026-09-30` from
+the worktree, sleeping until 00:00:30Z 09-30, then one row per candidate per minute until the day ends;
+`bin/probe volume --day 2026-09-30` on 10-01, then `summarize`. **The §10 build runs as a seven-stage Opus
+workflow in the worktree** (tick → readers → inference → nightly → tools → docs+pins → whole-branch verify),
+each stage built, refuted and fixed; its choices land in §14 and its commits on branch `prereg-v2` (pushed by
+the Mac session; CI runs on every push). Alex's disclosure and probe-approval blanks are filled (§14).
 
 ## Approved 2026-09-28 ("approved for recommended on all")
 - The nightly model is recorded, not pinned: decision 4.
