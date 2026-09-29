@@ -60,9 +60,21 @@ class ProductsCommit(unittest.TestCase):
         # took it, so 10.1's merge fails make test on that pin; the pin moves in the commit that changes the file
         text = " ".join(subsection("10.1").split())
         self.assertIn("`tests/test_frozen.py` pins PREREG-v2.md's bytes", text)
-        self.assertIn("git add tests/test_frozen.py && git commit --amend --no-edit && make test", text)
         self.assertIn("Every later edit of PREREG-v2.md before the draft tag (each a §14 entry) moves the pin in its own"
                       " commit the same way", text)
+
+    def test_the_merge_also_fills_the_slow_models_id_and_night(self):
+        # main's §8 names the slow model since 95454c8, and tests/test_slow_model.py holds nightly/slow_model.py to that
+        # line, so the merge fails on it as well as on the pin, and fails there until slow_model.py carries §8's id and
+        # night; 10.1 said the merge failed "on that one pin" (the S6 refuter's defect 1: two tests failed)
+        text = " ".join(subsection("10.1").split())
+        self.assertNotIn("on that one pin", text)
+        self.assertIn("`tests/test_slow_model.py` holds `nightly/slow_model.py`'s `MODEL_ID` and `NIGHT` to §8's", text)
+        self.assertIn("`test_products_added` runs it again", text)
+        self.assertIn("set `MODEL_ID` and `NIGHT` in `nightly/slow_model.py` to §8's id and night", text)
+        self.assertIn("git add tests/test_frozen.py nightly/slow_model.py && git commit --amend --no-edit && make test", text)
+        import test_products_added
+        self.assertNotIn("test_slow_model", test_products_added.LEFT_OUT)          # so it does run it again
 
     def test_the_products_commit_writes_specs_rows_and_its_pin(self):
         # SPEC v2 §5 gives each product's TICK_P and atoms, and tests/test_spec.py holds that table to config.PRODUCTS

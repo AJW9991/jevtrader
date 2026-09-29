@@ -387,11 +387,15 @@ it "before any further edit of PREREG-v2.md on the build branch", and this step 
 cd ~/Projects/jev-paper-loop-v2 && git merge --no-edit main && make test
 ```
 
-`tests/test_frozen.py` pins PREREG-v2.md's bytes, so a merge that brings `main`'s edits of it fails `make test` on
-that one pin: put the new sha (`shasum -a 256 PREREG-v2.md`) on the `"PREREG-v2.md": "…",` line and fold it into the
-merge commit (`git add tests/test_frozen.py && git commit --amend --no-edit && make test`), so the pin changes in the
-commit that changes the file. Every later edit of PREREG-v2.md before the draft tag (each a §14 entry) moves the pin
-in its own commit the same way.
+`tests/test_frozen.py` pins PREREG-v2.md's bytes, and `tests/test_slow_model.py` holds `nightly/slow_model.py`'s
+`MODEL_ID` and `NIGHT` to §8's "**id `…` (night …).**" line, so a merge that brings `main`'s edits of it fails
+`make test` on two things: that pin, and, since `main`'s §8 names the slow model (95454c8, 2026-09-29), the slow-model
+test (twice: `test_products_added` runs it again), while `slow_model.py` is still blank. Put the new sha
+(`shasum -a 256 PREREG-v2.md`) on the `"PREREG-v2.md": "…",` line, set `MODEL_ID` and `NIGHT` in
+`nightly/slow_model.py` to §8's id and night (the night as §8 writes it, up to its `;`), and fold both into the merge
+commit (`git add tests/test_frozen.py nightly/slow_model.py && git commit --amend --no-edit && make test`), so the pin
+changes in the commit that changes the file. Every later edit of PREREG-v2.md before the draft tag (each a §14 entry)
+moves the pin in its own commit the same way, and an edit of §8's line moves `slow_model.py` with it.
 
 Then, on 2026-10-01 (UTC), once (PREREG-v2 §2):
 
