@@ -16,7 +16,9 @@ The seal (no flag) exits 0 only when all of §13's five hold:
 (c) `git diff -U0 refs/tags/prereg-v2-draft HEAD -- . ':(exclude)RESULTS.md' ':(exclude)HANDOFF.md' ':(exclude)proposals'
     ':(exclude)data/exclusions.tsv'` (printed in full; renames off, so a moved file is a deletion and an addition) has
     hunks only where §13 (c) allows them. The commits named in the first column of ERRATA.md's "v2 deviations" table (a
-    heading holding those words; a row whose first cell is not a commit is refused) are taken out first: each one's diff
+    heading holding those words; a row whose first cell is not a commit is refused), each one in prereg-v2-draft..HEAD
+    (made after the tag, on the build or on main, where §13 has main take a fix only as a listed deviation until switch
+    step (6), merged at step (4)) and not a merge, are taken out first: each one's diff
     applied in reverse to HEAD's tree, newest first, in a temporary index; a deviation that a later commit overlaps
     cannot be taken out, and (c) fails. Each is printed with its own diff. What is left is judged file by file:
     - PREREG-v2.md: every hunk replaces lines one for one, each a line of §12 (from `## 12.` to the next `## `) that
@@ -177,7 +179,10 @@ def _blank(v):
 # ---- (c): the listed deviations, taken out in a temporary index -------------------------------------------------------
 def deviations(repo, errata_text):
     """(the commits ERRATA.md's "v2 deviations" table names, full shas, newest first; refusals). A row whose first cell
-    is not a commit, a commit that is not in DRAFT_TAG..HEAD, and a merge commit are refused."""
+    is not a commit, a commit that is not in DRAFT_TAG..HEAD, and a merge commit are refused. DRAFT_TAG..HEAD, not the
+    tag's descendants: from the draft tag until switch step (6) main takes a fix only as a listed deviation (§13), and
+    such a commit, merged at switch step (4), is one HEAD reaches and the tag does not, with no tag below it."""
+    order = _text(_git(repo, "rev-list", "--topo-order", f"{DRAFT_TAG}..HEAD").stdout).split()
     listed, bad, depth = [], [], None
     for line in errata_text.splitlines():
         h = re.match(r"^(#{1,6}) ", line)
@@ -200,17 +205,15 @@ def deviations(repo, errata_text):
             bad.append(f"ERRATA.md's v2 deviations row names {first}, which is not a commit here")
             continue
         sha = _text(r.stdout).strip()
-        if (_git(repo, "merge-base", "--is-ancestor", DRAFT_TAG, sha, check=False).returncode != 0
-                or _git(repo, "merge-base", "--is-ancestor", sha, "HEAD", check=False).returncode != 0
-                or sha == _text(_git(repo, "rev-parse", f"{DRAFT_TAG}^{{commit}}").stdout).strip()):
-            bad.append(f"ERRATA.md's v2 deviations row names {sha[:12]}, which is not a commit after prereg-v2-draft on HEAD")
+        if sha not in order:
+            bad.append(f"ERRATA.md's v2 deviations row names {sha[:12]}, which is not in prereg-v2-draft..HEAD (a commit "
+                       "HEAD reaches and the draft tag does not: made after the tag, on the build or on main)")
             continue
         if len(_text(_git(repo, "rev-list", "--parents", "-n", "1", sha).stdout).split()) != 2:
             bad.append(f"ERRATA.md's v2 deviations row names {sha[:12]}, a merge: a deviation is one commit of its own")
             continue
         if sha not in listed:
             listed.append(sha)
-    order = _text(_git(repo, "rev-list", "--topo-order", f"{DRAFT_TAG}..HEAD").stdout).split()
     return sorted(listed, key=order.index), bad
 
 

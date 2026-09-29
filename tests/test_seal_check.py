@@ -399,6 +399,37 @@ class Deviations(Scratch):
         self.assertIn(f"(c) READ: the listed deviation {fix[:12]} touches loop/book.py, which holds at_cadence, replay,"
                       " paired: a deviation touching those voids the draft tag (§13)", text)
 
+    def test_a_listed_fix_main_made_after_the_draft_tag_passes(self):
+        # §13: from the draft tag until switch step (6) main takes a fix only as a listed deviation. Merged into the
+        # build at switch step (4) and into main at step (6), that commit is one HEAD reaches and the draft tag does
+        # not, without descending from the tag (the S5 refuter's defect 1)
+        self.git("tag", "-d", "prereg-v2-draft")
+        self.git("checkout", "-q", "-b", "prereg-v2")
+        self.write("loop/v2only.py", "V2 = True\n")
+        self.commit("the build")
+        self.git("tag", "-a", "prereg-v2-draft", "-m", "draft")
+        self.git("checkout", "-q", "main")
+        self.replace("loop/code.py", "Y = 2", "Y = 3")
+        fix = self.commit("a fix main needed after the draft tag")
+        self.write("ERRATA.md", ERRATA + f"| {fix[:10]} | Y | outside (c) |\n")
+        self.commit("its row, an addition at the end")
+        self.git("checkout", "-q", "prereg-v2")
+        self.git("merge", "-q", "--no-edit", "main")                     # switch step (4)
+        self.git("checkout", "-q", "main")
+        self.git("merge", "-q", "--ff-only", "prereg-v2")                # switch step (6)
+        text = self.assertPasses()
+        self.assertIn(f"(c) listed deviation {fix} (ERRATA.md's v2 deviations table), taken out before the judgement:", text)
+        self.assertIn("(1 listed deviation(s) taken out)", text)
+
+    def test_a_listed_commit_head_does_not_reach_fails(self):
+        self.git("checkout", "-q", "-b", "side")
+        self.replace("loop/code.py", "Y = 2", "Y = 3")
+        side = self.commit("a fix on a branch never merged")
+        self.git("checkout", "-q", "main")
+        self.write("ERRATA.md", ERRATA + f"| {side[:12]} | Y | a fix |\n")
+        self.commit("listed")
+        self.assertFails(says=[f"names {side[:12]}, which is not in prereg-v2-draft..HEAD"])
+
     def test_a_later_commit_over_a_listed_one_cannot_be_taken_out(self):
         self.replace("loop/code.py", "Y = 2", "Y = 3")
         fix = self.commit("a fix")
@@ -415,7 +446,7 @@ class Deviations(Scratch):
         self.assertFails(says=["names no commit in its first cell"])
         self.write("ERRATA.md", ERRATA + f"| {draft} | x | y |\n")
         self.commit("the draft commit itself")
-        self.assertFails(says=[f"names {draft[:12]}, which is not a commit after prereg-v2-draft on HEAD"])
+        self.assertFails(says=[f"names {draft[:12]}, which is not in prereg-v2-draft..HEAD"])
         self.write("ERRATA.md", ERRATA + "| 0123456789abc | x | y |\n")
         self.commit("no such commit")
         self.assertFails(says=["names 0123456789abc, which is not a commit here"])
