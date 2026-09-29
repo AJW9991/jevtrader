@@ -14,7 +14,9 @@ a WITHHELD line until T0 + 28 d; that T0 is read from the repo's own PREREG.md �
 PREREG-v2 (the section before main): with --log the report is v1's on that one log, as above; without it,
 render_v2 reads every product's store (config.store) and prints §1-§3 per product and pooled, §4 A's and
 D's agreement, §5 the paired book at the minute cadence and at each config.CADENCES through book.at_cadence,
-per product and pooled over the time block, with the rule-recomputed exclusions (loop.exclusions_v2), §6-§7
+per product and pooled over the time block, with the rule-recomputed exclusions (loop.exclusions_v2), and
+PREREG-v2 §6's fee arithmetic at each replay cadence (each arm's and buy-and-hold's break-even fee, the 30-day
+volume, the tiers of §12's table it names, the pairs' f*_XY; fee_arithmetic, tier_lines), §6-§7
 per product. Either way PREREG-v2's withholding (withheld_v2: T0_v2 from PREREG-v2.md §12, whatever the
 flags; blank, every row carrying the v2 spec_sha) is applied beside v1's, and every --unblind is recorded in
 data/looks.tsv (loop.looks) before anything is printed, whether or not it lifts a withholding. The v2 report is ~4 s per product-day of
@@ -1084,7 +1086,7 @@ def in_sample(rows, t0):
 TITLES_V2 = ("1. health, per product and pooled", "2. adjective occupancy, per product and pooled",
              "3. test-retest (a_action vs b_action on the same question), per product and pooled",
              "4. agreement: A's argmax vs rule_c, and arm D's table vs B's live answer (PREREG-v2 §6)",
-             "5. paired book at each cadence: pair x column x fee, per product and pooled (PREREG-v2 §4, §6)",
+             "5. paired book at each cadence: pair x column x fee, per product and pooled, and the fee arithmetic (PREREG-v2 §4, §6)",
              "6. direction probabilities: lean (up15 - down15) vs the 15-min return, per product (descriptive)",
              "7. arm A choice confidence vs rule-matching, per product (descriptive)")
 VOID_KEPT_DAYS = 21                                   # PREREG-v2 §9.4: a product with fewer kept days is void
@@ -1244,18 +1246,91 @@ def _fee_list():
     return fees
 
 
-def cadence_table(per, anchor, n_of, kept, pool, sampled):
+BREAK_EVEN_FEE = 90.0      # PREREG-v2 §6.1: f*_X = 90 E_X(0) / (E_X(0) - E_X(90)), from the 0 and 90 columns (the verified taker)
+FEE_EPS = 1e-9             # bps: |Delta(0) - Delta(90)| at or below this is "fees cancel" (float noise; one fill's fee is ~90 bps)
+ERRATA_TIER = {"name": "Intro", "band": "at 30-day volume $0", "low": 0.0, "high": None, "maker": 50.0, "taker": 90.0}
+ERRATA_TIER_WHERE = "ERRATA.md's 2026-09-27 reading (Alex, in-account, ~22:55Z)"   # PREREG-v2 §6.2: printed beside §12's
+
+
+def _bh_rows(rows):
+    """Buy-and-hold on the replay's own rows (PREREG-v2 §6.1's line): buy on the first priced row in book._order,
+    hold on every other row, whatever the model answered, so book.replay prices it exactly as it prices an arm (SPEC
+    §10: the fill at the ask, the fee on it, the marks to mid). Rows replay reads as intents of arm a, argmax."""
+    out, bought = [], False
+    for r in sorted(rows, key=book._order):
+        intent = "hold"
+        if not bought and all(book._px(r.get(k)) for k in ("bid", "ask", "mid")):
+            intent, bought = "buy", True
+        out.append({"tick_id": r.get("tick_id"), "ts_rx": r.get("ts_rx"), "bid": r.get("bid"), "ask": r.get("ask"),
+                    "mid": r.get("mid"), "mode": "live", "absence": None, "columns": {"a": {"argmax": intent}, "b": None},
+                    "rule_c": intent})
+    return out
+
+
+def _be_reading(e0, e90, fills):
+    """(f* or None, the words) for one arm: undefined with no fill on a kept day; never pays when E(0) <= 0."""
+    if not fills:
+        return None, "undefined: no fill on a kept day"
+    if e0 <= 0:
+        return None, "never pays: E(0) <= 0"
+    fs = BREAK_EVEN_FEE * e0 / (e0 - e90)
+    return fs, f"f* {fs:.2f} bps per fill"
+
+
+def _pair_reading(x, y, d0, d90):
+    """(f*_XY or None, the words) for Delta = E_X - E_Y (PREREG-v2 §6.3), never "pays": fees cancel when Delta(0) =
+    Delta(90) (within FEE_EPS), and Delta(0)'s sign then holds at every fee; else f*_XY = 90 Delta(0) / (Delta(0) -
+    Delta(90)): X stops (Delta(0) > 0) or starts (Delta(0) < 0) beating Y above it when it is > 0, and the sign of
+    Delta(90) holds at every fee > 0 when it is <= 0."""
+    X, Y = x.upper() if len(x) == 1 else x, y.upper() if len(y) == 1 else y
+
+    def side(d):
+        return f"{X} beats {Y}" if d > FEE_EPS else f"{X} trails {Y}" if d < -FEE_EPS else f"{X} and {Y} tie"
+    if abs(d0 - d90) <= FEE_EPS:
+        return None, f"fees cancel: {side(d0)} at every fee"
+    fs = BREAK_EVEN_FEE * d0 / (d0 - d90)
+    if fs > 0:
+        return fs, f"{X} {'stops' if d0 > 0 else 'starts'} beating {Y} above {fs:.2f} bps per fill"
+    return fs, f"the sign of Delta(90) holds at every fee > 0: {side(d90)}"
+
+
+def tier_lines(tiers):
+    """(lines, the tiers used to name one: §12's when filled, else ERRATA's reading alone). tiers: dash.read_fee_tiers()'s
+    dict, None (blank) or {"error": why} (refused)."""
+    def row(t):
+        return (f"    {(t['name'] + ' ') if t['name'] else ''}{t['band']}: maker {t['maker']:g} bps / taker {t['taker']:g} bps;"
+                f" round trip 2 x taker {2 * t['taker']:g} bps; 2 x maker {2 * t['maker']:g} bps needs a passive-fill model not"
+                " measured here")
+    head = "  fee tiers (PREREG-v2 §6.2): "
+    if tiers is None or "error" in tiers:
+        why = ("§12's table is blank until sealing" if tiers is None else f"§12's table REFUSED, fix before day 28: {tiers['error']}")
+        return [head + why + f"; {ERRATA_TIER_WHERE.replace('reading', 'reading stands in', 1)}:", row(ERRATA_TIER)], [ERRATA_TIER]
+    lines = [head + f"§12's table, read UTC {tiers['read']} (a tier's round trip is 2 x its taker: the book fills at ask and bid):"]
+    lines += [row(t) for t in tiers["tiers"]]
+    if not any(t["low"] == 0 and (t["maker"], t["taker"]) == (ERRATA_TIER["maker"], ERRATA_TIER["taker"]) for t in tiers["tiers"]):
+        lines += [f"  it differs from {ERRATA_TIER_WHERE}, printed beside it:", row(ERRATA_TIER)]
+    return lines, list(tiers["tiers"])
+
+
+def cadence_table(per, anchor, n_of, kept, pool, sampled, tiers=(ERRATA_TIER,)):
     """§5 of the v2 report. per: {product: its rows, cut to the sample when `sampled`}; anchor: T0 (or, without
     one, the earliest tick over the products); n_of(c): the number of c-blocks (to the logs' last tick, capped at
     the sample's); kept(p, k, c): whether product p's block k at cadence c is kept (its day not excluded, p not
     void); pool: the products pooled (the non-void ones). Per cadence: the transform (book.at_cadence) once per
     product, one replay per (product, arm, column, fee), S_k,p = the sum of d_t over the block's ticks, the per-
     product mean over its kept blocks, and the pooled series S-bar_k over the blocks with a kept pooled product.
-    The minute cadence is v1's design on v2's arms (decided every minute, 900 s blocks), B - C only."""
+    The minute cadence is v1's design on v2's arms (decided every minute, 900 s blocks), B - C only. After each
+    replay cadence, PREREG-v2 §6's fee arithmetic (fee_arithmetic), naming `tiers` (tier_lines' second value)."""
     fees = _fee_list()
     plans = [("minute", BLOCK_S, False, (("b", "c"),))] + [(c, c, True, PAIRS) for c in config.CADENCES]
-    lines, cells, gaps, tpd = [], {}, {}, {}
+    lines, cells, gaps, tpd, fas = [], {}, {}, {}, {}
     prods = list(per)
+    bh_cache = {}
+
+    def bh(p, fee):                                 # buy-and-hold does not depend on the cadence: one replay per product and fee
+        if (p, fee) not in bh_cache:
+            bh_cache[(p, fee)] = book.replay(_bh_rows(per[p]), None, "a", "argmax", fee)
+        return bh_cache[(p, fee)]
     for label, c, transform, pairs in plans:
         n = n_of(c)
         rows_c = {p: (book.at_cadence(per[p], c, anchor) if transform else per[p]) for p in prods}
@@ -1329,7 +1404,76 @@ def cadence_table(per, anchor, n_of, kept, pool, sampled):
                     lines.append(f"    {star} {col:<9}{cell['n']:>6}{cell['dis']:>6}{_r(cell['share']):>7}{pdis:>6}{_f(cell['mean']):>10}"
                                  f"{_f(cell['mean_dis']):>12}  |"
                                  + "".join(f"  {p}: {per_p[p]['n']:>5}{_f(per_p[p]['mean']):>9}{per_p[p]['dis']:>5}" for p in prods))
-    return {"lines": lines, "cells": cells, "gap_blocks": gaps, "trades_per_day": tpd, "fees": fees}
+        if transform:
+            days = {p: sum(1 for k in range(n) if kept(p, k, c)) * c / 86400 for p in prods}
+            fas[label] = fee_arithmetic(c, prods, pool, on, days, lambda p, a, f: rep(p, a, "argmax", f), bh, tiers)
+            lines += fas[label]["lines"]
+    return {"lines": lines, "cells": cells, "gap_blocks": gaps, "trades_per_day": tpd, "fees": fees, "fee_arithmetic": fas}
+
+
+def fee_arithmetic(c, prods, pool, on, days, rep, bh, tiers):
+    """PREREG-v2 §6's fee arithmetic at one replay cadence c, at argmax, descriptive. on[p]: the tick_ids of p's kept
+    blocks (its kept days, after --since); days[p]: p's kept days (kept blocks x c / 86400); rep(p, arm, fee): the
+    arm's replay on p's at_cadence rows; bh(p, fee): the buy-and-hold replay; pool: the non-void products.
+    1. E_X,p(f) = the sum of the replay's pnl over on[p] (an open position at the window's end is marked; a fill
+       counts when its tick is on a kept day); pooled E_X(f) = the sum over pool; f*_X = 90 E(0) / (E(0) - E(90))
+       bps per fill; "never pays" when E(0) <= 0; undefined with no fill. For A, B, C, D and buy-and-hold.
+    2. X's 30-day volume = the sum over pool of (fill value on p's kept days x 30 / p's kept days); a tier is named
+       for X when its taker fee is below the pooled f*_X.
+    3. Delta_p(f) = E_X,p(f) - E_Y,p(f) (= the sum of S_k,p over the kept blocks), pooled Delta(f) = the sum over
+       pool, read by _pair_reading, for every pair of PAIRS.
+    Pooled figures are sums over kept product-days, never averages of per-product ratios (§6.4)."""
+    fees = (0.0, BREAK_EVEN_FEE)
+    names = list(ARMS) + ["buy-and-hold"]
+
+    def one(p, a):
+        r = {f: (bh(p, f) if a == "buy-and-hold" else rep(p, a, f)) for f in fees}
+        pnl0, pnl90 = r[0.0]["pnl_bps_per_tick"], r[BREAK_EVEN_FEE]["pnl_bps_per_tick"]
+        fills = [x for x in r[0.0]["trades"] if x["tick_id"] in on[p]]
+        value = sum(x["qty"] * x["price"] for x in fills)
+        ticks = sorted(on[p])                        # tick order: a float sum over a set would vary with the hash seed
+        return {"e0": sum(pnl0[t] for t in ticks if t in pnl0), "e90": sum(pnl90[t] for t in ticks if t in pnl90),
+                "fills": len(fills), "value": value, "volume_30d": value * 30 / days[p] if days[p] else 0.0}
+
+    def read(x):
+        x["fstar"], x["reading"] = _be_reading(x["e0"], x["e90"], x["fills"])
+        return x
+    per = {p: {a: read(one(p, a)) for a in names} for p in prods}
+    pooled = {a: read({k: sum(per[p][a][k] for p in pool) for k in ("e0", "e90", "fills", "value", "volume_30d")}) for a in names}
+    named = {a: [t for t in tiers if pooled[a]["fstar"] is not None and t["taker"] < pooled[a]["fstar"]] for a in names}
+    pairs = {}
+    for x, y in PAIRS:
+        d0, d90 = pooled[x]["e0"] - pooled[y]["e0"], pooled[x]["e90"] - pooled[y]["e90"]
+        fs, words = _pair_reading(x, y, d0, d90)
+        pp = {}
+        for p in prods:
+            q0, q90 = per[p][x]["e0"] - per[p][y]["e0"], per[p][x]["e90"] - per[p][y]["e90"]
+            pp[p] = dict(zip(("d0", "d90"), (q0, q90)), **dict(zip(("fstar", "reading"), _pair_reading(x, y, q0, q90))))
+        pairs[(x, y)] = {"d0": d0, "d90": d90, "fstar": fs, "reading": words, "per": pp}
+
+    def label(a):
+        return a.upper() if len(a) == 1 else a
+
+    def fig(x):
+        return f"E(0) {x['e0']:.3f}, E(90) {x['e90']:.3f}, fills {x['fills']}: {x['reading']}"
+    lines = ["", f"  fee arithmetic at {c} s (PREREG-v2 §6; argmax, on the at_cadence replay; E = the sum of book.replay's pnl over"
+             " the ticks of kept product-days, bps of NOTIONAL, an open position marked at the end; a fill counts when its tick is on"
+             f" a kept day; f* = {BREAK_EVEN_FEE:g} E(0) / (E(0) - E({BREAK_EVEN_FEE:g})) bps per fill; pooled = sums over the"
+             f" pooled products {', '.join(pool) or 'none'}):"]
+    for a in names:
+        lines.append(f"    {label(a)}  pooled: {fig(pooled[a])}")
+        lines += [f"      {p}: " + ("void (PREREG-v2 §9.4): not pooled" if p not in pool else fig(per[p][a])) for p in prods]
+    lines.append("    30-day volume (fill value on kept days x 30 / kept days, summed over the pooled products): "
+                 + " | ".join(f"{label(a)} ${pooled[a]['volume_30d']:,.0f}" for a in names))
+    lines.append("    tiers named (taker below the pooled f*; the tier's band beside the arm's own 30-day volume): " + " | ".join(
+        f"{label(a)} " + ("; ".join(f"{(t['name'] + ' ') if t['name'] else ''}{t['band']} taker {t['taker']:g}" for t in named[a])
+                          + f" (its 30-day volume ${pooled[a]['volume_30d']:,.0f})" if named[a] else
+                          "none" + ("" if pooled[a]["fstar"] is not None else f" ({pooled[a]['reading']})")) for a in names))
+    lines.append(f"    pairs (Delta = E_X - E_Y = the sum of S_k over the kept blocks; pooled, then per product):")
+    for (x, y), pr in pairs.items():
+        lines.append(f"    {label(x)}-{label(y)}  Delta(0) {pr['d0']:.3f}, Delta(90) {pr['d90']:.3f}: {pr['reading']}  |  "
+                     + " | ".join(f"{p}: {pr['per'][p]['reading']}" for p in prods if p in pool))
+    return {"lines": lines, "pooled": pooled, "per": per, "named": named, "pairs": pairs, "days": days}
 
 
 def _day_n(r, t0):
@@ -1341,11 +1485,12 @@ def _void_line(p):
     return [f"  -- {p}: void (PREREG-v2 §9.4, fewer than {VOID_KEPT_DAYS} kept days): its rows enter no statistic"]
 
 
-def render_v2(stores, t0=None, since=None, health_only=False, withheld=(), now=None, listed=None):
+def render_v2(stores, t0=None, since=None, health_only=False, withheld=(), now=None, listed=None, tiers=None):
     """PREREG-v2's report over every product's store. stores: [{"product", "log", "missing", "rows" (cut to
     --since and the sample), "bad", "outs" (the join over the product's WHOLE log), "last" (its last tick reached
     on the clock, over the whole log)}]; withheld: the WITHHELD lines (v1's and v2's), non-empty only with
-    health_only; listed: {"set", "lines", "path", "error"} from data/exclusions-v2.tsv. Pure: it reads no file
+    health_only; listed: {"set", "lines", "path", "error"} from data/exclusions-v2.tsv; tiers: PREREG-v2 §12's fee-tier
+    table (dash.read_fee_tiers: None while blank, or {"error": why} when refused). Pure: it reads no file
     but data/HALT's and each PAUSE's presence and mtime, as §1's v1 health reads HALT's."""
     from . import exclusions_v2                        # here, not at the top: exclusions imports report
     prods = [s["product"] for s in stores]
@@ -1428,7 +1573,8 @@ def render_v2(stores, t0=None, since=None, health_only=False, withheld=(), now=N
                 if since_ep is not None and anchor + c * k < since_ep:
                     return False                         # --since cut its rows (all or some) before the replay: not S_k = 0
                 return t0 is None or (int(c * k // 86400) + 1, p) not in recomputed
-            ct = cadence_table(per, anchor, n_of, kept, [p for p in prods if p not in void], t0 is not None)
+            tl, used = tier_lines(tiers)
+            ct = cadence_table(per, anchor, n_of, kept, [p for p in prods if p not in void], t0 is not None, used)
             head = [f"  d_t = pnl_x - pnl_y in bps of NOTIONAL per tick; S_k,p = the sum of d_t over block k's ticks for product p;"
                     " pooled: n = pooled blocks (those with a kept, non-void product), mean_S = the mean of S-bar_k, dis = pooled blocks"
                     " with a kept product's disagreement tick (the SIDES differ into or out of the tick), pdis = disagreement"
@@ -1437,7 +1583,7 @@ def render_v2(stores, t0=None, since=None, health_only=False, withheld=(), now=N
                     " are left out) over every row, excluded days included; an excluded product-day's blocks are"
                     " dropped afterwards" + (" (the recomputed set above)" if t0 is not None else " (none without --t0)")
                     + "; D - B and D - C at argmax only; descriptive: the H1 and family-F bounds are loop.inference's, at day 28"]
-            secs.append({"lines": head + ct["lines"]})
+            secs.append({"lines": head + tl + ct["lines"]})
             out["cadence"] = ct
         out["d_agreement"] = da
         h2l, cal = [cut_line], [cut_line]
@@ -1571,9 +1717,15 @@ def main(argv=None, now=None):
                         " and nobody reads H1, H2, the pairs or the calibration before day 28 (CLAUDE.md, PREREG §8.4)")
     if w2 is not None:
         withheld.append(withheld_v2_line(w2))
+    tiers = None
+    if not health_only:
+        try:
+            tiers = dash.read_fee_tiers()                            # PREREG-v2 §12's fee-tier table, the repository's (§6.2, §10)
+        except ValueError as e:                                      # malformed: said in §5, ERRATA's reading stands in
+            tiers = {"error": str(e)}
     for s in stores:
         s["last"] = s["reached"] if s["reached"] is not None else s["last"]
-    sys.stdout.write(render_v2(stores, t0, args.since, health_only, withheld, clock, listed)["text"])
+    sys.stdout.write(render_v2(stores, t0, args.since, health_only, withheld, clock, listed, tiers)["text"])
     return 0
 
 

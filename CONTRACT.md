@@ -367,7 +367,11 @@ disagreement named; PREREG-v2 §9.4's void once every product's d28 has closed);
 §5 the paired book at the minute cadence (B − C) and at each `config.CADENCES` through
 `book.at_cadence(rows, c, T0)`, each product replayed from flat at T0 over every row, excluded
 days included, its excluded days' blocks dropped after, per product and pooled over the time
-block, `gap_blocks` per cadence, trades/day per arm and product, D − B and D − C at argmax only;
+block, `gap_blocks` per cadence, trades/day per arm and product, D − B and D − C at argmax only,
+and after each replay cadence PREREG-v2 §6's fee arithmetic at argmax (E_X,p at 0 and 90 bps over
+kept days, f*_X for A, B, C, D and buy-and-hold, pooled and per product, the 30-day volume, the
+tiers of §12's table, read by `dash.read_fee_tiers`, whose taker is below f*_X, ERRATA's 2026-09-27
+reading standing in while §12 is blank, and each pair's Δ and f*_XY);
 §6–§7 per product. §4, §6, §7 and trades/day read only the rows of kept product-days of non-void
 products (PREREG-v2 §2, §9.4); §1–§3 read every row, since they judge the days. `--since` cuts rows
 before the replay, so with `--t0` each product is replayed from flat at its first row on or after

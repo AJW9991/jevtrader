@@ -286,6 +286,113 @@ class RowLevelDescriptivesTakeKeptRowsOnly(unittest.TestCase):
             self.assertIn(f"-- {p2}: void (PREREG-v2 §9.4, fewer than 21 kept days): its rows enter no statistic", sec)
 
 
+class FeeArithmetic(unittest.TestCase):
+    """PREREG-v2 §6's fee arithmetic, per product and cadence on the at_cadence replay, by hand at c = 900 (rows every
+    900 s, so every row decides): E_X,p(f) = the sum of book.replay's pnl over the ticks of kept days, a fill counted
+    when its tick is on a kept day; f*_X = 90 E(0) / (E(0) - E(90)); "never pays" at E(0) <= 0, undefined with no fill;
+    a buy-and-hold line over the same span; the 30-day volume; tiers named when their taker is below f*; pairs
+    Delta = E_X - E_Y = the sum of S_k over kept blocks, with f*_XY and its wording, never "pays".
+    B (and D, its table) buys d01's first row at ask 100.01 and sells at row 50 at bid 104.99; on d02 (BAD, excluded)
+    B buys and sells again, fills that do not count; A and C hold throughout."""
+    N = config.NOTIONAL_USD
+
+    def setUp(self):
+        self.enterContext(mock.patch.object(config, "HALT", os.path.join(self.enterContext(tempfile.TemporaryDirectory()), "no-HALT")))
+        d01 = _day_rows(1, lambda i: 100.0 if i < 50 else 105.0)
+        d01[0] = _row(T0, 100.0, b="buy")
+        d01[50] = _row(T0 + 50 * 900, 105.0, b="sell")
+        d02 = _day_rows(2, lambda i: 150.0)
+        for i in range(0, 96, 10):
+            d02[i] = _row(report.tick_epoch(d02[i]["tick_id"]), 150.0, absence="jev")
+        d02[1] = _row(report.tick_epoch(d02[1]["tick_id"]), 150.0, b="buy")
+        d02[95] = _row(report.tick_epoch(d02[95]["tick_id"]), 150.0, b="sell")
+        self.rows = d01 + d02 + _day_rows(3, lambda i: 150.0) + _day_rows(4, lambda i: 150.0)[:8]
+
+    def _render(self, tiers=None):
+        return report.render_v2([_store("SOL-USD", self.rows)], t0=T0, now=END + 86400, tiers=tiers)
+
+    def test_each_arms_break_even_and_the_buy_and_hold_line_by_hand(self):
+        out = self._render()
+        self.assertEqual(out["recomputed"], {(2, "SOL-USD")})
+        fa = out["cadence"]["fee_arithmetic"][900]
+        qty = self.N / 100.01
+        e0 = qty * (104.99 - 100.01) * 1e4 / self.N                                   # the round trip on d01, spread included
+        slope = 1.0 + qty * 104.99 / self.N                                             # one buy (fee on NOTIONAL) + one sell (on qty x bid)
+        for arm in ("b", "d"):
+            x = fa["pooled"][arm]
+            self.assertAlmostEqual(x["e0"], e0, places=9, msg=arm)
+            self.assertAlmostEqual(x["e90"], e0 - 90.0 * slope, places=9, msg=arm)
+            self.assertEqual(x["fills"], 2, arm)                                         # d02's two fills do not count
+            self.assertAlmostEqual(x["fstar"], 90.0 * e0 / (90.0 * slope), places=9, msg=arm)
+            self.assertEqual(fa["per"]["SOL-USD"][arm], x, arm)
+        for arm in ("a", "c"):
+            self.assertEqual((fa["pooled"][arm]["fills"], fa["pooled"][arm]["fstar"]), (0, None), arm)
+            self.assertEqual(fa["pooled"][arm]["reading"], "undefined: no fill on a kept day", arm)
+        self.assertAlmostEqual(fa["pooled"]["b"]["volume_30d"], (self.N + qty * 104.99) * 30 / (200 * 900 / 86400), places=6)
+        # buy-and-hold: bought at T0's ask, marked to d01's last mid; d02's jump (105 -> 150) is on an excluded day
+        bh = fa["pooled"]["buy-and-hold"]
+        self.assertAlmostEqual(bh["e0"], qty * (105.0 - 100.01) * 1e4 / self.N, places=9)
+        self.assertAlmostEqual(bh["e90"], bh["e0"] - 90.0, places=9)
+        self.assertEqual(bh["fills"], 1)
+        self.assertAlmostEqual(bh["fstar"], bh["e0"], places=9)
+        text = out["text"]
+        self.assertIn("fee arithmetic at 900 s (PREREG-v2 §6", text)
+        self.assertIn(f"B  pooled: E(0) {e0:.3f}, E(90) {e0 - 90.0 * slope:.3f}, fills 2: f* {90.0 * e0 / (90.0 * slope):.2f} bps per fill", text)
+        self.assertIn("C  pooled: E(0) 0.000, E(90) 0.000, fills 0: undefined: no fill on a kept day", text)
+        for c in config.CADENCES:
+            self.assertIn(f"fee arithmetic at {c} s (PREREG-v2 §6", text)
+        # E(0) <= 0 with a fill: never pays (a round trip at an unchanged mid pays the spread)
+        flat = [dict(r, mid=100.0, bid=99.99, ask=100.01) if r["mid"] is not None else r for r in self.rows]
+        got = report.render_v2([_store("SOL-USD", flat)], t0=T0, now=END + 86400)["cadence"]["fee_arithmetic"][900]["pooled"]["b"]
+        self.assertLess(got["e0"], 0.0)
+        self.assertEqual((got["fstar"], got["reading"]), (None, "never pays: E(0) <= 0"))
+
+    def test_pairs_are_sums_of_kept_blocks_and_read_by_f_star(self):
+        out = self._render()
+        fa = out["cadence"]["fee_arithmetic"]
+        for c in config.CADENCES:
+            for x, y in report.PAIRS:
+                for f, key in ((0.0, "d0"), (90.0, "d90")):
+                    pr = fa[c]["pairs"][(x, y)]
+                    e = fa[c]["pooled"]
+                    self.assertAlmostEqual(pr[key], e[x]["e" + key[1:]] - e[y]["e" + key[1:]], places=9, msg=(c, x, y))
+                    cell = out["cadence"]["cells"].get((c, x, y, "argmax", f))
+                    if cell is not None:                                               # 90 is a printed fee column once config has it
+                        s = sum(v for k, v in cell["S_p"]["SOL-USD"].items() if not 96 * 900 // c <= k < 192 * 900 // c)
+                        self.assertAlmostEqual(pr[key], s, places=9, msg=(c, x, y, f))
+        bc = fa[900]["pairs"][("b", "c")]
+        fs = 90.0 * bc["d0"] / (bc["d0"] - bc["d90"])
+        self.assertAlmostEqual(bc["fstar"], fs, places=9)
+        self.assertEqual(bc["reading"], f"B stops beating C above {fs:.2f} bps per fill")
+        self.assertEqual(fa[900]["pairs"][("d", "b")]["reading"], "fees cancel: D and B tie at every fee")
+        self.assertEqual(fa[900]["pairs"][("a", "c")]["reading"], "fees cancel: A and C tie at every fee")
+        cb = report._pair_reading("c", "b", -bc["d0"], -bc["d90"])
+        self.assertEqual(cb, (fs, f"C starts beating B above {fs:.2f} bps per fill"))
+        self.assertEqual(report._pair_reading("b", "c", 0.0, -5.0), (0.0, "the sign of Delta(90) holds at every fee > 0: B trails C"))
+        self.assertEqual(report._pair_reading("b", "c", 3.0, 3.0)[1], "fees cancel: B beats C at every fee")
+        self.assertNotIn(" pays", "\n".join(l for l in out["text"].splitlines() if "Delta" in l))
+
+    def test_tiers_from_section_12_or_errata_and_those_named(self):
+        text = self._render()["text"]
+        self.assertIn("fee tiers (PREREG-v2 §6.2): §12's table is blank until sealing; ERRATA.md's 2026-09-27 reading stands in", text)
+        self.assertIn("maker 50 bps / taker 90 bps; round trip 2 x taker 180 bps; 2 x maker 100 bps needs a passive-fill model"
+                      " not measured here", text)
+        tiers = {"read": "2026-10-24T21:00Z", "tiers": [
+            {"name": "Intro 1", "band": "$0-$10K", "low": 0.0, "high": 1e4, "maker": 60.0, "taker": 120.0},
+            {"name": "Intro 2", "band": "$10K-$50K", "low": 1e4, "high": 5e4, "maker": 25.0, "taker": 40.0},
+            {"name": None, "band": "$50K+", "low": 5e4, "high": None, "maker": 15.0, "taker": 300.0}]}
+        out = self._render(tiers)
+        fa = out["cadence"]["fee_arithmetic"][900]
+        self.assertEqual([t["band"] for t in fa["named"]["b"]], ["$0-$10K", "$10K-$50K"])      # 120 and 40 < f*_B ~ 242.9
+        self.assertEqual(fa["named"]["c"], [])                                                # f*_C undefined
+        self.assertEqual([t["band"] for t in fa["named"]["buy-and-hold"]], ["$0-$10K", "$10K-$50K", "$50K+"])   # 300 < f*_BH ~ 499
+        self.assertIn("§12's table, read UTC 2026-10-24T21:00Z", out["text"])
+        self.assertIn("it differs from ERRATA.md's 2026-09-27 reading", out["text"])        # Intro 1 is 60/120 here, not 50/90
+        self.assertIn("Intro 1 $0-$10K", out["text"])
+        err = self._render({"error": "PREREG-v2 §12's fee-tier row 'x' is not ..."})["text"]
+        self.assertIn("fee tiers (PREREG-v2 §6.2): §12's table REFUSED, fix before day 28: PREREG-v2 §12's fee-tier row 'x'", err)
+
+
 class DAgreement(unittest.TestCase):
     """§6: Agreement(p, v), its denominator and null count; a null marks the cell a defect; the three readings."""
 
@@ -410,6 +517,36 @@ class Withheld(unittest.TestCase):
         self.assertIn("T0_v2 is blank", out)
         self.assertIn("is not a tick_id on a minute boundary", err)
         self._blind(out)
+
+    def test_main_reads_the_fee_tiers_from_section_12(self):
+        # PREREG-v2 §10: report reads the fee-tier table from PREREG-v2.md §12 (dash.read_fee_tiers), whatever the flags
+        def run(field):
+            with contextlib.ExitStack() as st:
+                path = pin_prereg_v2(st, T0S, self.sha)
+                with open(path, encoding="utf-8") as fh:
+                    text = fh.read()
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(text.replace("\n## 13.", f"\nFee tiers (30-day band / maker / taker, read UTC {field}\n## 13."))
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    self.assertEqual(report.main(["--t0", T0S], now=END), 0)
+            return out.getvalue()
+        out = run("`2026-10-24T21:00Z`): `Intro 1: $0-$10K / 0.60% / 1.20%; $10K+ / 0.25% / 0.40%`")
+        self.assertIn("fee tiers (PREREG-v2 §6.2): §12's table, read UTC 2026-10-24T21:00Z", out)
+        self.assertIn("Intro 1 $0-$10K: maker 60 bps / taker 120 bps", out)
+        self.assertIn("fee arithmetic at 900 s (PREREG-v2 §6", out)
+        out = run("`________`): `________`")
+        self.assertIn("§12's table is blank until sealing", out)
+        out = run("`2026-10-24T21:00Z`): `Intro 1: $0-$10K / 0.60 / 1.20`")
+        self.assertIn("§12's table REFUSED, fix before day 28: PREREG-v2 §12's fee-tier row 'Intro 1: $0-$10K / 0.60 / 1.20'", out)
+        # health only computes none of it
+        with contextlib.ExitStack() as st:
+            pin_prereg_v2(st, T0S, self.sha)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                report.main(["--health", "--t0", T0S], now=END)
+        self.assertNotIn("fee tiers", out.getvalue())
+        self.assertNotIn("fee arithmetic", out.getvalue())
 
     def test_after_the_sample_it_prints_and_before_t0_v2_shakedown_rows_print(self):
         code, out, err = self._run(["--t0", T0S], END)
