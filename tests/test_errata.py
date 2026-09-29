@@ -97,6 +97,28 @@ class Errata(unittest.TestCase):
         for l in rows:
             self.assertRegex(l.rstrip(), r"\| (stale|gloss|gap|choice) \|$", l)
 
+    def test_every_spec_and_prereg_row_says_where_it_was_folded(self):
+        # PREREG-v2 §10: "ERRATA.md's SPEC and PREREG rows that describe what the code already does are folded into the
+        # text"; the rows stay (v1's sample is read by v1's documents), each marked with where it went. A SPEC row goes
+        # to SPEC v2, whose section says "folded from ERRATA.md" where it landed; a PREREG row names the PREREG-v2
+        # section that settled it, or says it was not folded and why
+        errata, spec, prereg_v2 = _read("ERRATA.md"), _read("SPEC.md"), _read("PREREG-v2.md")
+        mark = re.compile(r"\*\*(?:Folded into (SPEC v2|PREREG-v2) §(\d+)\b|Not folded:)")
+        for heading in ("PREREG.md", "SPEC.md"):
+            part = errata.split(f"## {heading}\n", 1)[1].split("\n## ", 1)[0]
+            rows = [l for l in part.splitlines() if re.match(r"\| §\d", l)]          # not the header row
+            self.assertGreater(len(rows), 8, heading)
+            for row in rows:
+                with self.subTest(row=row[:60]):
+                    m = mark.search(row)
+                    self.assertIsNotNone(m)
+                    if heading == "SPEC.md":
+                        self.assertEqual(m.group(1), "SPEC v2")
+                        body = spec.split(f"\n## {m.group(2)}. ", 1)[1].split("\n## ", 1)[0]
+                        self.assertIn("folded from errata.md", body.lower())
+                    elif m.group(1):
+                        self.assertIn(f"\n## {m.group(2)}. ", prereg_v2)
+
     def test_the_v2_deviations_table_exists_and_each_row_names_one_commit(self):
         # PREREG-v2 §13: a fix between prereg-v2-draft and the seal outside (c) is one commit and one row of this table;
         # bin/seal-check reads the first cell as the commit and refuses a row that names none
