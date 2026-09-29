@@ -64,12 +64,13 @@ class Base(unittest.TestCase):
         self.halt = os.path.join(self.tmp, "HALT")
         self.enterContext(mock.patch.object(config, "HALT", self.halt))
         self.prereg = prereg(os.path.join(self.tmp, "PREREG-v2.md"))
-        self.git = {"status": ("", 0), "rev-parse": ("abc\n", 0), "merge-base": ("", 0)}   # clean, sealed, an ancestor
+        self.git = {"status": ("", 0), "rev-parse": ("abc\n", 0), "merge-base": ("", 0),   # clean, sealed, an ancestor,
+                    "diff": ("", 0)}                                                       # nothing changed since a tag
         self.calls = []
 
-        def git(argv, **kw):
+        def git(argv, **kw):                                  # a key naming the whole command wins over its subcommand
             self.calls.append(argv)
-            out, rc = self.git[argv[1]]
+            out, rc = self.git.get(" ".join(argv[1:])) or self.git[argv[1]]
             return subprocess.CompletedProcess(argv, rc, stdout=out if rc == 0 else "", stderr="" if rc == 0 else out)
         self.enterContext(mock.patch.object(self.promote.subprocess, "run", side_effect=git))
         self.attended = self.enterContext(mock.patch.object(self.promote, "_attended", return_value=True))
@@ -77,10 +78,11 @@ class Base(unittest.TestCase):
         self.sends = self.enterContext(mock.patch("loop.jev.ask", side_effect=Reached("promote sent something")))
         self.enterContext(mock.patch("urllib.request.urlopen", side_effect=Reached("urlopen was reached")))
 
-    def night(self, cands, date="2026-10-31", fail=(), root=None, policy=None, now=None):
+    def night(self, cands, date="2026-10-31", fail=(), root=None, policy=None, now=None, model=None):
         """proposals/<date>.json and, as the nightly makes them, its .md and .table.json: CURRENT answers rule_c; a
         candidate whose rationale is "hold everywhere" holds on every state, any other answers rule_c too. `fail`: the
-        states whose sends time out (never two in a row). `now`: the clock prompts.current() reads (default day 7)."""
+        states whose sends time out (never two in a row). `now`: the clock prompts.current() reads (default day 7).
+        `model`: the Jev version the answers name (default config.MODEL)."""
         prop = os.path.join(self.props, f"{date}.json")
         with open(prop, "w", encoding="utf-8") as fh:
             json.dump({"candidates": cands}, fh)
@@ -92,7 +94,8 @@ class Base(unittest.TestCase):
             if s in fail:
                 raise jev.JevError("timeout", "slow")
             rc = self.rule[s]
-            return {"answers": {q: _answer(rc if q == "current" else pol[q](rc), 0.9) for q in qs}, "model": config.MODEL}
+            return {"answers": {q: _answer(rc if q == "current" else pol[q](rc), 0.9) for q in qs},
+                    "model": model or config.MODEL}
         md = os.path.join(self.props, f"{date}.md")
         with mock.patch("loop.jev.ask", side_effect=ask), redirect_stdout(io.StringIO()), \
                 mock.patch.object(prompts.time, "time", return_value=day(7) if now is None else now):
@@ -417,14 +420,60 @@ class Promote(Base):
             self.assertEqual([l for l in code if name in l], [], name)
 
 
+SEAL_Q = "rev-parse -q --verify refs/tags/prereg-v2-seal"
+DRAFT_Q = "rev-parse -q --verify refs/tags/prereg-v2-draft^{tag}"
+DIFF_Q = "diff --quiet prereg-v2-draft HEAD -- prompts/v2.table.*.json"
+
+
 class TableOnly(Base):
     """--table-only <proposal.json>: the CURRENT version's per-product tables, copied from a proposal night's
-    .table.json (PREREG-v2 §8: v2's own tables before the draft tag); attended, sends nothing, no schedule, no seal."""
+    .table.json (PREREG-v2 §8: v2's own tables before the draft tag); attended, sends nothing, no schedule, no seal.
+    By default here no tag exists (before the draft tag)."""
+
+    def setUp(self):
+        super().setUp()
+        self.git["rev-parse"] = ("", 1)
+
+    def test_refused_once_the_seal_tag_exists(self):
+        # §8 and §12 allow v2's tables before the draft tag and one rebuild at the switch, both before the seal (§13);
+        # a tag of that name of any kind is the seal here, and a git that fails is a refusal, never "not sealed"
+        prop = self.night([])
+        for res, why in ((("abc\n", 0), "the tag prereg-v2-seal exists: v2's tables are built before the draft tag and "
+                                        "rebuilt at most once at the switch, both before the seal"),
+                         (("fatal: not a git repository", 128), "git rev-parse failed: fatal: not a git repository")):
+            self.git[SEAL_Q] = res
+            rc, _, err = self.run_promote("--table-only", prop)
+            self.assertEqual(rc, 1, res)
+            self.assertIn(why, err)
+            self.untouched()
+        self.assertIn(["git", "rev-parse", "-q", "--verify", "refs/tags/prereg-v2-seal"], self.calls)
+
+    def test_after_the_draft_tag_one_rebuild_and_only_for_another_jev_version(self):
+        # §8: "If a different Jev version answers at the switch, the tables are rebuilt once under the same rule"
+        self.assertEqual(self.run_promote("--table-only", self.night([]))[0], 0)          # before the draft tag
+        pinned = {p: prompts.table("v2", p, self.root)["sha"] for p in PRODUCTS3}
+        self.git[DRAFT_Q] = ("abc\n", 0)                                                   # the draft tag, tables as pinned
+        rc, _, err = self.run_promote("--table-only", self.night([], date="2026-10-24"))
+        self.assertEqual(rc, 1)
+        self.assertIn(f"the table was answered by {config.MODEL}, the Jev version the pinned v2 tables name: after "
+                      "prereg-v2-draft they are rebuilt only when a different Jev version answers", err)
+        self.assertEqual({p: prompts.table("v2", p, self.root)["sha"] for p in PRODUCTS3}, pinned)
+        rc, out, err = self.run_promote("--table-only", self.night([], date="2026-10-25", model="jev-9.9.9"))
+        self.assertEqual(rc, 0, err)                                                        # the one rebuild
+        self.assertIn("REPLACED", out)
+        self.assertIn("model answered jev-9.9.9", out)
+        self.git[DIFF_Q] = ("", 1)                                                          # committed: changed since the tag
+        rebuilt = {p: prompts.table("v2", p, self.root)["sha"] for p in PRODUCTS3}
+        rc, _, err = self.run_promote("--table-only", self.night([], date="2026-10-26", model="jev-9.9.10"))
+        self.assertEqual(rc, 1)
+        self.assertIn("prompts/v2.table.*.json changed since prereg-v2-draft: v2's tables are rebuilt at most once "
+                      "after the draft tag", err)
+        self.assertEqual({p: prompts.table("v2", p, self.root)["sha"] for p in PRODUCTS3}, rebuilt)
+        self.assertIn(["git", "diff", "--quiet", "prereg-v2-draft", "HEAD", "--", "prompts/v2.table.*.json"], self.calls)
 
     def test_copies_currents_column_for_every_product(self):
         prop = self.night([])                                                   # a proposal with no candidates
-        self.git["rev-parse"] = ("", 1)                                         # no seal tag: not needed here
-        prereg(self.prereg, "________")                                         # nor T0_v2
+        prereg(self.prereg, "________")                                         # no T0_v2, no tag (setUp)
         rc, out, err = self.run_promote("--table-only", prop)
         self.assertEqual(rc, 0, err)
         for p in PRODUCTS3:
@@ -552,6 +601,42 @@ class PromoteUnfaked(unittest.TestCase):
         with open(os.path.join(repo, "stray"), "w", encoding="utf-8") as fh:
             fh.write("x\n")
         self.assertIs(self.promote.clean_tree(repo), False)
+
+    def test_tag_exists_and_tables_changed_since_read_a_real_repository(self):
+        # --table-only's guards: any tag named prereg-v2-seal (a lightweight one too), the annotated draft tag, and a
+        # committed change to prompts/v2.table.*.json between the draft tag and HEAD (the pathspec's glob as git reads it)
+        if not shutil.which("git"):
+            self.skipTest("git not on PATH")
+        repo = self.enterContext(tempfile.TemporaryDirectory())
+        self.enterContext(mock.patch.dict(os.environ, {
+            "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid"}))
+
+        def git(*args):
+            subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+
+        def put(name, text):
+            os.makedirs(os.path.join(repo, "prompts"), exist_ok=True)
+            with open(os.path.join(repo, "prompts", name), "w", encoding="utf-8") as fh:
+                fh.write(text)
+            git("add", "-A")
+            git("commit", "-q", "-m", name)
+        git("init", "-q", "-b", "main")
+        put("v2.table.SOL-USD.json", "a\n")
+        self.assertIs(self.promote.tag_exists(repo, "prereg-v2-seal"), False)
+        git("tag", "prereg-v2-seal")                                          # lightweight: still the seal's name
+        self.assertIs(self.promote.tag_exists(repo, "prereg-v2-seal"), True)
+        self.assertIs(self.promote.tag_exists(repo, "prereg-v2-seal", annotated=True), False)
+        git("tag", "-a", "prereg-v2-draft", "-m", "d")
+        self.assertIs(self.promote.tag_exists(repo, "prereg-v2-draft", annotated=True), True)
+        put("v3.table.SOL-USD.json", "b\n")                                  # another version's table: not v2's
+        put("v2.json", "c\n")
+        self.assertIs(self.promote.tables_changed_since(repo, "prereg-v2-draft", "v2"), False)
+        put("v2.table.SOL-USD.json", "d\n")
+        self.assertIs(self.promote.tables_changed_since(repo, "prereg-v2-draft", "v2"), True)
+        with self.assertRaisesRegex(RuntimeError, "git diff failed"):
+            self.promote.tables_changed_since(repo, "no-such-tag", "v2")
 
 
 if __name__ == "__main__":

@@ -37,11 +37,16 @@ it every minute). prompts.current(tick_id) follows `replaces` until the activati
 policy table keep asking the version active now until then. It prints the diff of the action question, and the commit
 line: the person's reason with the states moved per product.
 
---table-only <proposal.json> (§8, "v2's own tables"): attended and on a clean tree, no schedule and no seal (it builds
+--table-only <proposal.json> (§8, "v2's own tables"): attended and on a clean tree, no schedule and no T0_v2 (it builds
 v2's tables before the draft tag); copies the CURRENT column of the proposal's .table.json into
 prompts/v2.table.<product>.json (TABLE_ONLY_VERSION) for every product under the same 81/81 refusal, refusing unless
 the table's CURRENT sha equals prompts/v2.json's (§8, §10), whatever CURRENT names: a promoted version's tables are
-written by its promotion and by nothing else. CURRENT is not touched.
+written by its promotion and by nothing else. §8 and §12 allow v2's tables before the draft tag and one rebuild at the
+switch, both before the seal, so it also refuses: once a tag named PREREG_TAG exists (annotated or not; §13's
+allowlist after the seal would not catch a rewrite), and after the annotated DRAFT_TAG (prereg-v2-draft) a second
+rebuild (prompts/v2.table.*.json differs between DRAFT_TAG and HEAD) or one answered by the Jev version the pinned
+tables already name (§8: "If a different Jev version answers at the switch, the tables are rebuilt once"). CURRENT is
+not touched.
 
 May not: touch data/, send anything, read the key, edit an existing version file, or pick k itself.
 """
@@ -55,6 +60,7 @@ from nightly import policy_table                                # noqa: E402  (r
 
 _VFILE = re.compile(r"^v(\d+)\.json$")
 PREREG_TAG = "prereg-v2-seal"
+DRAFT_TAG = "prereg-v2-draft"
 DAY_S = 86400
 E_MIN, E_MAX, E_SPACING, MAX_PROMOTIONS = 8, 22, 7, 3       # PREREG-v2 §8: days 8, 15, 22 at most
 LEAD_S = 600                                                  # refused when now >= activation - 600 s
@@ -88,6 +94,23 @@ def sealed(repo):
     if r.returncode not in (0, 1):
         raise RuntimeError(f"git merge-base failed: {r.stderr.strip()}")
     return r.returncode == 0
+
+
+def tag_exists(repo, tag, annotated=False):
+    """True when refs/tags/<tag> exists in `repo` (annotated=True: an annotated tag, as `<tag>^{tag}`)."""
+    r = _git(repo, "rev-parse", "-q", "--verify", f"refs/tags/{tag}" + ("^{tag}" if annotated else ""))
+    if r.returncode not in (0, 1):                                # 1: no such tag; anything else: git failed
+        raise RuntimeError(f"git rev-parse failed: {r.stderr.strip()}")
+    return r.returncode == 0
+
+
+def tables_changed_since(repo, tag, version):
+    """True when prompts/<version>.table.*.json differs between `tag` and HEAD in `repo` (committed changes only: the
+    tree is clean when this is asked)."""
+    r = _git(repo, "diff", "--quiet", tag, "HEAD", "--", f"prompts/{version}.table.*.json")
+    if r.returncode not in (0, 1):
+        raise RuntimeError(f"git diff failed: {r.stderr.strip()}")
+    return r.returncode == 1
 
 
 def next_version(root):
@@ -253,8 +276,13 @@ def _checks(a):
 
 def table_only(a, root):
     """--table-only: v2's own tables from the proposal night's .table.json (PREREG-v2 §8: "refuses unless the table's
-    CURRENT sha equals prompts/v2.json's"), whatever CURRENT names."""
+    CURRENT sha equals prompts/v2.json's"), whatever CURRENT names; before the seal, and after the draft tag once only
+    and for another Jev version."""
     _checks(a)
+    if tag_exists(a.repo, PREREG_TAG):
+        raise RuntimeError(f"the tag {PREREG_TAG} exists: v2's tables are built before the draft tag and rebuilt at most "
+                           "once at the switch, both before the seal (PREREG-v2 §8, §12, §13); after it a version's "
+                           "tables come only with its promotion")
     with open(a.table_only, "rb") as fh:
         raw = fh.read()
     doc, _ = vouched(a.table_only, raw)
@@ -267,6 +295,22 @@ def table_only(a, root):
     for p in config.PRODUCTS:
         cur, _, models = column(doc, policy_table.CURRENT, p)
         files.append((p, table_file(version, p, vsha, cur, models)))
+    if tag_exists(a.repo, DRAFT_TAG, annotated=True):
+        if tables_changed_since(a.repo, DRAFT_TAG, version):
+            raise RuntimeError(f"prompts/{version}.table.*.json changed since {DRAFT_TAG}: v2's tables are rebuilt at most "
+                               "once after the draft tag (PREREG-v2 §8, §12)")
+        pinned = set()
+        for p, _ in files:
+            try:
+                with open(prompts.table_path(version, p, root), encoding="utf-8") as fh:
+                    pinned.add(json.load(fh).get("model_answered"))
+            except (OSError, ValueError, AttributeError):
+                pinned.add(None)
+        new = {t["model_answered"] for _, t in files}
+        if pinned == new:
+            raise RuntimeError(f"the table was answered by {', '.join(sorted(new))}, the Jev version the pinned {version} "
+                               f"tables name: after {DRAFT_TAG} they are rebuilt only when a different Jev version "
+                               "answers (PREREG-v2 §8, §10 step 11a)")
     written = []
     for p, t in files:
         path = prompts.table_path(version, p, root)
