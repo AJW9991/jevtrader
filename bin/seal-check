@@ -39,7 +39,9 @@ The seal (no flag) exits 0 only when all of §13's five hold:
     - any other path: none.
     A listed deviation that touches a file holding what §13 says voids the draft tag (at_cadence, replay/paired,
     inference, the pooling or exclusion readers, rule_c, the alphabet or its cuts, PROMPT.md v2, the digest, promote's
-    schedule) is named on a READ line: a file is coarser than what it holds, so the reading is the author's;
+    schedule) is named on a READ line (VOIDING: PREREG-v2.md and SPEC.md, which define them, and every file that holds
+    or feeds them, loop/prompts.py's schedule, loop/report.py's days_table and loop/outcomes.py's t + h join included):
+    a file is coarser than what it holds, so the reading is the author's;
 (d) prompts/CURRENT names v2 (prompts.named);
 (§12) §12 of PREREG-v2.md in HEAD is filled: no ________ left in it, and its T0_v2 and fee tiers read as loop.dash reads
     them for bin/promote, the report, status, the dash and v2's make results (a malformed field raises there). Not one of
@@ -96,11 +98,17 @@ VERSION_TABLE = re.compile(r"^prompts/v(\d+)\.table\.(.+)\.json$")
 SINCE_FILES = ("prompts/CURRENT", "HANDOFF.md", "data/exclusions-v2.tsv", "data/looks.tsv")   # §13, after the seal
 SINCE_DIRS = ("proposals/",)
 VOIDING = {                                 # §13: a deviation touching what these files hold voids the draft tag
-    "loop/book.py": "at_cadence, replay, paired", "loop/inference_v2.py": "inference and the pooling",
-    "loop/inference.py": "inference", "loop/exclusions_v2.py": "an exclusion reader",
-    "loop/exclusions.py": "an exclusion reader", "loop/state.py": "rule_c, the alphabet and its cuts",
-    "loop/config.py": "the cuts (TICK_P, LIQ_ATOMS, LIQ_THIN_FALLBACK)", "nightly/PROMPT.md": "PROMPT.md v2",
-    "nightly/digest.py": "the digest", "bin/promote": "promote's schedule",
+    PREREG: "the text that defines every one of them (the alphabet and its cuts, inference, the pooling, the exclusion"
+            " rule, promote's schedule)",
+    "SPEC.md": "the alphabet and its cuts, the labels and fee columns replay and paired read",
+    "loop/book.py": "at_cadence, replay, paired", "loop/outcomes.py": "the t + h join and the labels replay and paired read",
+    "loop/report.py": "days_table (stop rule 3's table, which the exclusion readers' recompute reads) and the pairs",
+    "loop/inference_v2.py": "inference and the pooling", "loop/inference.py": "inference",
+    "loop/exclusions_v2.py": "an exclusion reader", "loop/exclusions.py": "an exclusion reader",
+    "loop/state.py": "rule_c, the alphabet and its cuts",
+    "loop/config.py": "the cuts (TICK_P, LIQ_ATOMS, LIQ_THIN_FALLBACK)",
+    "loop/prompts.py": "current and activation, which enforce promote's schedule on every tick",
+    "nightly/PROMPT.md": "PROMPT.md v2", "nightly/digest.py": "the digest", "bin/promote": "promote's schedule",
 }
 MAKE_TIMEOUT_S = 3600
 TAIL_LINES = 4

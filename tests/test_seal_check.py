@@ -466,6 +466,36 @@ class Deviations(Scratch):
         self.commit("listed")
         self.assertFails(says=[f"names {side[:12]}, which is not in prereg-v2-draft..HEAD"])
 
+    def test_a_listed_deviation_in_the_text_the_schedule_or_the_readers_is_named(self):
+        # §13 voids the draft tag on a deviation touching the alphabet or its cuts, inference, the exclusion readers or
+        # promote's schedule: PREREG-v2.md and SPEC.md define them, loop/prompts.py enforces the schedule, days_table
+        # feeds the exclusion recompute, and outcomes.join feeds replay and paired (the S5 refuter's defect 5)
+        self.filled()
+        self.replace("PREREG-v2.md", "Nothing here is a field.", "Nothing here is a field. H1 alpha is now 1/10.")
+        self.write("SPEC.md", "a changed spec\n")
+        self.write("loop/prompts.py", "def current(tick_id):\n    return 'v3'\n")
+        self.write("loop/report.py", "def days_table():\n    return {}\n")
+        self.write("loop/outcomes.py", "def join():\n    return []\n")
+        fix = self.commit("a deviation in the text, the schedule and the readers")
+        self.write("ERRATA.md", ERRATA + f"| {fix[:10]} | x | y |\n")
+        self.commit("listed")
+        text = self.assertPasses()
+        for path, holds in (("PREREG-v2.md", "the text that defines every one of them"), ("SPEC.md", "the alphabet and its cuts"),
+                            ("loop/prompts.py", "current and activation"), ("loop/report.py", "days_table"),
+                            ("loop/outcomes.py", "the t + h join")):
+            self.assertIn(f"(c) READ: the listed deviation {fix[:12]} touches {path}, which holds {holds}", text)
+
+    def test_every_file_defining_what_section_13_names_is_on_a_read_line(self):
+        # where this tree defines what §13's voiding sentence names: each file is on a READ line
+        holders = {"at_cadence": "loop/book.py", "replay": "loop/book.py", "paired": "loop/book.py",
+                   "join": "loop/outcomes.py", "days_table": "loop/report.py", "pooled": "loop/inference_v2.py",
+                   "recompute": "loop/exclusions_v2.py", "rule_c": "loop/state.py", "adjectives": "loop/state.py",
+                   "current": "loop/prompts.py", "activation": "loop/prompts.py"}
+        for name, path in holders.items():
+            with open(os.path.join(REPO, path), encoding="utf-8") as fh:
+                self.assertRegex(fh.read(), rf"(?m)^def {name}\(", path)
+            self.assertIn(path, SC.VOIDING, f"{name} is defined in {path}")
+
     def test_a_later_commit_over_a_listed_one_cannot_be_taken_out(self):
         self.replace("loop/code.py", "Y = 2", "Y = 3")
         fix = self.commit("a fix")
