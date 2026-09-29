@@ -816,6 +816,23 @@ class Summarize(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("no run.json", err)
 
+    def test_run_json_names_are_checked_before_any_path_is_made(self):
+        d = os.path.join(self.tmp, "probe")
+        _write_dir(d, {"ETH-USD": PASSING}, {"ETH-USD": 60e6})
+        for day, cands, why in (("2026-09-24", ["../ETH-USD"], "'../ETH-USD' is not a product name"),
+                                ("2026-09-24", ["ETH-USD\n"], "is not a product name"),
+                                ("2026-09-24", "ETH-USD", "'E' is not a product name"),
+                                ("2026-09-24", ["ETH-USD", "ETH-USD"], "named twice"),
+                                ("2026-09-24", [], "no candidates"),
+                                ("2026-13-01", ["ETH-USD"], "is not a date"),
+                                (20260924, ["ETH-USD"], "is not YYYY-MM-DD")):
+            with open(os.path.join(d, "run.json"), "w", encoding="utf-8") as fh:
+                json.dump({"day": day, "candidates": cands, "every": 60, "start_second": 30}, fh)
+            code, out, err = _summarize(d)
+            self.assertEqual((code, out), (2, ""), (day, cands))
+            self.assertIn(why, err)
+            self.assertIn("refusing", err)
+
     def test_a_stablecoin_fails(self):
         rows = [_prow(m, f) for m, f in enumerate(PASSING)]
         counts = {"bad": 0, "outside": 0, "repeated": 0}

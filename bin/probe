@@ -661,6 +661,22 @@ def day_verdict(minutes, transport, n_candidates):
     return why
 
 
+def run_json_problem(day, candidates):
+    """Why run.json's day or candidates cannot be read as a run's, or None: the day a real UTC date
+    YYYY-MM-DD, the candidates a non-empty list of distinct product names like ETH-USD (each is
+    joined into a file name, so nothing else is let through)."""
+    if not (isinstance(day, str) and DAY_RE.fullmatch(day)):
+        return f"day {day!r} is not YYYY-MM-DD"
+    try:
+        dt.date.fromisoformat(day)
+    except ValueError:
+        return f"day {day!r} is not a date"
+    if not candidates or len(set(map(repr, candidates))) != len(candidates):
+        return "no candidates, or one named twice"
+    bad = [c for c in candidates if not (isinstance(c, str) and PRODUCT_RE.fullmatch(c))]
+    return f"candidate {bad[0]!r} is not a product name like ETH-USD" if bad else None
+
+
 def summarize(args, out, err):
     d = args.dir
     if not os.path.isdir(d):
@@ -676,6 +692,10 @@ def summarize(args, out, err):
         return 2
     except (OSError, ValueError, KeyError, TypeError) as e:
         err.write(f"probe: {mpath} cannot be read ({one_line(e)})\n")
+        return 2
+    why = run_json_problem(day, candidates)
+    if why:                                                  # names joined into paths below: checked first
+        err.write(f"probe: {mpath}: {why}; refusing\n")
         return 2
     vol, (vstart, vend) = None, volume_window(day)
     vpath = os.path.join(d, "volume.json")
