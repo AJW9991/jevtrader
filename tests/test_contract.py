@@ -60,6 +60,18 @@ class DataTypes(unittest.TestCase):
         self.assertIn(f"`config.FEE_BPS_VENUE` = {config.FEE_BPS_VENUE}, verified", s2)
 
 
+class Decisions(unittest.TestCase):
+    def test_section_0_names_h1_and_every_family_f_cell(self):
+        # PREREG-v2 §5-§6: H1 is B - C at 900 s; family F is B - C at 3,600 and 14,400 s, A - C and B - A at 900 s
+        from loop import inference_v2
+        head = " ".join(contract().split("\n## 1. ", 1)[0].split())
+        v2 = head.split("**PREREG-v2, the second block**", 1)[1]
+        name = {"a": "A", "b": "B", "c": "C"}
+        for cell in inference_v2.CELLS:
+            with self.subTest(cell=cell.name):
+                self.assertIn(f"{name[cell.x]} − {name[cell.y]} at {cell.c:,} s", v2)
+
+
 class Tick(unittest.TestCase):
     def test_step_1_holds_the_global_halt_and_the_products_pause(self):
         s3 = " ".join(section(contract(), 3).split())

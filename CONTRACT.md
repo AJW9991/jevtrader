@@ -46,9 +46,10 @@ readers still read the v1 log as before: products `config.PRODUCTS` (`SOL-USD` a
 two probe products), one loop process per product (`JEVLOOP_PRODUCT`; unset = `SOL-USD`, v1's
 paths) or one process ticking them in sequence (`--every-product`); four arms, A frozen at `v2`
 (`config.FROZEN_A`), B the CURRENT wording, C `rule_c`, D the CURRENT wording's 81-state table
-looked up by the state (no call); `liq` read in half-ticks per product (SPEC §5); H1 is B − C,
-gross, pooled over products by time block, decided once per 15-minute block (`book.at_cadence`),
-with family F at 3,600 and 14,400 s; the direction probabilities are descriptive; the venue fee
+looked up by the state (no call); `liq` read in half-ticks per product (SPEC §5); H1 is B − C at
+900 s, gross, pooled over products by time block, decided once per 15-minute block
+(`book.at_cadence`); family F is B − C at 3,600 s, B − C at 14,400 s, A − C at 900 s and B − A at
+900 s (PREREG-v2 §6); the direction probabilities are descriptive; the venue fee
 is the verified 90 bps (`FEE_BPS_VENUE`) and the fee columns are (0, 2, 10, 25, 50, 90);
 promotion is on PREREG-v2 §8's schedule, enforced in `bin/promote`; `data/HALT` is the one global
 stop and `data/PAUSE.<PRODUCT>` pauses one product's sends.

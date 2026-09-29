@@ -32,7 +32,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FILES = {                                            # sha256 of the bytes on disk
     "SPEC.md": "d246febca5dad492d8e561642bf9a5221d82791b3302df7527cc82aa85a2299a",   # SPEC v2 (PREREG-v2 §10), 2026-09-29;
                                                  # v1's 5d4f355e... stays in prereg-v1 (V1_FILES)
-    "CONTRACT.md": "2a8b20c853a8e44e59ad031f378935cbe6321e76279061bccc5464efcb762fa5",   # v2's interfaces, 2026-09-29
+    "CONTRACT.md": "681109e48f78327ee891404dcc31777c505d9a6fdb6886fd8d579eab921e7b06",   # v2's interfaces, 2026-09-29
     "PREREG-v2.md": "0b417be4cc2f4555ab004f2187bb6eab3f487c33785aa26c3c05d6a451e602e6",
     "PREREG.md": "28dab0a9cba8bb21a596fe06f3a19302476f42e3efbbe40b41480898266b7882",
     "nightly/PROMPT.md": "7ebcd64071700b6da578078e5eec10a846a56852a3c6de54bfd7ce8d786a1e50",   # v2 text (PREREG-v2 §8), 2026-09-29;
