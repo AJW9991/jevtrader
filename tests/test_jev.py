@@ -109,6 +109,23 @@ class JevTest(unittest.TestCase):
         self.assertEqual(c[4], hashlib.sha256(STATE.encode()).hexdigest()[:12])
         self.assertEqual(c[5], "-")
 
+    def test_a_named_ledger_takes_the_rows_and_the_default_none(self):
+        # PREREG-v2 §2: each product's loop ledgers into its own store (config.store(p).sends)
+        other = os.path.join(self.tmp, "data", "ETH-USD", "sends.tsv")
+        jev.ask(STATE, Q, sends=other)
+        with open(other, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(lines[0], "utc\tsource\tstate_chars\tq_chars\tsha12\tpaths")
+        self.assertFalse(os.path.exists(self.sends))
+        blocker = os.path.join(self.tmp, "blocker")
+        open(blocker, "w", encoding="utf-8").close()
+        with self.assertRaises(jev.JevError) as cm:
+            jev.ask(STATE, Q, sends=os.path.join(blocker, "sends.tsv"))
+        self.assertEqual(cm.exception.kind, "ledger")
+        self.assertIn(blocker, cm.exception.detail)
+        self.assertEqual(self.urlopen.call_count, 1)                                        # the first ask's only
+
     def test_ledger_header_once_and_on_empty_file(self):
         os.makedirs(os.path.dirname(self.sends))
         open(self.sends, "a", encoding="utf-8").close()                                     # exists but empty (the reference's fresh-clone case)
@@ -139,9 +156,9 @@ class JevTest(unittest.TestCase):
                                     (TimeoutError("timed out"), "timeout", None)):
             with self.subTest(kind=kind):
                 calls = []
-                def ledger(s, q):
+                def ledger(s, q, path=None):
                     calls.append(1)
-                    return real(s, q) if len(calls) == 1 else None
+                    return real(s, q, path) if len(calls) == 1 else None
                 self.urlopen.reset_mock(); self.sleeps.clear()
                 self.urlopen.side_effect = [first, AssertionError("the retry was sent")]
                 with mock.patch.object(jev, "ledger", side_effect=ledger):

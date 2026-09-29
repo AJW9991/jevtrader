@@ -1,7 +1,8 @@
 """Ledger-first send to Jev. The only file in this repo that sees the key.
 
 May: resolve the key (config.KEY_PATHS, first hit wins), append one row to
-data/sends.tsv for each attempt BEFORE that attempt, POST one state and one
+the sends ledger (config.SENDS, or the product's own, config.store(p).sends, when
+the caller names it) for each attempt BEFORE that attempt, POST one state and one
 question set to config.JEV_URL, and parse the reply into plain values.
 May not: print, log, return or raise the key's VALUE -- its path is named, in
 key_path, so a row can say which key answered; retry more than once; act on an
@@ -111,21 +112,23 @@ def _utc():
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def ledger(state, questions):
-    """One row per ATTEMPT, on disk (fsync) before it. Returns sha12 of the state, or None
+def ledger(state, questions, path=None):
+    """One row per ATTEMPT, on disk (fsync) before it, in `path` (config.SENDS by default, read
+    now). Returns sha12 of the state, or None
     when the row could not be written -- ask() then refuses to send. `paths` is always
     '-': a state is four words from a closed alphabet and cannot name a file; the column
     stays so the file joins with DISCLOSURE.tsv. Header when the file is missing OR
     empty: the reference checks existence only and so never writes one after its own
     `open(LEDGER, "a").close()` on a fresh clone (jev:152)."""
+    path = path or config.SENDS
     sha12 = hashlib.sha256(state.encode()).hexdigest()[:12]
     row = "\t".join((_utc(), SOURCE, str(len(state)), str(len(json.dumps(questions))), sha12, "-")) + "\n"
     try:
-        d = os.path.dirname(config.SENDS)
+        d = os.path.dirname(path)
         if d:
             os.makedirs(d, exist_ok=True)               # data/ is gitignored: a fresh clone has none
-        new = not os.path.exists(config.SENDS) or os.path.getsize(config.SENDS) == 0
-        with open(config.SENDS, "a") as fh:
+        new = not os.path.exists(path) or os.path.getsize(path) == 0
+        with open(path, "a") as fh:
             if new:
                 fh.write(HEADER)
             fh.write(row)
@@ -207,8 +210,9 @@ def signed():
     return bool(m) and all(f.strip().strip("_").strip() for f in m.groups())
 
 
-def ask(state, questions):
-    """One state, one question set, one answer set. Order is fixed: key, body, then per
+def ask(state, questions, sends=None):
+    """One state, one question set, one answer set, ledgered in `sends` (config.SENDS by default;
+    the loop passes its product's store). Order is fixed: key, body, then per
     attempt: ledger row -> request. Two attempts at most; the second only after a 429
     (Retry-After, capped), a 5xx or a transport failure, never after another 4xx --
     401/403 mean the key is rejected and a resend would only repeat the refusal. A
@@ -221,12 +225,12 @@ def ask(state, questions):
         "Authorization": "Bearer " + k, "Content-Type": "application/json"})
     err = None
     for attempt in (1, 2):
-        if ledger(state, questions) is None:
+        if ledger(state, questions, sends) is None:
             if err is not None:                          # the retry's row: attempt 1 already left, so its
                                                          # billed kind stands, never "ledger" (billed 0)
-                raise JevError(err.kind, f"{err.detail}; retry not sent: cannot append to {config.SENDS}",
+                raise JevError(err.kind, f"{err.detail}; retry not sent: cannot append to {sends or config.SENDS}",
                                err.status, kpath)
-            raise JevError("ledger", f"cannot append to {config.SENDS}; nothing sent", key_path=kpath)
+            raise JevError("ledger", f"cannot append to {sends or config.SENDS}; nothing sent", key_path=kpath)
         t0, refused = time.monotonic(), False
         if urllib.request._opener is not _OPENER:            # someone cleaned up or replaced the opener since import
             urllib.request.install_opener(_OPENER)
