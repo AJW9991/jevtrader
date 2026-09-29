@@ -15,8 +15,9 @@ asks and one for the bids. A snapshot or a features() call that raises writes a 
 and the exception's one-line text (no traceback), and the next candidate goes on. It samples the
 UTC day --day only: before it, it waits; it exits 0 after the day's last slot (23:59:30 with the
 defaults), and refuses a day that is already over. SIGTERM finishes the row being written and exits
-0. One line an hour goes to stderr with the counts so far. DIR/run.json records the day and the
-candidates; a DIR already holding another day's run is refused.
+0. One line an hour goes to stderr with the counts so far. DIR/run.json records the day, the
+candidates, --every and --start-second; a restart into the same DIR continues the run only when
+all four are the same (PREREG-v2 §2: a restart within D continues it), and is refused otherwise.
 volume: once, 30 closed ONE_DAY candles per candidate (the venue's candles endpoint, public) ->
 DIR/volume.json: per product sum(volume * close) / 30 in USD a day, the number of daily rows, and
 the raw candles.
@@ -312,8 +313,9 @@ def run(args, wall, mono, sleep, err):
         except (OSError, ValueError) as e:
             err.write(f"probe: {mpath} cannot be read ({one_line(e)}); refusing\n")
             return 2
-        if not isinstance(old, dict) or old.get("day") != args.day or old.get("candidates") != list(args.candidates):
-            err.write(f"probe: {out} holds a run of another day or candidate list; use a fresh --out\n")
+        if old != manifest:                                  # a resume continues the same run, or nothing
+            err.write(f"probe: {out} holds a run of another day, candidate list, --every or --start-second"
+                      f" ({json.dumps(old, sort_keys=True)}); use a fresh --out\n")
             return 2
     else:
         _write_json(mpath, manifest)

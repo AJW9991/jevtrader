@@ -231,6 +231,11 @@ class Run(Offline):
         self.assertEqual(code, 2)
         self.assertEqual(self.main(["run", "--day", DAY, "--out", out, "--max-minutes", "1"], Clock(T_FIX))[0], 0)
         self.assertEqual(len(self.rows(out, "ETH-USD")), 2)  # the same day resumes, appending
+        for other in (["--every", "1"], ["--start-second", "10"]):                # a resume keeps the cadence too
+            code, err = self.main(["run", "--day", DAY, "--out", out, "--max-minutes", "1", *other], Clock(T_FIX))
+            self.assertEqual(code, 2, other)
+            self.assertIn('"every": 60', err)
+        self.assertEqual(len(self.rows(out, "ETH-USD")), 2)
 
 
 class Harness(unittest.TestCase):
