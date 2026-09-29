@@ -429,6 +429,22 @@ class Promote(Base):
         self.assertEqual((prompts.named(self.root), prompts.load("v3", self.root)["activation_tick"]),
                          ("v3", "20261031T220000Z"))
 
+    def test_a_version_file_never_current_and_never_active_is_no_promotion(self):
+        # a promote killed mid-write (power lost) can still leave vN.json, and a person may commit it to clean the tree:
+        # a version CURRENT's `replaces` chain does not reach and whose activation has not come was never live and costs
+        # no slot; one whose activation has passed may have been live (CURRENT edited by hand) and still counts
+        orphan = version_doc("v3", {"instructions": "Be long {BASE}.", "criteria": HOLDER["criteria"]},
+                             activation_tick=self.promote.tick_of(T0_S + 7 * DAY), replaces="v2")
+        self.root = pin_versions(self, "v2", {"v3": orphan})
+        self.assertEqual(self.promote.promotions(self.root, T0_S, day(7)), {})
+        prop = self.night([HOLDER])
+        rc, _, err = self.run_promote(prop, "0", "--reason", "r", now=day(7, 2))
+        self.assertEqual(rc, 0, err)
+        self.assertEqual((prompts.named(self.root), prompts.load("v4", self.root)["replaces"]), ("v4", "v2"))
+        self.assertEqual(self.promote.promotions(self.root, T0_S, day(7, 3)), {"v4": 8})
+        self.assertEqual(self.promote.promotions(self.root, T0_S, day(9)), {"v3": 8, "v4": 8})
+        self.assertEqual(self.promote.promotions(self.root, T0_S), {"v3": 8, "v4": 8})   # no clock: every file counts
+
     def test_a_version_file_cut_short_is_removed(self):
         # _write_new creates the file (never over another's) and removes it if the write then fails
         path = os.path.join(self.tmp, "v9.json")

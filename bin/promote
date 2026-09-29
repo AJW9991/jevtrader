@@ -20,7 +20,8 @@ A promotion (PREREG-v2 §8), refused unless all of:
 - the schedule: day N = [T0_v2 + 86,400 (N - 1), T0_v2 + 86,400 N); a promote run on day N has effective day E = N + 1
   and activation_tick = T0_v2 + 86,400 (E - 1), the first tick of day E. Refused: E < E_MIN (8) or E > E_MAX (22), so
   none before or during the shakedown; E - E_prev < E_SPACING (7) after the latest promotion of the block; a fourth
-  (MAX_PROMOTIONS 3: days 8, 15, 22 at most); and now >= activation - LEAD_S (the last 600 s of day E - 1);
+  (MAX_PROMOTIONS 3: days 8, 15, 22 at most); and now >= activation - LEAD_S (the last 600 s of day E - 1). A
+  promotion is a version file that is or may have been live (promotions(): on CURRENT's chain, or activated by now);
 - no version is pending (prompts.pending(now) is None): a second pending version is refused, before the schedule;
 - the proposal's .md vouches for the json's bytes (its `proposal sha256` line) and for the .table.json beside it (its
   `table sha256` line); the table was built from these bytes (its proposal_sha256) against the version CURRENT names
@@ -144,10 +145,27 @@ def epoch_of(tick):
     return datetime.datetime.strptime(tick, "%Y%m%dT%H%M%SZ").replace(tzinfo=datetime.timezone.utc).timestamp()
 
 
-def promotions(root, t0):
+def chain(root):
+    """The versions CURRENT's `replaces` walk reaches: CURRENT, the one it replaces, and so on to a version without the
+    activation keys (v1, v2). What bin/promote wrote as each promotion's `replaces` is the version active when it ran."""
+    seen, name = [], prompts.named(root)
+    while name not in seen:
+        seen.append(name)
+        act = prompts.activation_of(name, root)
+        if act is None:
+            break
+        name = act[1]
+    return set(seen)
+
+
+def promotions(root, t0, now=None):
     """{version: E} of the block's promotions so far: every vN.json carrying an activation_tick inside the block
-    (T0_v2 .. T0_v2 + 28 d), E its effective day. v1's promote wrote none; only this one writes the key."""
-    out = {}
+    (T0_v2 .. T0_v2 + 28 d), E its effective day, that is or may have been live: on CURRENT's chain, or (with `now`)
+    activated by then. A version file off the chain whose activation has not come was never named by a CURRENT that
+    reached it -- one left by a promote killed mid-write -- and is no promotion (it would cost a slot, the S4 refuter's
+    defect 2); one whose activation has passed may have been live (CURRENT edited by hand) and counts. v1's promote
+    wrote no activation_tick; only this one writes the key."""
+    out, live = {}, chain(root)
     for f in sorted(os.listdir(root)):
         m = _VFILE.match(f)
         if not m:
@@ -156,7 +174,7 @@ def promotions(root, t0):
         if act is None:
             continue
         a = epoch_of(act[0])
-        if t0 <= a < t0 + 28 * DAY_S:
+        if t0 <= a < t0 + 28 * DAY_S and (now is None or f[:-5] in live or a <= now):
             out[f[:-5]] = int((a - t0) // DAY_S) + 1
     return out
 
@@ -178,7 +196,7 @@ def schedule(now, t0, root):
     if now >= act - LEAD_S:
         raise RuntimeError(f"now is within {LEAD_S} s of the activation {tick_of(act)} (day {e}): too late on day {n} "
                            f"(PREREG-v2 §8)")
-    done = promotions(root, t0)
+    done = promotions(root, t0, now)
     if len(done) >= MAX_PROMOTIONS:
         raise RuntimeError(f"{len(done)} promotions already ({', '.join(sorted(done))}): at most {MAX_PROMOTIONS} (PREREG-v2 §8)")
     if done and e - max(done.values()) < E_SPACING:
