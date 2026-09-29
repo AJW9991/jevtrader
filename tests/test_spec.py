@@ -5,7 +5,7 @@ LIQ_THIN_FALLBACK; §10's fee columns and the filled verified tier-0 taker row a
 it names, each value cell against the code's value (value_problem reads the forms §14 writes), and every constant of
 loop/config.py (but its paths, URL and key names) named there. tests/test_frozen.py pins SPEC.md's bytes and each §14
 constant's value; this file says the text and the code agree. Read, never written."""
-import ast, importlib, os, re, unittest
+import ast, importlib, importlib.machinery, importlib.util, os, re, sys, types, unittest
 from fractions import Fraction
 
 from loop import config, cycle
@@ -18,7 +18,62 @@ CONFIG_NOT_IN_14 = {"REPO", "DATA", "DECISIONS", "SENDS", "HALT", "LOCK", "HEART
 # §14 names these in parentheses, beside the constant they explain, and gives their value elsewhere (Constants holds it)
 NOT_VALUED_IN_14 = {("loop.config", "FEE_BPS_VENUE_SOURCE"): "§10 quotes it whole"}
 NAME = re.compile(r"`([A-Z][A-Z0-9_]*)`")
-WHERE = re.compile(r"`((?:loop|nightly)/[a-z_0-9]+)\.py`")
+WHERE = re.compile(r"`((?:loop|nightly)/[a-z_0-9]+)\.py`|`(bin/[a-z0-9-]+)`")   # a module, or a script under bin/
+# The modules whose every capitalised constant §14 names (loop/config.py has its own test, below), but these, each with
+# the reason §14 leaves it out (the S6 refuter's defect 3: report.ERRATA_TIER hard-coded a fee §14 did not name, and
+# ten other v2 constants were in no row, so nothing pinned them by value)
+IN_14 = ("loop.book", "loop.cycle", "loop.prompts", "loop.report", "loop.inference_v2", "loop.exclusions_v2",
+         "nightly.digest", "nightly.policy_table", "nightly.slow_model", "bin/promote")
+_EXIT, _WORDS = "an exit code", "printed words"
+_DIGEST = "the digest's layout: nightly/digest.py's source is pinned by sha (tests/test_frozen.py FILES)"
+_TABLE = "nightly/policy_table.py's source is pinned by sha (tests/test_frozen.py FILES)"
+NOT_IN_14 = {
+    "loop.book": {"INTENTS": "the three intents, §10's buy / sell / hold", "NOTIONAL": "config.NOTIONAL_USD under a short name"},
+    "loop.cycle": {"EXIT_GUARD": _EXIT, "EXIT_USAGE": _EXIT, "HALT_KEY_REJECTED": "HALT's reason, " + _WORDS,
+                   "HALT_SPEND": "HALT's reason, " + _WORDS},
+    "loop.prompts": {"WIRE": "a prompt file's fields (§8)", "CRITERIA": "a prompt file's answer sets (§8)",
+                     "CARRIED": "the questions every version carries from v1 (§8)"},
+    "loop.report": {"ARMS": "book.ARMS, the per-arm lines", "CHOICES": "rules.CHOICES", "CAL_EDGES": "CONF_THRESHOLDS and 1.0",
+                    "CORRECT": "§11's labels against the choices, a withheld section's rule", "TREND_SIGN": "the trend word as a sign, a withheld section's comparator",
+                    "TICKS_PER_DAY": "86400 // CADENCE_S", "DAY_TICKS": "86400 // CADENCE_S", "TITLES": "section titles",
+                    "TITLES_V2": "section titles"},
+    "loop.inference_v2": {"CELLS": "built from SEED_H1, ALPHA_H1, ALPHA_F and CADENCES; tests/test_frozen.py's CELLS_V2 pins each",
+                          "EXIT_REFUSED": _EXIT, "UTC": "the time zone"},
+    "loop.exclusions_v2": {"HEADER": "the file's columns (CONTRACT §2)", "FORM": "the line's form, printed on a refusal"},
+    "nightly.digest": {"ARMS": _DIGEST, "COLUMN": _DIGEST, "CONTRADICTS": _DIGEST, "LABELS": _DIGEST, "EXIT_EMPTY": _EXIT},
+    "nightly.policy_table": {"CURRENT": "the column name CURRENT's answers take; " + _TABLE, "KIND": "the .table.json's kind; " + _TABLE,
+                             "TABLE_SHA_LINE": "the .md line that carries the table's sha; " + _TABLE, "EXIT_INCOMPLETE": _EXIT,
+                             "FATAL_KINDS": "cycle.UNSENT_KINDS and http-429; " + _TABLE, "TRANSIENT_KINDS": "the retried kinds; " + _TABLE,
+                             "HALT_STATUS": "401 and 403, cycle's HALT rule; " + _TABLE},
+    "nightly.slow_model": {"ID_FORM": "answered_model.MODEL_ID's pattern; tests/test_slow_model.py holds it"},
+    "bin/promote": {"HERE": "a path", "REPO": "a path"},
+}
+_SCRIPTS = {}
+
+
+def load(module):
+    """The module a §14 `where` names: loop.x / nightly.x imported, bin/<script> loaded from its file once (sys.path as it
+    was: bin/promote puts the repo on it)."""
+    if not module.startswith("bin/"):
+        return importlib.import_module(module)
+    if module not in _SCRIPTS:
+        path = os.path.join(REPO, *module.split("/"))
+        name = "spec14_" + re.sub(r"\W", "_", module)
+        spec = importlib.util.spec_from_file_location(name, path, loader=importlib.machinery.SourceFileLoader(name, path))
+        mod = importlib.util.module_from_spec(spec)
+        saved = list(sys.path)
+        try:
+            spec.loader.exec_module(mod)
+        finally:
+            sys.path[:] = saved
+        _SCRIPTS[module] = mod
+    return _SCRIPTS[module]
+
+
+def constants(module):
+    """The capitalised, non-callable, non-module names a module holds."""
+    return {n for n, v in vars(load(module)).items()
+            if re.fullmatch(r"[A-Z][A-Z0-9_]*", n) and not callable(v) and not isinstance(v, types.ModuleType)}
 
 
 def spec_text(path=None):
@@ -48,7 +103,7 @@ def spec14(text=None):
         c = cells(line)
         m = WHERE.search(c[0])
         if m:
-            where = m.group(1).replace("/", ".")
+            where = m.group(1).replace("/", ".") if m.group(1) else m.group(2)
         elif c[0]:
             raise ValueError(f"SPEC §14: a where cell that names no module: {c[0]!r}")
         out |= {(where, n) for n in NAME.findall(c[1])}
@@ -98,7 +153,7 @@ def spec14_values(text=None):
         c = cells(line)
         m = WHERE.search(c[0])
         if m:
-            where = m.group(1).replace("/", ".")
+            where = m.group(1).replace("/", ".") if m.group(1) else m.group(2)
         names, values = top_split(c[1]), top_split(c[2])
         if len(names) != len(values):
             raise ValueError(f"SPEC §14: {len(names)} names and {len(values)} values in {line!r}")
@@ -109,7 +164,8 @@ def spec14_values(text=None):
     return out
 
 
-NUMBER = re.compile(r"(\d+)\^(\d+)|(\d[\d,]*(?:\.\d+)?(?:e-?\d+)?)(\s*MiB)?")
+NOTHING = object()
+NUMBER = re.compile(r"(\d+)\^(\d+)|(\d[\d,]*(?:\.\d+)?(?:e[-+]?\d+)?)(\s*MiB)?")
 ARM = re.compile(r"([A-D])\s*[−-]\s*([A-D])")
 
 
@@ -133,8 +189,8 @@ def _element(text, module):
     ref = re.fullmatch(r"`([A-Z][A-Z0-9_]*)`(?:\s*=\s*(.+))?", text)
     if ref:
         for mod in (module, "loop.config"):
-            if hasattr(importlib.import_module(mod), ref.group(1)):
-                got = getattr(importlib.import_module(mod), ref.group(1))
+            if hasattr(load(mod), ref.group(1)):
+                got = getattr(load(mod), ref.group(1))
                 if ref.group(2) is not None:
                     lit = _number(ref.group(2))
                     if lit is None or lit[0] != got:
@@ -189,6 +245,25 @@ def value_problem(module, name, text, value):
     text = text.strip()
     say = lambda: f"{module}.{name}: SPEC §14 says {text!r}, the code holds {value!r}"
     try:
+        lit = re.match(r"`([({\[][^`]*)`", text)
+        try:
+            lit = ast.literal_eval(lit.group(1)) if lit else NOTHING
+        except (ValueError, SyntaxError):                                # `{BASE}` is a word, not a literal
+            lit = NOTHING
+        if lit is not NOTHING:                                           # a Python literal
+            probe = re.match(r"`[^`]*` and PREREG-v2 §2's two probe products\b", text)
+            if lit == value and repr(lit) == repr(value):
+                return None
+            if (probe and isinstance(value, tuple) and value[:len(lit)] == lit and len(value) == len(lit) + 2
+                    and set(value[len(lit):]) <= set(config.PROBE_CANDIDATES)):
+                return None
+            return say()
+        m = re.match(r"PREREG-v2 §8's (id|night)\b", text)
+        if m:                                                            # blank underscores there are "" in the code
+            from test_slow_model import id_and_night
+            found = id_and_night()
+            want = found[0][m.group(1) == "night"] if len(found) == 1 else None
+            return None if want is not None and value == ("" if re.fullmatch(r"_*", want) else want) else say()
         if isinstance(value, dict):
             if "§5's table" not in text:
                 return say() + " (a per-product value names §5's table)"
@@ -216,14 +291,6 @@ def value_problem(module, name, text, value):
             ref = re.match(r"`[A-Z][A-Z0-9_]*`", text)
             if ref:                                                      # another constant's value
                 return None if _same(value, *_element(ref.group(0), module)) else say()
-            m = re.match(r"`(\([^`]*\))`", text)
-            if m:                                                        # a Python literal
-                lit = ast.literal_eval(m.group(1))
-                probe = re.match(r"`[^`]*` and PREREG-v2 §2's two probe products\b", text)
-                if value == lit or (probe and value[:len(lit)] == lit and len(value) == len(lit) + 2
-                                    and set(value[len(lit):]) <= set(config.PROBE_CANDIDATES)):
-                    return None
-                return say()
             if value and all(isinstance(v, tuple) and len(v) == 2 and all(isinstance(x, str) for x in v) for v in value):
                 return None if [(x.lower(), y.lower()) for x, y in ARM.findall(text)] == list(value) else say()
             if text.startswith("("):
@@ -261,7 +328,7 @@ def section14_disagreements(text=None):
     agree)."""
     out = []
     for (module, name), cell in sorted(spec14_values(text).items()):
-        problem = value_problem(module, name, cell, getattr(importlib.import_module(module), name))
+        problem = value_problem(module, name, cell, getattr(load(module), name))
         if problem:
             out.append(problem)
     return out
@@ -342,13 +409,28 @@ class Constants(unittest.TestCase):
         self.assertGreater(len(named), 60)
         for module, name in sorted(named):
             with self.subTest(module=module, name=name):
-                self.assertTrue(hasattr(importlib.import_module(module), name))
+                self.assertTrue(hasattr(load(module), name))
 
     def test_every_constant_of_config_is_in_section_14(self):
         named = {n for m, n in spec14() if m == "loop.config"}
         mine = {n for n, v in vars(config).items() if re.fullmatch(r"[A-Z][A-Z0-9_]*", n) and not callable(v)}
         self.assertEqual(sorted(mine - named - CONFIG_NOT_IN_14), [])
         self.assertLessEqual(CONFIG_NOT_IN_14 - {"Store"}, mine)             # the exemptions are real names
+
+    def test_every_constant_of_the_v2_modules_is_in_section_14(self):
+        # SPEC §14 says "every constant, in one place", and §10 that "nothing hard-codes a fee but the constants named in
+        # §14"; report.ERRATA_TIER (maker 50, taker 90) was in no row (the S6 refuter's defect 3)
+        named = spec14()
+        for module in IN_14:
+            with self.subTest(module=module):
+                mine, left = constants(module), set(NOT_IN_14.get(module, {}))
+                here = {n for m, n in named if m == module}
+                self.assertEqual(sorted(mine - here - left), [])
+                self.assertLessEqual(left, mine)                                 # the exemptions are real names
+                self.assertEqual(left & here, set())                             # and not also in §14
+        self.assertLessEqual(set(NOT_IN_14), set(IN_14))
+        self.assertIn(("loop.report", "ERRATA_TIER"), named)
+        self.assertIn(("bin/promote", "E_MIN"), named)
 
     def test_every_value_in_section_14_is_the_codes(self):
         # the S6 refuter's defect 2: this class held only that each §14 name exists and test_frozen's SPEC14 pins the

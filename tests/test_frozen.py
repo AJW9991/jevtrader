@@ -25,12 +25,13 @@ import hashlib, json, os, re, subprocess, unittest
 from fractions import Fraction
 
 from loop import config, dash, inference_v2, state
-from test_spec import spec14
+from test_slow_model import id_and_night
+from test_spec import load, spec14
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 FILES = {                                            # sha256 of the bytes on disk
-    "SPEC.md": "d246febca5dad492d8e561642bf9a5221d82791b3302df7527cc82aa85a2299a",   # SPEC v2 (PREREG-v2 §10), 2026-09-29;
+    "SPEC.md": "c13ee48706c58a5d2403c4b7de11c6c74b99960adef95ffaf3677cefd0bb707a",   # SPEC v2 (PREREG-v2 §10), 2026-09-29;
                                                  # v1's 5d4f355e... stays in prereg-v1 (V1_FILES)
     "CONTRACT.md": "681109e48f78327ee891404dcc31777c505d9a6fdb6886fd8d579eab921e7b06",   # v2's interfaces, 2026-09-29
     "PREREG-v2.md": "0b417be4cc2f4555ab004f2187bb6eab3f487c33785aa26c3c05d6a451e602e6",
@@ -133,11 +134,13 @@ SPEC14 = {
     ("loop.cycle", "TAIL_BYTES"): 8 << 20,
     ("loop.cycle", "ROW_V"): 1,
     ("loop.cycle", "UNSENT_KINDS"): ('unsigned', 'no-key', 'ledger'),
+    ("loop.cycle", "SPEND_UNCOUNTED"): 1.7976931348623157e+308,
     ("loop.book", "ARMS"): ('a', 'b', 'c', 'd'),
     ("loop.book", "D_COLUMN"): 'argmax',
     ("loop.prompts", "LEGACY_TOKEN"): 'SOL',
     ("loop.prompts", "BASE_TOKEN"): '{BASE}',
     ("loop.prompts", "LEGACY_LAST"): 2,
+    ("loop.prompts", "TABLE_ANSWERS"): ('buy', 'sell', 'hold'),
     ("loop.report", "PRIMARY"): ('b', 'c', 'argmax', 0.0),
     ("loop.report", "VENUE_FEE"): 90.0,
     ("loop.report", "BLOCK_S"): 900,
@@ -158,6 +161,10 @@ SPEC14 = {
     ("loop.report", "GAP_S"): 900,
     ("loop.report", "BREAK_EVEN_FEE"): 90.0,
     ("loop.report", "FEE_EPS"): 1e-09,
+    ("loop.report", "F_CELLS"): {(3600, 'b', 'c'): 'F1', (14400, 'b', 'c'): 'F2', (900, 'a', 'c'): 'F3', (900, 'b', 'a'): 'F4'},
+    ("loop.report", "ERRATA_TIER"): {'name': 'Intro', 'band': 'at 30-day volume $0', 'low': 0.0, 'high': None, 'maker': 50.0,
+                                     'taker': 90.0},
+    ("loop.report", "ERRATA_TIER_WHERE"): "ERRATA.md's 2026-09-27 reading (Alex, in-account, ~22:55Z)",
     ("loop.inference_v2", "SEED_H1"): 20261023,
     ("loop.inference_v2", "RESAMPLES"): 10000,
     ("loop.inference_v2", "BLOCK_LEN"): 4,
@@ -167,6 +174,9 @@ SPEC14 = {
     ("loop.inference_v2", "N_DAYS"): 28,
     ("loop.inference_v2", "POWER"): 0.8,
     ("loop.inference_v2", "FEE_COLUMNS"): (0.0, 2.0, 10.0, 25.0, 50.0, 90.0),
+    ("loop.inference_v2", "SEAL_TAG"): 'prereg-v2-seal',
+    ("loop.inference_v2", "SEAL_CHECK_TIMEOUT_S"): 3600,
+    ("loop.exclusions_v2", "N_DAYS"): 28,
     ("nightly.digest", "FEES"): ((0.0, 'direction'), (50.0, 'venue maker'), (90.0, 'venue taker')),
     ("nightly.digest", "MAKER_BPS"): 50.0,
     ("nightly.digest", "TAKER_BPS"): 90.0,
@@ -177,6 +187,21 @@ SPEC14 = {
     ("nightly.policy_table", "MAX_TRANSIENT_RUN"): 3,
     ("nightly.policy_table", "MAX_OTHER_RUN"): 3,
     ("nightly.policy_table", "MAX_ERROR_RUN"): 3,
+    ("nightly.policy_table", "CANDIDATE_VERSION"): 'v3',
+    ("nightly.policy_table", "TABLE_SUFFIX"): '.table.json',
+    # the slow model's id and night are PREREG-v2 §8's (blank underscores there are "" here): pinned through
+    # PREREG-v2.md's sha above, so filling §8 moves that one pin and nightly/slow_model.py, not a line here
+    ("nightly.slow_model", "MODEL_ID"): "" if set(id_and_night()[0][0]) <= {"_"} else id_and_night()[0][0],
+    ("nightly.slow_model", "NIGHT"): "" if set(id_and_night()[0][1]) <= {"_"} else id_and_night()[0][1],
+    ("bin/promote", "E_MIN"): 8,                     # PREREG-v2 §8's schedule (a deviation touching it voids the draft
+    ("bin/promote", "E_MAX"): 22,                    # tag, §13)
+    ("bin/promote", "E_SPACING"): 7,
+    ("bin/promote", "MAX_PROMOTIONS"): 3,
+    ("bin/promote", "LEAD_S"): 600,
+    ("bin/promote", "DAY_S"): 86400,
+    ("bin/promote", "PREREG_TAG"): 'prereg-v2-seal',
+    ("bin/promote", "DRAFT_TAG"): 'prereg-v2-draft',
+    ("bin/promote", "TABLE_ONLY_VERSION"): 'v2',
 }
 
 
@@ -278,11 +303,10 @@ class Frozen(unittest.TestCase):
         self.assertTrue(pin_line.match(f'    "prompts/v2.table.SOL-USD.json": "{"0" * 64}",'))
 
     def test_every_spec_14_constant_is_the_pinned_value(self):
-        import importlib
         self.assertEqual(set(SPEC14), spec14(), "SPEC §14's names and SPEC14's keys differ: " + HOW)
         for (module, name), want in SPEC14.items():
             with self.subTest(constant=f"{module}.{name}"):
-                got = getattr(importlib.import_module(module), name)
+                got = getattr(load(module), name)
                 self.assertEqual(got, want, HOW)
                 self.assertEqual(repr(got), repr(want), HOW)                     # 90 is not 90.0, 1/40 not 0.025
 

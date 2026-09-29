@@ -457,7 +457,8 @@ third-party tables dated April 2026, marked UNVERIFIED; its rows carry no fee, s
 no row). The report prints `FEE_BPS_VENUE` and its source beside the pair table with a per-arm
 line at that fee and tags its columns `[venue fee]`; the nightly digest shows each arm's pnl at
 0 bps and at the verified maker (50) and taker (90), labelled; nothing hard-codes a fee but
-the constants named in §14. The venue's whole spot schedule, the tiers a 30-day volume reaches,
+the constants named in §14 (`report.ERRATA_TIER` among them: the 2026-09-27 reading, printed beside
+§12's table and standing in while it is blank). The venue's whole spot schedule, the tiers a 30-day volume reaches,
 is PREREG-v2 §12's field, read in-account at sealing; this file does not restate it.
 
 ```
@@ -586,8 +587,12 @@ answer to, and with them `table_sha` and `columns.d`.
 
 ## 14. Every constant, in one place
 
-A `where` cell left blank is the row above's file. `tests/test_spec.py` holds every name here to
-the module named (and every constant of `loop/config.py` but its paths to this table);
+Every constant a row, a v2 reading, the treatment or `bin/promote`'s schedule depends on. A `where`
+cell left blank is the row above's file. `tests/test_spec.py` holds every name here to the module
+named and every value cell to the code's value, and holds every capitalised constant of
+`loop/config.py` (but its paths) and of `book`, `cycle`, `prompts`, `report`, `inference_v2`,
+`exclusions_v2`, `digest`, `policy_table`, `slow_model` and `bin/promote` to this table, but those it
+lists as exit codes, file formats, printed words, aliases or parts of a constant named here;
 `tests/test_frozen.py` pins each by value. v2's rows are marked (v2); a v1 constant that v2 left
 alone keeps its v1 row.
 
@@ -631,9 +636,11 @@ alone keeps its v1 row.
 | `loop/cycle.py` | `WATCHDOG_S` / `TAIL_BYTES` | 50 / 8 MiB (the spend guard reads each log's tail) |
 | | `ROW_V` | 1 (the row's `v`, §2) |
 | | `UNSENT_KINDS` | `unsigned`, `no-key`, `ledger`: raised before a request leaves, billed 0 |
+| | `SPEND_UNCOUNTED` (v2) | 1.7976931348623157e+308 (`sys.float_info.max`: a token count, or today's sum of them, past a float's range; over any limit, never "unreadable") |
 | `loop/book.py` | `ARMS` (v2) | a b c d |
 | | `D_COLUMN` (v2) | `argmax`: arm D's one column |
 | `loop/prompts.py` | `LEGACY_TOKEN` / `BASE_TOKEN` / `LEGACY_LAST` (v2) | `SOL` / `{BASE}` / 2 (§8: `v1`, `v2` use `SOL`; `v3` on use `{BASE}`) |
+| | `TABLE_ANSWERS` (v2) | buy sell hold: the answers an arm-D table may hold (§7) |
 | `loop/report.py` | `PRIMARY` cell / `VENUE_FEE` / `BLOCK_S` / `SAMPLE_DAYS` | (B, C, `argmax`, `FEE_BPS_PRIMARY` = 0) / `FEE_BPS_VENUE` / 900 (`HORIZON_S`) / 28 |
 | | `PAIRS` (v2: D − B and D − C at argmax only) | B−C, A−C, B−A, D−B, D−C |
 | | `OCCUPANCY_FLAG` / `HEALTH_N` | 0.95 / 3 (`--health`: sections 1–3) |
@@ -643,15 +650,25 @@ alone keeps its v1 row.
 | | `LOOKUP_AT` / `DRIFT_BELOW` / `MODAL_MIN` (v2) | 0.99 / 0.95 / 10 (PREREG-v2 §6's D readings) |
 | | `GAP_S` (v2) | 900 (`gap_blocks`, PREREG-v2 §4) |
 | | `BREAK_EVEN_FEE` / `FEE_EPS` (v2) | 90.0 / 1e-9 bps (PREREG-v2 §6's f*, and "fees cancel") |
+| | `F_CELLS` (v2) | `{(3600, "b", "c"): "F1", (14400, "b", "c"): "F2", (900, "a", "c"): "F3", (900, "b", "a"): "F4"}`: family F by (cadence, x, y), PREREG-v2 §6's order |
+| | `ERRATA_TIER` (v2) | `{"name": "Intro", "band": "at 30-day volume $0", "low": 0.0, "high": None, "maker": 50.0, "taker": 90.0}`: ERRATA.md's reading, printed beside §12's fee-tier table and standing in for it while §12 is blank (PREREG-v2 §6) |
+| | `ERRATA_TIER_WHERE` (v2) | `ERRATA.md's 2026-09-27 reading (Alex, in-account, ~22:55Z)` |
 | `loop/inference_v2.py` | `SEED_H1` / `RESAMPLES` / `BLOCK_LEN` (v2) | 20261023 (family F: + i) / 10,000 / 4 units of the cell's cadence (PREREG-v2 §5–§6) |
 | | `ALPHA_H1` / `ALPHA_F` (v2) | 1/40 / 1/160, exact fractions (`sorted[249]` / `sorted[62]`) |
 | | `MIN_KEPT_DAYS` / `N_DAYS` / `POWER` (v2) | 21 / 28 / 0.8 |
 | | `FEE_COLUMNS` (v2) | `FEE_BPS_COLUMNS`, transcribed |
+| | `SEAL_TAG` / `SEAL_CHECK_TIMEOUT_S` (v2) | `prereg-v2-seal` / 3600 (`make results` checks the tag and runs `bin/seal-check --since` it, PREREG-v2 §13) |
+| `loop/exclusions_v2.py` | `N_DAYS` (v2) | 28 (`exclusions.N_DAYS`: the days d01–d28 a line may name) |
 | `nightly/digest.py` | `FEES` (v2) | (0.0, "direction"), (`MAKER_BPS`, "venue maker"), (`TAKER_BPS`, "venue taker") |
 | | `MAKER_BPS` / `TAKER_BPS` (v2) | 50.0 / 90.0 (read in-account 2026-09-27) |
 | | `DISAGREE_CONF` / `DISAGREE_MAX` | 0.85 / 25 |
 | `nightly/policy_table.py` | `DEADLINE_S` (v2: a product) / `MAX_CANDIDATES` | 900.0 / 3 |
 | | `MAX_TRANSIENT_RUN` / `MAX_OTHER_RUN` / `MAX_ERROR_RUN` | 3 / 3 / 3 |
+| | `CANDIDATE_VERSION` / `TABLE_SUFFIX` (v2) | `v3` (`LEGACY_LAST` + 1: a candidate's base token is `{BASE}`, §8) / `.table.json` (beside `proposals/<date>.md`) |
+| `nightly/slow_model.py` | `MODEL_ID` / `NIGHT` (v2) | PREREG-v2 §8's id / PREREG-v2 §8's night (both blank here while §8's are; `tests/test_slow_model.py` holds them to §8's line) |
+| `bin/promote` | `E_MIN` / `E_MAX` / `E_SPACING` / `MAX_PROMOTIONS` (v2) | 8 / 22 / 7 / 3 (PREREG-v2 §8: effective days 8 ≤ E ≤ 22, E_k − E_(k−1) ≥ 7, at most three) |
+| | `LEAD_S` / `DAY_S` (v2) | 600 (refused when now ≥ activation − 600 s) / 86,400 |
+| | `PREREG_TAG` / `DRAFT_TAG` / `TABLE_ONLY_VERSION` (v2) | `prereg-v2-seal` / `prereg-v2-draft` / `v2` (`--table-only` writes v2's tables and no other's) |
 
 PREREG-v2 §12 holds T_first_v2, T0_v2 and the venue's fee-tier table; this file names them and
 restates neither.
