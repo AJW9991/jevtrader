@@ -514,9 +514,10 @@ def stores_html(stores, t0, now):
          "<div class='wrap'><table><tr><th class='l'>product</th><th class='l'>log</th><th>rows</th><th>live</th><th>heartbeat</th>"
          "<th>fill</th><th>jev-err</th><th class='l'>BAD days</th><th class='l'>NO LIVE ROWS</th><th>spend, whole log</th><th class='l'>pause</th></tr>"]
     total, days = 0.0, {}
-    for st in stores:
+    reached = [report.last_reached(st["rows"], now.timestamp()) for st in stores]
+    last = max((x for x in reached if x is not None), default=None)   # every product's days close on the latest tick
+    for st in stores:                                                  # any log reached: the calendar does not stop with a loop
         sample = report.in_sample(st["rows"], t0) if t0 is not None else st["rows"]
-        last = report.last_reached(st["rows"], now.timestamp())
         h = report.health(sample, st["outs"], t0=t0, last=last, now=now.timestamp())
         days[st["product"]] = h["days"]
         whole = report.health(st["rows"], st["outs"], now=now.timestamp())["usd"]

@@ -124,6 +124,27 @@ class ExcludedDayBetweenKeptDays(unittest.TestCase):
         self.assertEqual(cell["n"], cell["per"]["SOL-USD"]["n"])                         # every block has a kept product
 
 
+class AStoppedLoop(unittest.TestCase):
+    """The calendar does not stop with one product's loop: its days close on the latest tick any product's log has
+    reached, so the days after its last row are NO LIVE ROWS, excluded whole (§9.3), and its blocks there dropped
+    from the pool, not counted as S_k = 0 (report, status and dash alike)."""
+
+    def test_the_days_after_a_stopped_logs_last_row_are_excluded(self):
+        add_products(self, 2)
+        p2 = config.PRODUCTS[1]
+        self.enterContext(mock.patch.object(config, "HALT", os.path.join(self.enterContext(tempfile.TemporaryDirectory()), "no-HALT")))
+        sol = [r for d in range(1, 6) for r in _day_rows(d, lambda i: 100.0)]
+        eth = [dict(r, product=p2) for d in range(1, 3) for r in _day_rows(d, lambda i: 100.0)]   # stopped at d02's end
+        out = report.render_v2([_store("SOL-USD", sol), _store(p2, eth)], t0=T0, now=END + 86400)
+        self.assertEqual(out["recomputed"], {(3, p2), (4, p2)})                  # d05 is still open on SOL's log
+        cell = out["cadence"]["cells"][(900, "b", "c", "argmax", 0.0)]
+        self.assertEqual(cell["per"][p2]["n"], 2 * 96 + 96)                      # d01, d02 and open d05, not d03-d04
+        from loop import status
+        now = datetime.datetime.fromtimestamp(T0 + 6 * 86400, UTC)
+        _, days = status._days(eth, outcomes.join(eth), T0, now, report.tick_epoch(sol[-1]["tick_id"]))
+        self.assertEqual([x["day"] for x in days if x["empty"]], ["d03", "d04"])
+
+
 class Void(unittest.TestCase):
     """§9.4: a product with fewer than 21 kept days leaves the pool, judged once every product's d28 has closed."""
 

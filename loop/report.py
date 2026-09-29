@@ -1327,8 +1327,9 @@ def render_v2(stores, t0=None, since=None, health_only=False, withheld=(), now=N
     prods = [s["product"] for s in stores]
     since_ep = tick_epoch(_since(since) + "T000000Z") if since else None
     last = max((s["last"] for s in stores if s["last"] is not None), default=None)
-    hs = {s["product"]: health(s["rows"], s["outs"], s["bad"], t0, last if s["last"] is None else s["last"], now, since_ep, v2=True)
-          for s in stores}
+    # every product's days close on the latest tick any product's log has reached: the calendar does not stop with one loop,
+    # so a product whose log stopped has closed days with no live row after its last row, excluded whole (§9.3)
+    hs = {s["product"]: health(s["rows"], s["outs"], s["bad"], t0, last, now, since_ep, v2=True) for s in stores}
     per = {s["product"]: s["rows"] for s in stores}
     rows_all = [r for s in stores for r in s["rows"]]
     lines = [f"jev-paper-loop report (PREREG-v2): {config.VENUE} {', '.join(prods)}; cadence {config.CADENCE_S} s, horizon"

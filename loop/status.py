@@ -116,12 +116,14 @@ def _days_lines(rows, outs, t0, now=None):
     return out
 
 
-def _days(rows, outs, t0, now=None):
-    """(the screen's per-day lines, days_table's days) for one log, as _days_lines."""
-    if not rows:
-        return ["per day: no rows"], []
+def _days(rows, outs, t0, now=None, last=None):
+    """(the screen's per-day lines, days_table's days) for one log, as _days_lines. `last`: the latest tick any
+    product's log has reached (the calendar does not stop with one loop); None: this log's own."""
     clock = now.timestamp() if now is not None else None
-    last = report.last_reached(rows, clock)
+    if last is None:
+        if not rows:
+            return ["per day: no rows"], []
+        last = report.last_reached(rows, clock)
     scope = report.in_sample(rows, t0) if t0 is not None else rows
     d = report.days_table(scope, outs, t0, last, clock, v2=True)
     shown = d["days"][-DAYS_SHOWN:]
@@ -176,11 +178,13 @@ def render_v2(stores, t0, now, proposals_root, propose_log, current, pending, ha
     lines += [dash.pause_line(s["product"]) for s in stores]
     lines += [f"prompt_b CURRENT: {current or '?'}", pending, _spend_line(now), _sample_line_v2(t0, now, t0_why)]
     days = {}
+    reached = [report.last_reached(s["rows"], now.timestamp()) for s in stores]
+    last = max((x for x in reached if x is not None), default=None)
     for s in stores:
         lines.append(f"-- {s['product']} ({_short(s['log'])}): rows {len(s['rows'])}")
         if s.get("unreadable"):
             lines.append("  " + s["unreadable"])
-        body, days[s["product"]] = _days(s["rows"], s["outs"], t0, now)
+        body, days[s["product"]] = _days(s["rows"], s["outs"], t0, now, last)
         lines += ["  " + l for l in [_age_line(s["hb"], now), _last_row_line(s["rows"]), _rows_today_line(s["rows"], now)] + body]
     lines.append(exclusions_v2.status_line(excl_path))
     if t0 is not None:
