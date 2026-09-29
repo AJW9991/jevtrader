@@ -174,7 +174,7 @@ def build(d, log_path, prompts_root=None):
     rows = outcomes.load(log_path, bad) if os.path.exists(log_path) else []
     day, joinrows = split(rows, d)
     joined = outcomes.join(joinrows, config.HORIZON_S)
-    cur_name = prompts.current(prompts_root)
+    cur_name = prompts.current(root=prompts_root)
     cur_doc = prompts.load(cur_name, prompts_root)
     text = render(d, day, joined, cur_name, cur_doc, prompts.sha("v1", prompts_root), prompts.sha_of(cur_doc))
     if bad:

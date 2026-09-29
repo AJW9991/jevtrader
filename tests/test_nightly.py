@@ -804,6 +804,27 @@ class PromoteTest(unittest.TestCase):
             rc = self.promote.main(list(argv))
         return rc, buf.getvalue(), err.getvalue()
 
+    def test_a_product_word_other_than_the_versions_base_token_is_refused_and_nothing_written(self):
+        # PREREG-v2 §1: v2 may name SOL (its base placeholder) and no other product; v3 and later name none
+        with open(self.prop, "w", encoding="utf-8") as fh:
+            json.dump({"candidates": [{**CAND, "instructions": "Decide whether to be long ETH."},
+                                      {**CAND, "instructions": "Decide whether to be long {BASE}."},
+                                      {**CAND, "instructions": "Decide whether to be long SOL."}]}, fh)
+        for k in ("0", "1"):
+            rc, _, err = self._run(self.prop, k, "--prompts", self.root)
+            self.assertEqual(rc, 1, k)
+            self.assertIn("product word", err)
+            self.assertEqual(sorted(os.listdir(self.root)), ["CURRENT", "v1.json"])
+        self.assertEqual(self._run(self.prop, "2", "--prompts", self.root)[0], 0)       # SOL in a v2: its placeholder
+        self.assertEqual(prompts.current(root=self.root), "v2")
+        rc, _, err = self._run(self.prop, "2", "--prompts", self.root)                 # the same SOL in a v3: refused
+        self.assertEqual(rc, 1)
+        self.assertIn("product word 'SOL' in v3", err)
+        self.assertFalse(os.path.exists(os.path.join(self.root, "v3.json")))
+        self.assertEqual(prompts.named(root=self.root), "v2")
+        self.assertEqual(self._run(self.prop, "1", "--prompts", self.root)[0], 0)       # {BASE} in a v3: taken
+        self.assertEqual(prompts.load("v3", self.root)["action"]["instructions"], "Decide whether to be long {BASE}.")
+
     def test_the_committed_table_vouches_for_the_json(self):
         md = self.prop[:-5] + ".md"
         with open(md, "w", encoding="utf-8") as fh:
@@ -837,7 +858,7 @@ class PromoteTest(unittest.TestCase):
         rc, _, err = self._run(self.prop, "0", "--prompts", self.root)
         self.assertEqual(rc, 0)
         self.assertIn(f"WARNING {md} is INCOMPLETE (answered 2 of 81 states)", err)
-        self.assertEqual(prompts.current(self.root), "v2")
+        self.assertEqual(prompts.current(root=self.root), "v2")
 
     def test_current_is_replaced_whole_never_truncated_in_place(self):
         # the loop reads CURRENT every minute: it is written beside and renamed over, so no tick
@@ -866,7 +887,7 @@ class PromoteTest(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("dirty", err)
         self.assertEqual(sorted(os.listdir(self.root)), ["CURRENT", "v1.json"])
-        self.assertEqual(prompts.current(self.root), "v1")
+        self.assertEqual(prompts.current(root=self.root), "v1")
         self.git.assert_called_once()
         self.assertEqual(self.git.call_args.args[0], ["git", "status", "--porcelain"])
 
@@ -878,7 +899,7 @@ class PromoteTest(unittest.TestCase):
             self.assertEqual(rc, 1, tags)
             self.assertIn("prereg-v1", err)
             self.assertEqual(sorted(os.listdir(self.root)), ["CURRENT", "v1.json"])
-            self.assertEqual(prompts.current(self.root), "v1")
+            self.assertEqual(prompts.current(root=self.root), "v1")
         self.assertEqual(self.git.call_args.args[0], ["git", "tag", "-l", "prereg-v1"])
 
     def test_loading_promote_leaves_sys_path_as_it_was(self):
@@ -905,7 +926,7 @@ class PromoteTest(unittest.TestCase):
     def test_v2_carries_v1_nouls_byte_identical(self):
         rc, out, _ = self._run(self.prop, "1", "--prompts", self.root)
         self.assertEqual(rc, 0, out)
-        self.assertEqual(prompts.current(self.root), "v2")
+        self.assertEqual(prompts.current(root=self.root), "v2")
         with open(os.path.join(self.root, "v1.json"), encoding="utf-8") as fh:
             t1 = fh.read()
         with open(os.path.join(self.root, "v2.json"), encoding="utf-8") as fh:
@@ -919,7 +940,7 @@ class PromoteTest(unittest.TestCase):
         self.assertIn("candidate 1", v2["note"])
         with open(os.path.join(REPO, "prompts", "v1.json"), encoding="utf-8") as fh:
             self.assertEqual(t1, fh.read())                                    # v1 untouched
-        qs = prompts.build(v1, v2)                                             # and the loop can build from it
+        qs = prompts.build(v1, v2, "SOL", v1=v1)                               # and the loop can build from it
         self.assertEqual(qs["b_action"]["instructions"], "Second candidate.")
         self.assertEqual(qs["a_action"], prompts.question(v1["action"], "choice"))
         self.assertIn("+++ v2.action", out)
@@ -934,10 +955,10 @@ class PromoteTest(unittest.TestCase):
         self.assertNotIn("type", CAND)
         rc, _, _ = self._run(self.prop, "0", "--prompts", self.root)
         self.assertEqual(rc, 0)
-        cur = prompts.current(self.root)
+        cur = prompts.current(root=self.root)
         doc = prompts.load(cur, self.root)
         self.assertEqual(doc["action"]["type"], "choice")
-        qs = prompts.build(prompts.load("v1", self.root), doc)
+        qs = prompts.build(prompts.load("v1", self.root), doc, "SOL", root=self.root)
         self.assertEqual(list(qs), ["a_action", "b_action", "skip", "up15", "down15"])
         self.assertEqual(qs["b_action"], {"type": "choice", "instructions": CAND["instructions"],
                                           "criteria": CAND["criteria"]})
@@ -948,7 +969,7 @@ class PromoteTest(unittest.TestCase):
             fh.write("v1\n")                                                    # rolled back by hand
         rc, out, _ = self._run(self.prop, "0", "--prompts", self.root)
         self.assertEqual(rc, 0)
-        self.assertEqual(prompts.current(self.root), "v3")
+        self.assertEqual(prompts.current(root=self.root), "v3")
         self.assertIn("--- v1.action", out)
 
     def test_bad_k_and_digit_refused(self):
@@ -1114,7 +1135,7 @@ class ProposeDryTest(unittest.TestCase):
         self.assertEqual(os.listdir(env["HOME"]), [])
         code = ("from loop import config, jev, prompts\n"
                 "try:\n    jev.key(); print('KEY FOUND')\nexcept jev.JevError as e:\n    print(e.kind)\n"
-                "print(config.JEV_URL)\nimport sys\nprint(prompts.current(sys.argv[1]))\n")
+                "print(config.JEV_URL)\nimport sys\nprint(prompts.current(root=sys.argv[1]))\n")
         r = subprocess.run([sys.executable, "-c", code, env["JEVLOOP_PROMPTS"]], cwd=REPO, env=env,
                            capture_output=True, text=True, timeout=60)
         self.assertEqual(r.returncode, 0, r.stderr)

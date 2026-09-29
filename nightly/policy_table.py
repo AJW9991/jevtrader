@@ -105,7 +105,7 @@ def parse_candidates(raw, path):
 
 def current_action(root=None):
     """(version name, wire question, sha of the whole version file)."""
-    name = prompts.current(root)
+    name = prompts.current(root=root)
     doc = prompts.load(name, root)
     return name, prompts.question(doc.get("action"), "choice", f"{name}.action"), prompts.sha_of(doc)
 

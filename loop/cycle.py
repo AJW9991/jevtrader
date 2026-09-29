@@ -382,7 +382,7 @@ def _run(row, dry, halt=False, where=None):
         stage = where["stage"] = "prompts"
         v1, cur = prompts.load("v1"), prompts.current()
         curdoc = prompts.load(cur)
-        qs = prompts.build(v1, curdoc)
+        qs = prompts.build(v1, curdoc, state.BASE, v1=v1)
         row.update(prompt_a="v1", prompt_a_sha=prompts.sha_of(v1),
                    prompt_b=cur, prompt_b_sha=prompts.sha_of(curdoc))
         if halt:                             # HALT stops SENDS only: everything above is the observation

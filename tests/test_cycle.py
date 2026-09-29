@@ -651,7 +651,7 @@ class CycleTest(unittest.TestCase):
         req = self.urlopen.call_args.args[0]
         self.assertEqual(req.full_url, URL)                    # the patched URL, not api.typesafe.ai
         self.assertEqual(json.loads(req.data), {"model": config.MODEL, "state": STATE,
-                                                "questions": prompts.build(prompts.load("v1"), prompts.load("v1"))})
+                                                "questions": prompts.build(prompts.load("v1"), prompts.load("v1"), "SOL")})
         lines = self.sends()
         self.assertEqual(lines[0], jev.HEADER.rstrip("\n"))
         self.assertEqual(len(lines), 2)                        # one attempt, one ledger row

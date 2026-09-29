@@ -363,7 +363,7 @@ class PromoteHeld(unittest.TestCase):
 
     def _untouched(self):
         self.assertEqual(sorted(os.listdir(self.root)), ["CURRENT", "v1.json"])
-        self.assertEqual(prompts.current(self.root), "v1")
+        self.assertEqual(prompts.current(root=self.root), "v1")
 
     def test_a_git_command_that_fails_refuses_and_says_which(self):
         # docstring: refuses on a dirty tree or a missing PREREG_TAG; a git that cannot answer vouches for neither
@@ -405,7 +405,7 @@ class PromoteHeld(unittest.TestCase):
         rc, _, err = self._run(self.prop, "0", "--prompts", self.root)
         self.assertEqual(rc, 0)
         self.assertIn("carries no 'proposal sha256' line", err)
-        self.assertEqual(prompts.current(self.root), "v2")
+        self.assertEqual(prompts.current(root=self.root), "v2")
 
     def test_a_digit_in_a_criterion_is_refused(self):
         # PROMPT.md rule 4: no digit anywhere in instructions OR criteria; nothing reaches prompts/
@@ -439,7 +439,7 @@ class PromoteHeld(unittest.TestCase):
         root = pin_v1(self)                                                  # config.PROMPTS -> a temp v1 root
         rc, _, err = self._run(self.prop, "0")
         self.assertEqual(rc, 0, err)
-        self.assertEqual(prompts.current(root), "v2")
+        self.assertEqual(prompts.current(root=root), "v2")
         self.assertTrue(os.path.exists(os.path.join(root, "v2.json")))
 
     def test_the_promoted_candidate_is_from_the_bytes_the_table_vouched_for(self):
@@ -494,7 +494,7 @@ class PromoteHeld(unittest.TestCase):
         self.assertIn("exists", err)
         with open(os.path.join(self.root, "v2.json"), encoding="utf-8") as fh:
             self.assertEqual(fh.read(), "written by another promote\n")
-        self.assertEqual(prompts.current(self.root), "v1")
+        self.assertEqual(prompts.current(root=self.root), "v1")
 
 
 class PromoteUnfaked(unittest.TestCase):
