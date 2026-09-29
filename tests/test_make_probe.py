@@ -1,5 +1,6 @@
 """The Makefile's PREREG-v2 tool targets: `quantiles` and `probe` print usage and run nothing, and
-`probe-summarize` needs DIR and reads it offline. None of them is the default goal, which stays `test`."""
+`probe-summarize` needs DIR and reads it offline. None of them is the default goal, which stays `test`. And the
+morning targets (health, status, dash) read every product's store."""
 import json, os, re, subprocess, sys, tempfile, unittest
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -47,6 +48,15 @@ class MakeTargets(unittest.TestCase):
             self.assertIn(t, phony)
         first = re.search(r"^([A-Za-z][\w-]*):", text, re.MULTILINE).group(1)
         self.assertEqual(first, "test")
+
+    def test_the_morning_targets_read_every_store(self):
+        # PREREG-v2 §2, §10: health, status and dash pass no --log, so each reader takes its default, every product's
+        # store in config.PRODUCTS (v2's results target is held in tests/test_inference_v2.py)
+        for target, want in (("health", "-m loop.report --health --sample"), ("status", "-m loop.status"),
+                             ("dash", "-m loop.dash")):
+            r = _make("-n", target)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(r.stdout.strip(), f"{sys.executable} {want}", target)
 
 
 if __name__ == "__main__":

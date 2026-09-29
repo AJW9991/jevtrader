@@ -53,13 +53,16 @@ report:
 health:
 	$(PY) -m loop.report --health --sample
 
-# health only (report §1-§3 + the nightly's synthetic tables) as one HTML file, data/dash.html
+# health only (report §1-§3 + the nightly's synthetic tables) as one HTML file, data/dash.html, over every product's
+# store (config.PRODUCTS), with HALT and each PAUSE.<PRODUCT> from data/ (PREREG-v2 §2)
 dash:
 	$(PY) -m loop.dash
 
-# the morning check in one screen: heartbeat age, HALT, the last row, today's spend against the
-# tripwire, the sample day, the last days of the stop-rule-3 table, the newest proposal, the tail
-# of logs/propose.log. Health only (report §1), like dash.
+# the morning check in one screen, over every product's store (PREREG-v2 §2; STEPS.md §10.7): HALT, each
+# PAUSE.<PRODUCT>, CURRENT and a pending version on its own line, today's spend over every log against the tripwire, the
+# sample day from PREREG-v2 §12's T0_v2, then per product its heartbeat age, last row, rows today and the last days of the
+# stop-rule-3 table; the exclusions-v2 line, the newest proposal, the tail of logs/propose.log. Health only (report §1),
+# like dash; v1's screen on its one log: `python3 -m loop.status --log data/decisions.jsonl`.
 status:
 	$(PY) -m loop.status
 
