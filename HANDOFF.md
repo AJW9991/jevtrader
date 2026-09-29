@@ -64,9 +64,10 @@ in "What tonight's log should show" (State), "Known residuals" and the prereg-v2
 
 ## Decisions for Alex
 1. ~~The slow model's context~~ **done as (a)** by the pull; first night 2026-09-29 08:30Z.
-2. **A day with no live rows** (Mac off all day, or all-HALT): stop rule 3's fill is 0/0. The
-   report and dash flag such a day NO LIVE ROWS, never BAD by code. Decide before day 28: excluded
-   whole, or kept (96 blocks of S_k = 0, no H2 unit). None has happened.
+2. ~~A day with no live rows~~ **decided by Alex 2026-09-29 ~04:25Z: excluded whole, like a BAD day.** The
+   morning after such a day he writes its `dNN` line in data/exclusions.tsv (the report and dash flag it
+   NO LIVE ROWS; kept days must still reach 21 or the block is VOID). None has happened. For the write-up
+   and prereg-v2 §8.3.
 3. ~~Duplicate priced ticks~~ checked: the three above; the join's outcome is the same either way.
 4. Nightly model **recorded, not pinned** — in force from the 09-29 night. Pinning with `--model`
    stays a prereg-v2 treatment/spending decision.
@@ -75,13 +76,9 @@ in "What tonight's log should show" (State), "Known residuals" and the prereg-v2
 7. ~~2026-09-26 likely BAD~~ Under the T0-anchored days you decided on 09-26, d01 (09-25 21:40Z →
    09-26 21:40Z) closed at 95.2 % and is kept; the UTC day 09-26 at 90.2 % is not a unit of the
    sample. No exclusions line is due. (`make status` shows the table each morning.)
-8. **The missed 2026-09-26 proposal.** Nothing in PREREG requires a proposal every night; promote is
-   yours either way. (a) Run it by hand once — one `claude -p` call plus 81 Jev sends (~$0.005), any time
-   the nightly is not running; the dry run above proves the path; then commit `proposals/2026-09-26.md`:
-   ```bash
-   cd ~/Projects/jev-paper-loop && launchctl print gui/$(id -u)/com.alexward.jevloop.nightly | grep -q 'state = running' && echo "nightly running: wait" || { bash nightly/propose.sh --date 2026-09-26 && git add proposals/2026-09-26.md && git commit -m "proposals: the 2026-09-26 table, run by hand after the capped night"; }
-   ```
-   (b) Leave the slot empty and let the write-up say one night of 28 produced no proposal.
+8. ~~The missed 2026-09-26 proposal~~ **decided by Alex 2026-09-29: the slot stays empty.** One night of
+   28 produced no proposal (the 09-27 08:30Z call stalled and was capped); the write-up says so. The
+   by-hand command stays in git history (a5c225e) should a later night need it.
 9. **Install the backup** (STEPS §9): `make backup` once, then bootstrap the plist; or name another
    destination (`bin/backup-data DEST`, and the plist's argument with it).
 
