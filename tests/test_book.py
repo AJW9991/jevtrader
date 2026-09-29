@@ -302,5 +302,109 @@ class ArmD(unittest.TestCase):
             self.assertEqual(rep["forced_hold"], 0, arm)
 
 
+class AtCadence(unittest.TestCase):
+    """PREREG-v2 §4: at_cadence(rows, c, t0) acts once per c-block on the block's decision row (the first row in
+    _order on which replay would not force a hold), every arm from that one row, and holds on every other row of
+    the block; a block with no decision row holds throughout. Hand-built rows, the intents per row written out."""
+    T0 = "20260923T100000Z"
+
+    @staticmethod
+    def _r(minute, a=None, b=None, c="hold", d="absent", priced=True, absence=None, dry=False, ts=100):
+        r = _row(0, 99.0 + minute if priced else None, 101.0 + minute if priced else None, a=a, b=b, c=c, absence=absence, dry=dry, d=d)
+        h, m = divmod(minute, 60)
+        r["tick_id"] = f"20260923T{10 + h:02d}{m:02d}00Z"
+        r["ts_rx"] = f"2026-09-23T{10 + h:02d}:{m:02d}:00.{ts:03d}Z"
+        return r
+
+    def _intents(self, rows, arm):
+        return [book._intent(r, arm, "argmax") if all(book._px(r.get(k)) for k in ("bid", "ask", "mid")) else None for r in rows]
+
+    def test_per_block_intents_on_a_hand_built_log(self):
+        t0 = book._epoch(self.T0)
+        R = self._r
+        rows = [
+            # block 0, [10:00, 10:15): an unpriced row, a dry row, then the decision row at :02; :03 is held; :07 an absence
+            R(0, priced=False, absence="feed"), R(1, dry=True, c="buy"), R(2, a="buy", b="sell", c="buy", d="buy"),
+            R(3, a="sell", b="buy", c="sell", d="sell"), R(7, a="buy", b="buy", c="buy", d="buy", absence="jev"),
+            # block 1, [10:15, 10:30): absences and a dry row only: every arm holds throughout
+            R(15, absence="halt", c="sell"), R(16, dry=True, c="sell"), R(29, absence="guard"),
+            # block 2, [10:30, 10:45): both model columns null (forced), an unpriced answered row (forced), then the
+            # decision row at :33 with a null D (D alone holds), then answered rows that are held
+            R(30, c="sell"), R(31, a="sell", b="sell", c="sell", d="sell", priced=False), R(33, a="sell", b="hold", c="sell", d=None),
+            R(40, a="buy", b="buy", c="buy", d="buy"),
+            # block 3, [10:45, 11:00): one row, a v1 row with no d key: D holds, the rest act
+            R(50, a="hold", b="buy", c="hold"),
+        ]
+        out = book.at_cadence(rows, 900, t0)
+        self.assertEqual([r["tick_id"] for r in out], [r["tick_id"] for r in rows])
+        self.assertEqual(sorted(book.decision_rows(rows, 900, t0)), [0, 2, 3])
+        want = {                       # per row, in order: the intent replay reads (None: a forced hold for that arm)
+            "a": [None, None, "buy", "hold", None, None, None, None, None, None, "sell", "hold", "hold"],
+            "b": [None, None, "sell", "hold", None, None, None, None, None, None, "hold", "hold", "buy"],
+            "c": [None, None, "buy", "hold", None, None, None, None, None, None, "sell", "hold", "hold"],
+            "d": [None, None, "buy", "hold", None, None, None, None, None, None, None, "hold", None],
+        }
+        for arm, w in want.items():
+            self.assertEqual(self._intents(out, arm), w, arm)
+        # the transformed intents feed replay: trades only on decision rows, the book's own forced-hold count
+        for arm, sides in (("a", [("20260923T100200Z", "buy"), ("20260923T103300Z", "sell")]), ("b", [("20260923T105000Z", "buy")]),
+                           ("c", [("20260923T100200Z", "buy"), ("20260923T103300Z", "sell")]), ("d", [("20260923T100200Z", "buy")])):
+            rep = book.replay(out, None, arm, "argmax", 0.0)
+            self.assertEqual([(t["tick_id"], t["side"]) for t in rep["trades"]], sides, arm)
+        self.assertEqual(book.replay(out, None, "d", "argmax", 0.0)["forced_hold"], 10)   # 8 forced for all, D null at :33, no d at :50
+        self.assertEqual(book.replay(out, None, "a", "argmax", 0.0)["forced_hold"], 8)
+        # the raw minute replay trades on more rows: the cadence changed the policy, not the book
+        self.assertGreater(len(book.replay(rows, None, "a", "argmax", 0.0)["trades"]), 2)
+
+    def test_the_input_rows_are_not_changed(self):
+        import copy
+        t0 = book._epoch(self.T0)
+        rows = [self._r(m, a="buy", b="sell", c="buy", d="sell") for m in range(0, 40, 3)]
+        before = copy.deepcopy(rows)
+        out = book.at_cadence(rows, 900, t0)
+        self.assertEqual(rows, before)
+        self.assertIs(out[0], rows[0])                                         # the decision row is the row itself
+        self.assertIsNot(out[1], rows[1])
+
+    def test_t0_not_aligned_to_c_and_a_row_before_t0(self):
+        # T0_v2 is a minute boundary, not a multiple of c: the blocks run from it. A row before it is block -1.
+        t0 = book._epoch("20260923T100700Z")
+        rows = [self._r(m, a="buy", b="buy", c="buy", d="buy") for m in (5, 6, 7, 8, 21, 22, 23)]
+        self.assertEqual({j: r["tick_id"] for j, r in book.decision_rows(rows, 900, t0).items()},
+                         {-1: "20260923T100500Z", 0: "20260923T100700Z", 1: "20260923T102200Z"})
+        out = book.at_cadence(rows, 900, t0)
+        self.assertEqual(self._intents(out, "a"), ["buy", "hold", "buy", "hold", "hold", "buy", "hold"])
+
+    def test_two_rows_in_one_minute_the_first_by_ts_rx_decides(self):
+        t0 = book._epoch(self.T0)
+        lock = self._r(2, absence="lock", priced=False, ts=50)
+        first = self._r(2, a="buy", b="buy", c="buy", d="buy", ts=200)
+        second = self._r(2, a="sell", b="sell", c="sell", d="sell", ts=900)
+        out = book.at_cadence([second, first, lock], 900, t0)
+        self.assertEqual([r["ts_rx"][-7:] for r in out], ["00.050Z", "00.200Z", "00.900Z"])
+        self.assertEqual(self._intents(out, "b"), [None, "buy", "hold"])
+
+    def test_every_answered_minute_its_own_block_at_c_60(self):
+        # at c = 60 on a log of one row a minute, every answered priced row is its own decision row: the minute replay
+        t0 = book._epoch(self.T0)
+        rows = [self._r(0, a="buy", b="hold", c="buy", d="buy"), self._r(1, absence="feed", priced=False),
+                self._r(2, a="sell", b="buy", c="hold", d="sell"), self._r(3, a="buy", b="sell", c="sell", d=None)]
+        for arm in book.ARMS:
+            self.assertEqual(book.replay(book.at_cadence(rows, 60, t0), None, arm, "argmax", 10.0),
+                             book.replay(rows, None, arm, "argmax", 10.0), arm)
+
+    def test_bad_cadence_or_t0_is_loud(self):
+        t0 = book._epoch(self.T0)
+        for c in (0, -900, 900.0, True, None):
+            with self.assertRaises(ValueError, msg=repr(c)):
+                book.at_cadence([], c, t0)
+        for t in (None, float("nan"), "20260923T100000Z", True):
+            with self.assertRaises(ValueError, msg=repr(t)):
+                book.at_cadence([], 900, t)
+        with self.assertRaises(ValueError):
+            book.at_cadence([dict(self._r(2, a="buy", b="buy"), tick_id="2026-09-23T10:02")], 900, t0)
+        self.assertEqual(book.at_cadence([], 900, t0), [])
+
+
 if __name__ == "__main__":
     unittest.main()

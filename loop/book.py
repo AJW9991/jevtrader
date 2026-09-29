@@ -21,7 +21,7 @@ the same position and different cash histories round differently, and the
 paired test needs d_t == 0.0 exactly wherever the arms carry the same position
 through a tick.
 """
-import math
+import datetime, math
 
 from loop import config
 
@@ -166,6 +166,74 @@ def replay(rows, outcomes, arm, column, fee_bps):
         position[tid] = pos["qty"] if pos else 0.0
     return {"equity": eq, "trades": trades, "pnl_bps_per_tick": pnl,
             "position": position, "forced_hold": forced}
+
+
+def _epoch(tid):
+    """tick_id 'YYYYMMDDTHHMMSSZ' -> epoch seconds (UTC). datetime refuses what is not a date (a 13th month,
+    February 30th); a string of any other shape raises ValueError. Pure: no clock."""
+    if not (isinstance(tid, str) and len(tid) == 16 and tid[8] == "T" and tid[15] == "Z" and (tid[:8] + tid[9:15]).isdigit()):
+        raise ValueError(f"not a tick_id: {tid!r}")
+    return datetime.datetime(int(tid[0:4]), int(tid[4:6]), int(tid[6:8]), int(tid[9:11]), int(tid[11:13]), int(tid[13:15]),
+                             tzinfo=datetime.timezone.utc).timestamp()
+
+
+def _decides(row):
+    """The block's decision row test (PREREG-v2 §4): a row on which replay would not force a hold, i.e. a
+    live row with no absence, priced (bid, ask and mid all pass _px), whose columns.a and columns.b are
+    not both null or argmax-null (_intent's test)."""
+    return _answered(row) and all(_px(row.get(k)) for k in ("bid", "ask", "mid"))
+
+
+def _block(row, c, t0):
+    return int((_epoch(row.get("tick_id")) - t0) // c)
+
+
+def decision_rows(rows, c, t0):
+    """{block j: its decision row} for the c-blocks [t0 + c j, t0 + c (j + 1)): the first row of the block in
+    _order (least tick_id, then ts_rx) that _decides. A block with no such row has no entry. j < 0 for a row
+    before t0 (the reader cuts the sample before it replays, so none reaches here from the report)."""
+    _cadence_args(c, t0)
+    out = {}
+    for row in sorted(rows, key=_order):
+        if _decides(row):
+            out.setdefault(_block(row, c, t0), row)
+    return out
+
+
+def _cadence_args(c, t0):
+    if isinstance(c, bool) or not isinstance(c, int) or c <= 0:
+        raise ValueError(f"cadence {c!r} is not a positive whole number of seconds")
+    if isinstance(t0, bool) or not isinstance(t0, (int, float)) or not math.isfinite(t0):
+        raise ValueError(f"t0 {t0!r} is not an epoch")
+
+
+def _held(row):
+    """A shallow copy of the row with every intent it carries turned into hold: each non-null column of a and
+    b, a non-null columns.d and a non-null rule_c. A null arm stays null (a hold either way, counted in that
+    arm's forced holds, as on the raw row). The row itself is not changed."""
+    cols = row.get("columns") or {}
+    new = {}
+    for k, v in cols.items():
+        if isinstance(v, dict):
+            new[k] = v if _null(v) else {col: (None if x is None else "hold") for col, x in v.items()}
+        else:
+            new[k] = None if v is None else "hold"
+    return dict(row, columns=new, rule_c=None if row.get("rule_c") is None else "hold")
+
+
+def at_cadence(rows, c, t0):
+    """PREREG-v2 §4: the minute log replayed as if each arm decided once per c seconds. Within each c-block
+    [t0 + c j, t0 + c (j + 1)), every arm's intent is its own on the block's decision row (decision_rows: A
+    and B their columns, C rule_c, D columns.d, a null D a hold for D only) and hold on every other row of
+    the block; a block with no decision row holds throughout. The decision row is shared by every arm.
+    Returns the rows in _order, the decision rows and every row replay forces a hold on as they are, every
+    other row as _held's copy, so book.replay and book.paired read them unchanged: the position, the marks,
+    the spread and the fee columns are SPEC §10's, and a position is carried through the block's other rows
+    and marked to their mids. The input rows are not modified. t0 is T0_v2 (the book has no T0; T0_v2 is
+    not aligned to c)."""
+    _cadence_args(c, t0)
+    dec = {id(r) for r in decision_rows(rows, c, t0).values()}
+    return [r if id(r) in dec or not _answered(r) else _held(r) for r in sorted(rows, key=_order)]
 
 
 def paired(rows, outcomes, x, y, column, fee_bps):
