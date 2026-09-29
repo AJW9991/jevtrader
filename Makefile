@@ -68,9 +68,12 @@ inference-smoke:
 # with that row, and a run before it reads d28 open in the stop-rule-3 lines. loop/inference.py refuses, exit 3,
 # until the log holds the t + h row of every kept block's first live row: ~30 s after the end normally, ~15.5 min
 # at worst): the one run of PREREG §4-§5 on the sample, written to RESULTS.md and committed beside PREREG.md
-# (§10). By hand, once; the stop rules (PREREG §8) are read from its output.
+# (§10). By hand, once; the stop rules (PREREG §8) are read from its output. Behind PREREG-v2 §10's guard (ERRATA.md):
+# bin/results-v1 refuses, exit 3, before the run unless the annotated tag prereg-v2-draft exists and is an ancestor of
+# prereg-v2; `make results NO_V2=1` runs it anyway and writes "v2 draft tag absent: ..." into RESULTS.md. RESULTS.md's
+# header says what the guard found: the tag's sha, or that sentence.
 results:
-	$(PY) -m loop.inference --sample --out RESULTS.md
+	$(PY) bin/results-v1 --out RESULTS.md$(if $(filter 1,$(NO_V2)), --no-v2) -- $(PY) -m loop.inference --sample --out RESULTS.md
 
 backup:
 	bash bin/backup-data

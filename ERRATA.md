@@ -24,6 +24,7 @@ follows; fix the sentence), **gap** (the document is silent where the code decid
 | §8.3 | Jev error share: rows with `absence: "jev"` over rows that "reached the ask" | Every `jev` row counts on both sides, `no-key`, `ledger` and `unsigned` included (raised inside `jev.ask`); the other reading (SPEC §13.3's "reached the model") would make a day of `no-key` 0/0 and never BAD | gap |
 | §8.3 | Stop rule 3 marks days BAD | The exclusions file decides and is applied as written; since 2026-09-28 the day-28 output recomputes the rule from the log beside it and names any day listed but not BAD, or BAD but not listed | gap |
 | §5 | The last block's H2 unit needs its t + h row | `loop.inference --sample` refuses (exit 3) until that row is in the log: ~30 s after the end normally, up to ~15.5 min at worst; `--accept-pending` counts the missing ones as gaps and says so | gap |
+| §8.1 | Stop rule 1's model arms kept "only if a second pre-registration wants them" | `make results` refuses (exit 3) before the run unless the annotated tag `prereg-v2-draft` exists and is an ancestor of `prereg-v2` (PREREG-v2 §0, §10: the second pre-registration is frozen before v1 is read); `make results NO_V2=1` runs it anyway and writes "v2 draft tag absent: v2 as drafted is not run; a second block is a new pre-registration written after v1 was read" into RESULTS.md, whose header otherwise carries the tag's sha (`bin/results-v1`). Tooling only: nothing of §4–§5 changes | gap |
 
 ## SPEC.md
 
