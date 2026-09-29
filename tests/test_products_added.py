@@ -22,6 +22,8 @@ LEFT_OUT = {
     SELF: "this module",
     "test_frozen": "its pins are the committed PRODUCTS' (THRESHOLDS with TICK_P and the atoms, RULE_C per product);"
                    " by rule they change in the commit that adds the products",
+    "test_spec": "its §5 table is SPEC.md's rows for the committed PRODUCTS; by rule the probe products' rows are added"
+                 " in the commit that adds them to config (its other classes run: PARTS)",
     "test_probe": "bin/probe is finished and reads no PRODUCTS; a real probe run holds its lock on D, which the"
                   " module's own one-at-a-time test meets",
     "test_nightly": "its in-process table tests run (PARTS); its other classes drive propose.sh, capped.py and the"
@@ -29,7 +31,8 @@ LEFT_OUT = {
                     " so they gain nothing here and cost ~25 s; the per-product nightly is held in process by"
                     " test_digest_v2 and test_policy_table_v2, which run here",
 }
-PARTS = {"test_nightly": ("test_nightly.PolicyTableTest",)}   # the classes of a LEFT_OUT module that do run: in process
+PARTS = {"test_nightly": ("test_nightly.PolicyTableTest",),
+         "test_spec": ("test_spec.Header", "test_spec.Row", "test_spec.Constants")}   # the classes of a LEFT_OUT module that do run: in process
 from fixture_products import STAND_IN          # per candidate: (TICK_P, (a10, a90), thin fallback) -- illustrative
 BOOT = r"""
 import json, sys, unittest

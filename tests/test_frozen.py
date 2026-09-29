@@ -26,7 +26,8 @@ from loop import config, inference_v2, state
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 FILES = {                                            # sha256 of the bytes on disk
-    "SPEC.md": "5d4f355e181739ae2a65a6496ecddf195d9dde7c7668c7606c19d795c5254ca7",
+    "SPEC.md": "d246febca5dad492d8e561642bf9a5221d82791b3302df7527cc82aa85a2299a",   # SPEC v2 (PREREG-v2 §10), 2026-09-29;
+                                                 # v1's 5d4f355e... stays in prereg-v1
     "PREREG.md": "28dab0a9cba8bb21a596fe06f3a19302476f42e3efbbe40b41480898266b7882",
     "nightly/PROMPT.md": "7ebcd64071700b6da578078e5eec10a846a56852a3c6de54bfd7ce8d786a1e50",   # v2 text (PREREG-v2 §8), 2026-09-29;
                                                  # v1's d20cc08e... stays in prereg-v1
