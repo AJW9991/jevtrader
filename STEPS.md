@@ -478,6 +478,7 @@ The backup-job fix (§9) lands on `main` too. Then, on the build branch, all of 
   (10.2);
 - `tests/test_frozen.py` pinning by sha what §10 lists (SPEC v2, CONTRACT, PREREG-v2.md, `nightly/PROMPT.md` v2, the
   sources of `nightly/digest.py` and `nightly/policy_table.py`, `prompts/v2.json`, one v2 table per product,
+  and beyond §10's list the call's shape §8 fixes: `nightly/propose.sh`, `nightly/settings.json`, `nightly/capped.py`;
   `THRESHOLDS` with `TICK_p` and the atoms, every §14 constant, the inference constants, `RULE_C` per product). The pins
   of PREREG-v2.md and of the v2 tables stay one per line, `"<path>": "<sha256>",`: after the tag `bin/seal-check`
   lets only those lines change in that file.

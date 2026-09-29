@@ -673,8 +673,9 @@ log per product, v1-era and v2-era rows, with a cadence knob):
   interfaces to the code; `tests/test_errata.py` reads ERRATA.md as `bin/seal-check` does, and
   every SPEC and PREREG row folded; `tests/test_frozen.py` pins by sha SPEC v2, this file,
   PREREG-v2.md, `nightly/PROMPT.md` v2, the sources of `nightly/digest.py` and
-  `nightly/policy_table.py`, `prompts/v1.json` and `prompts/v2.json` (and one v2 table per product
-  once they exist), and by value every SPEC §14 constant and the inference constants; v1's SPEC sha
+  `nightly/policy_table.py`, the call's shape (`nightly/propose.sh`, `nightly/settings.json`,
+  `nightly/capped.py`; PREREG-v2 §8), `prompts/v1.json` and `prompts/v2.json` (and one v2 table per
+  product once they exist), and by value every SPEC §14 constant and the inference constants; v1's SPEC sha
   resolves with `git show prereg-v1:SPEC.md`. `tests/test_products_added.py` runs the suite with
   three products; `tests/test_seal_check.py` runs `bin/seal-check` on scratch repositories.
 

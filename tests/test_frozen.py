@@ -5,11 +5,13 @@ v2 (PREREG-v2 §10, "tests/test_frozen.py at the draft tag pins by sha"): SPEC v
 CONTRACT.md, PREREG-v2.md (its CURRENT bytes: the author re-pins it in the same commit as each §14 amendment, and after
 the draft tag bin/seal-check lets only that line and the v2 tables' lines of this file change, §13 (c)),
 nightly/PROMPT.md v2 (the treatment), the sources of nightly/digest.py and nightly/policy_table.py (the treatment's
-inputs), prompts/v2.json (arm A) and one v2 table per product (arm D; pinned in V2_TABLES as STEPS §10.3 commits each,
-before the draft tag); by value THRESHOLDS with TICK_P and the per-product atoms, every constant SPEC §14 names (SPEC14:
-the set is SPEC's own, tests/test_spec.py's spec14), the inference constants (the seeds, L, R, the ranks), and RULE_C
-per product. The pins of PREREG-v2.md and of the v2 tables stay one per line, `"<path>": "<sha256>",`, the form
-bin/seal-check's PIN_LINE reads.
+inputs), the call's shape (§8: "an empty temp cwd; tools off; nightly/settings.json; the 45-min cap; no user memory",
+all in nightly/propose.sh, nightly/settings.json and nightly/capped.py; beyond §10's list), prompts/v2.json (arm A)
+and one v2 table per product (arm D; pinned in V2_TABLES as STEPS §10.3 commits each, before the draft tag); by value
+THRESHOLDS with TICK_P and the per-product atoms, every constant SPEC §14 names (SPEC14: the set is SPEC's own,
+tests/test_spec.py's spec14), the inference constants (the seeds, L, R, the ranks), and RULE_C per product. The pins
+of PREREG-v2.md and of the v2 tables stay one per line, `"<path>": "<sha256>",`, the form bin/seal-check's PIN_LINE
+reads.
 
 v1 (CLAUDE.md: nothing on v1's list changes until 2026-10-23 21:40Z): PREREG.md and prompts/v1.json are read by v1's
 readers from this tree and keep their pins in FILES; SPEC.md and nightly/PROMPT.md moved to their v2 text in this
@@ -33,12 +35,16 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FILES = {                                            # sha256 of the bytes on disk
     "SPEC.md": "c13ee48706c58a5d2403c4b7de11c6c74b99960adef95ffaf3677cefd0bb707a",   # SPEC v2 (PREREG-v2 §10), 2026-09-29;
                                                  # v1's 5d4f355e... stays in prereg-v1 (V1_FILES)
-    "CONTRACT.md": "681109e48f78327ee891404dcc31777c505d9a6fdb6886fd8d579eab921e7b06",   # v2's interfaces, 2026-09-29
+    "CONTRACT.md": "42c79efa62d10ba4663b1c0a3a7b5634a9501a378c037a33a7343d1e720c44bb",   # v2's interfaces, 2026-09-29
     "PREREG-v2.md": "0b417be4cc2f4555ab004f2187bb6eab3f487c33785aa26c3c05d6a451e602e6",
     "PREREG.md": "28dab0a9cba8bb21a596fe06f3a19302476f42e3efbbe40b41480898266b7882",
     "nightly/PROMPT.md": "7ebcd64071700b6da578078e5eec10a846a56852a3c6de54bfd7ce8d786a1e50",   # v2 text (PREREG-v2 §8), 2026-09-29;
                                                  # v1's d20cc08e... stays in prereg-v1 (V1_FILES)
     "nightly/digest.py": "323f657c990490bee55e39ddb21887f544f4bbe587e93f920bca9ae5b18e5af6",   # the digest's content (§8)
+    "nightly/propose.sh": "c5ed12b465da5fa5ae53f96e0cc3f83c50ee918487e0ac76a7c11de41ec334c6",   # the call's shape (§8): empty cwd, tools off,
+                                                 # --settings, the 45-min cap, CLAUDE_CONFIG_DIR, --model
+    "nightly/settings.json": "0a6ed21f0bad3058900388daca799fa0b49bb6c10ddfc34d9f6c7111d7f0cfe5",   # the call's permissions (§8)
+    "nightly/capped.py": "9bf29eaed255592606ae96a79f50234a7795eba83d1bca7bd7c7347141b34bbc",   # the cap on awake time (§8)
     "nightly/policy_table.py": "d54fa8bdbfc9d3f8005703ee934c9c3b4562330c8a058898e68564357c0a84d2",   # candidate scoring (§8)
     "prompts/v1.json": "207ed69be0ce6cb8d22ac81519a4db6845ab92d643c2772f150cabfe9efe57a0",
     "prompts/v2.json": "dcc848e5ad1452bede8631cf0d2f9801175070746ced883857e86366ec4a8ab4",
@@ -253,6 +259,22 @@ class Frozen(unittest.TestCase):
                 with open(os.path.join(REPO, rel), "rb") as fh:
                     got = hashlib.sha256(fh.read()).hexdigest()
                 self.assertEqual(got, want, f"{rel}: {HOW}")
+
+    def test_the_calls_shape_is_pinned(self):
+        # PREREG-v2 §8 fixes before the draft tag, unchanged through the block, "the call's shape (an empty temp cwd;
+        # tools off; nightly/settings.json; the 45-min cap; no user memory ...)": propose.sh makes the call, settings.json
+        # is its --settings, capped.py holds the cap. None was pinned (the S6 refuter's defect 4)
+        for rel in ("nightly/propose.sh", "nightly/settings.json", "nightly/capped.py"):
+            self.assertIn(rel, FILES, rel)
+        with open(os.path.join(REPO, "nightly", "propose.sh"), encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertRegex(src, r'(?m)^CLAUDE_CAP_S="\$\{JEVLOOP_CLAUDE_CAP_S:-2700\}"')          # 45 min awake
+        self.assertIn('--settings "$REPO/nightly/settings.json"', src)
+        self.assertIn("\"$REPO/nightly/capped.py\" \"$CLAUDE_CAP_S\"", src)
+        with open(os.path.join(REPO, "CONTRACT.md"), encoding="utf-8") as fh:
+            contract = " ".join(fh.read().split())
+        self.assertIn("the call's shape (`nightly/propose.sh`, `nightly/settings.json`, `nightly/capped.py`; PREREG-v2 §8)",
+                      contract)
 
     def test_v1s_files_are_the_ones_prereg_v1_froze(self):
         # PREREG-v2 §10: "a v1 row's spec_sha resolves with git show prereg-v1:SPEC.md"; PREREG.md and v1.json are still
