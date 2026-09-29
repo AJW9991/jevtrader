@@ -438,14 +438,17 @@ version (each table's `model_answered`), and a §14 entry naming the run. An una
 
 ### 10.4 The draft tag (before `make results` on 2026-10-23)
 
-First, on `main` (§10: the guard and any other `main` tooling land before the draft tag). The guard is the build's
-commit `097edc0`, made on the tree `main` and `prereg-v2` last shared, so it goes onto `main` cleanly (it touches the
-Makefile's `results` recipe, ERRATA.md, `bin/results-v1` and its test; no loop code). Merged, as below, it is the same
-commit on both branches and the pre-tag merge meets no conflict over it; `git cherry-pick 097edc0` works too, and then
-that merge stops on the Makefile's `results` recipe:
+First, on `main` (§10: the guard and any other `main` tooling land before the draft tag). The build's commit `0898b74`
+is made for `main`: it sits on `097edc0`, the v1 results guard, made on the tree `main` and `prereg-v2` last shared (it
+touches the Makefile's `results` recipe, ERRATA.md, `bin/results-v1` and its test; no loop code), and adds ERRATA.md's
+v2 deviations table with `tests/test_errata.py`'s reading of it, byte for byte as the build has them. Merged, as below,
+both are the same commits on both branches, so the pre-tag merge meets no conflict over them; and with the table in the
+base of switch step (4)'s merge, `main`'s additions at the end of ERRATA.md after the draft tag merge cleanly there
+(with the table only on the build, both sides add at the same end of the file and (4) stops). `git cherry-pick 097edc0
+0898b74` works too, and then the pre-tag merge stops on the Makefile's `results` recipe:
 
 ```bash
-cd ~/Projects/jev-paper-loop && git merge --no-ff --no-edit 097edc0 && make test
+cd ~/Projects/jev-paper-loop && git merge --no-ff --no-edit 0898b74 && make test
 ```
 
 The backup-job fix (§9) lands on `main` too. Then, on the build branch, all of (PREREG-v2 §10, §13):
@@ -477,7 +480,10 @@ cd ~/Projects/jev-paper-loop-v2 && test -z "$(git status --porcelain)" && bin/se
 `bin/seal-check --draft` refuses a `________` left outside §12, a missing `probe/<D>/` file or v2 table, and an edit of
 PREREG-v2.md since `prereg-v2-doc` while §14 reads "(none yet)". From the tag until switch step (6), `main` takes only
 RESULTS.md, HANDOFF.md, additions at the end of ERRATA.md (under a heading of their own: rows under the v2 deviations
-heading are read as deviations), `proposals/`, `data/exclusions.tsv` and v1's `bin/promote` commits (§13).
+heading are read as deviations), `proposals/`, `data/exclusions.tsv` and v1's `bin/promote` commits (§13). A fix `main`
+needs in that window is a listed deviation: its own commit on `main`, and its row at the end of ERRATA.md, under the v2
+deviations table while that is the file's end and, once another heading follows it, under a new
+`## v2 deviations (continued)` heading with the table's header row (`bin/seal-check` reads both).
 
 ### 10.5 The switch (2026-10-23, after `make results`: PREREG-v2 §10's steps 1-11a)
 
@@ -509,6 +515,10 @@ cd ~/Projects/jev-paper-loop && git tag -a results-v1 -m "v1's result (PREREG.md
 ```bash
 cd ~/Projects/jev-paper-loop-v2 && git merge --no-edit main && make test && git merge-base --is-ancestor main prereg-v2 && echo "(4) OK"
 ```
+
+If it stops on ERRATA.md (`main` did not take `0898b74` before the tag, 10.4): keep this branch's ERRATA.md whole and
+put `main`'s additions after it (`git diff $(git merge-base HEAD MERGE_HEAD) MERGE_HEAD -- ERRATA.md` shows them), so
+the file still begins with the draft tag's text (§13 (c)); then `git add ERRATA.md && git commit --no-edit && make test`.
 
 (4a) The nightly: booted out after 07:30Z on the switch day (§10) and bootstrapped again after (11). It fires at 03:30
 local (08:30Z while Chicago is on CDT): boot it out before then and 10-23 has no night, or after its night has
@@ -646,8 +656,9 @@ cd ~/Projects/jev-paper-loop && bin/seal-check && git tag -a prereg-v2-seal -m "
 ```
 
 `bin/seal-check` prints the whole `-U0` diff from the draft tag and each check, (a)-(e); (e) is `make test`, a few
-minutes. A fix it refuses that §13 (c) does not cover is its own commit and one row at the end of ERRATA.md's v2
-deviations table. Not sealed before T0_v2: the block has not started; T0_v2 is re-derived at sealing from the commit
+minutes. A fix it refuses that §13 (c) does not cover is its own commit and one row added at the end of ERRATA.md: under
+the v2 deviations table while that is the file's end, else under a new `## v2 deviations (continued)` heading with the
+table's header row. Not sealed before T0_v2: the block has not started; T0_v2 is re-derived at sealing from the commit
 time of the fix that lets `bin/seal-check` pass (§13). No seal by 2026-11-06: RESULTS.md records v2 as not run.
 
 ### 10.7 Every morning
