@@ -342,7 +342,7 @@ def tested_lines(cells, pool, excluded, void, beside=None):
         if x["withdrawn"]:
             return "WITHDRAWN: NO PROMOTION (§9.2): not bootstrapped and not read"
         if not x["n"]:
-            return "no blocks: nothing to test"
+            return f"{v}no blocks: nothing to test"
         return f"{v}" + (f"REJECT H0: {x['cell'].x.upper()} beats {x['cell'].y.upper()}" if x["reject"] else "not rejected")
 
     def per_product(x):

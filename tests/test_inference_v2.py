@@ -266,6 +266,9 @@ class Void(unittest.TestCase):
         self.assertNotIn("stop rule 2 (§9.2)", text)
         self.assertIn("-> not read: the block is void", text)
         self.assertIn("no blocks: nothing to test", text)
+        # the header says "every verdict is prefixed VOID": the five cells' verdicts, H1 and F1-F4, all are
+        self.assertEqual(text.count("-> VOID: no blocks: nothing to test"), 5)
+        self.assertNotIn("-> no blocks", text)
         self.assertIn("§8. Descriptive", text)                                           # the descriptive sections still print
         # a void block has no §9.2 row set (§1 says "not read: the block is void"), so F4 is not withdrawn and §3 does not
         # call B - A test-retest "before any promotion": that reading is NO PROMOTION's alone
