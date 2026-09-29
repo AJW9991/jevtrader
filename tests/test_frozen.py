@@ -33,9 +33,9 @@ from test_spec import load, spec14
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 FILES = {                                            # sha256 of the bytes on disk
-    "SPEC.md": "3fc1264920f8eb1346020f48f38cd863d647a9ad074d1b09f451b71c9c258851",   # SPEC v2 (PREREG-v2 §10), 2026-09-29;
+    "SPEC.md": "6ca448f64193b9bbceb010419c708be9def605f983fdd6896e58beaa4c936d81",   # SPEC v2 (PREREG-v2 §10), 2026-09-29;
                                                  # v1's 5d4f355e... stays in prereg-v1 (V1_FILES)
-    "CONTRACT.md": "42c79efa62d10ba4663b1c0a3a7b5634a9501a378c037a33a7343d1e720c44bb",   # v2's interfaces, 2026-09-29
+    "CONTRACT.md": "16e71638a8eb7f125fa01c4128e14d369bf148bc803d8d1d9276ad173c4e2725",   # v2's interfaces, 2026-09-29
     "PREREG-v2.md": "0b417be4cc2f4555ab004f2187bb6eab3f487c33785aa26c3c05d6a451e602e6",
     "PREREG.md": "28dab0a9cba8bb21a596fe06f3a19302476f42e3efbbe40b41480898266b7882",
     "nightly/PROMPT.md": "7ebcd64071700b6da578078e5eec10a846a56852a3c6de54bfd7ce8d786a1e50",   # v2 text (PREREG-v2 §8), 2026-09-29;

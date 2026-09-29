@@ -5,8 +5,11 @@ sha256 as its `spec_sha`**: every row any product's loop writes once the build i
 (PREREG-v2 §10, switch step (6)), so the set of `spec_sha` over v2's sample holds exactly this
 one value (PREREG-v2 §13). Changing a byte of this file after the draft tag starts a new
 experiment. v1's rows carry v1's SPEC sha, `5d4f355e1817…` (`git show prereg-v1:SPEC.md`;
-`dash.V1_SPEC_SHA`), and mean what that text says; nothing here changes what a v1 row means or
-how v1's readers read the v1 log.
+`dash.V1_SPEC_SHA`), and mean what that text says; nothing here changes what a v1 row means. v1's
+committed result and its descriptive cells are reproduced from the tag `results-v1` (PREREG-v2
+§10), not from this tree: `loop.report` here prints §10's fee columns (0, 2, 10, 25, 50, 90) and
+the verified venue fee 90 over the v1 log too, where v1's reader printed (0, 2, 10, 25, 60, 120)
+and 120 (rows carry no fee, so no row's meaning moves).
 
 This file is the description a sceptic reads. It says what the loop measures, exactly, with
 every threshold named by its `loop/config.py` constant and value, so that no number in a row has

@@ -359,6 +359,22 @@ class Header(unittest.TestCase):
         self.assertIsNone(re.search(r"\b20\d{6}T\d{4}00Z\b", text))          # no T0_v2 (a minute tick_id) restated
         self.assertNotIn("Fee tiers (30-day band", text)                     # nor §12's fee-tier field
 
+    def test_what_this_tree_prints_over_the_v1_log_is_said(self):
+        # the S6 refuter's defect 6: the header said nothing here changes "how v1's readers read the v1 log", but since
+        # config took PREREG-v2 §6's fee columns loop.report prints (0, 2, 10, 25, 50, 90) and a venue fee of 90 over the
+        # v1 log, where v1's printed (0, 2, 10, 25, 60, 120) and 120; v1's result and cells come from results-v1 (§10)
+        from loop import report
+        head = " ".join(section(spec_text(), 0).split())
+        self.assertNotIn("how v1's readers read the v1 log", head)
+        self.assertIn("reproduced from the tag `results-v1`", head)
+        self.assertIn("prints §10's fee columns (" + ", ".join(f"{f:g}" for f in report._fee_list()) + ")", head)
+        self.assertIn(f"the verified venue fee {report.VENUE_FEE:g} over the v1 log", head)
+        self.assertIn("where v1's reader printed (0, 2, 10, 25, 60, 120) and 120", head)
+        with open(os.path.join(REPO, "CONTRACT.md"), encoding="utf-8") as fh:
+            contract = " ".join(fh.read().split())
+        self.assertNotIn("readers still read the v1 log as before", contract)          # the same claim, CONTRACT §0
+        self.assertIn("the report's fee columns over it are v2's; SPEC's header", contract)
+
     def test_the_verified_tier_0_taker_row_is_filled_with_the_venue_fee(self):
         text = section(spec_text(), 10)
         row = re.search(r"^Verified tier-0 taker fee: (\S+) bps\s+URL: (\S+)\s+read \(UTC\): (\S+)", text, re.M)

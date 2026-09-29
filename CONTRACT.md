@@ -42,7 +42,8 @@ descriptive).
 
 **PREREG-v2, the second block** (PREREG-v2.md, SPEC.md v2; frozen by the `prereg-v2-draft` tag,
 built on branch `prereg-v2`). Where a v1 line above differs, these hold for the v2 build, and v1's
-readers still read the v1 log as before: products `config.PRODUCTS` (`SOL-USD` and PREREG-v2 §2's
+readers still read the v1 log's rows as before (the report's fee columns over it are v2's; SPEC's
+header): products `config.PRODUCTS` (`SOL-USD` and PREREG-v2 §2's
 two probe products), one loop process per product (`JEVLOOP_PRODUCT`; unset = `SOL-USD`, v1's
 paths) or one process ticking them in sequence (`--every-product`); four arms, A frozen at `v2`
 (`config.FROZEN_A`), B the CURRENT wording, C `rule_c`, D the CURRENT wording's 81-state table
