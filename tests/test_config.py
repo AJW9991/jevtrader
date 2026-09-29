@@ -92,6 +92,19 @@ class Stores(unittest.TestCase):
         self.assertEqual(config.pause("SOL-USD"), os.path.join(data, "PAUSE.SOL-USD"))
 
 
+    def test_the_v2_global_files_follow_a_patched_data(self):
+        # like store() and pause(): a test that points DATA at a temp dir moves exclusions-v2.tsv and looks.tsv
+        # with it, so no test can append a "look" to the live data/looks.tsv that RESULTS-v2 §0 reproduces
+        with mock.patch.object(config, "DATA", "/d"):
+            self.assertEqual((config.EXCLUSIONS_V2, config.LOOKS), ("/d/exclusions-v2.tsv", "/d/looks.tsv"))
+            with mock.patch.object(config, "LOOKS", "/elsewhere/looks.tsv"):                  # a patch of its own wins
+                self.assertEqual(config.LOOKS, "/elsewhere/looks.tsv")
+            self.assertEqual(config.LOOKS, "/d/looks.tsv")                                     # and is undone
+        self.assertEqual(config.LOOKS, os.path.join(REPO, "data", "looks.tsv"))
+        with self.assertRaises(AttributeError):
+            config.NO_SUCH_CONSTANT
+
+
 class LoopProduct(unittest.TestCase):
     def test_unset_is_sol(self):
         self.assertEqual(config.loop_product({}), "SOL-USD")

@@ -41,8 +41,10 @@ PRODUCTS = (
 PROBE_CANDIDATES = ("ETH-USD", "XRP-USD", "DOGE-USD", "AVAX-USD", "LINK-USD", "ADA-USD")   # PREREG-v2 §2, bin/probe's
                                    # order: their bases are product words a prompt file may not carry (loop/prompts.py)
 ENV_PRODUCT = "JEVLOOP_PRODUCT"
-EXCLUSIONS_V2 = os.path.join(DATA, "exclusions-v2.tsv")   # stop rule 3's log, Alex's (PREREG-v2 §9.3); REPO/data, global
-LOOKS = os.path.join(DATA, "looks.tsv")                   # `report --unblind` appends one line per look (§9.5)
+# EXCLUSIONS_V2 (stop rule 3's log, Alex's, PREREG-v2 §9.3) and LOOKS (`report --unblind` appends one line per
+# look, §9.5) sit at REPO/data, global like HALT; they are read from DATA at each access (__getattr__ at the
+# end), as store() and pause() are, so a test that points DATA at a temp dir cannot append to the live looks.tsv.
+_GLOBAL_V2 = {"EXCLUSIONS_V2": "exclusions-v2.tsv", "LOOKS": "looks.tsv"}
 
 # The two trees this project must never run under. Resolved with realpath at
 # startup; a match is exit 3 before anything else happens.
@@ -172,6 +174,13 @@ def loop_product(environ=None):
     if p not in PRODUCTS:
         raise ValueError(f"{ENV_PRODUCT}={p!r} is not in config.PRODUCTS {PRODUCTS}")
     return p
+
+
+def __getattr__(name):
+    """config.EXCLUSIONS_V2 and config.LOOKS, under DATA as it is now (PEP 562; a patch of either still wins)."""
+    if name in _GLOBAL_V2:
+        return os.path.join(DATA, _GLOBAL_V2[name])
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def liq_cuts(product):
