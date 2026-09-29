@@ -210,12 +210,14 @@ def _cadence_args(c, t0):
 def _held(row):
     """A shallow copy of the row with every intent it carries turned into hold: each non-null column of a and
     b, a non-null columns.d and a non-null rule_c. A null arm stays null (a hold either way, counted in that
-    arm's forced holds, as on the raw row). The row itself is not changed."""
+    arm's forced holds, as on the raw row); an argmax-null arm with a stray non-null column (a shape
+    rules.columns never writes) keeps its null argmax and has that column turned into hold too, so it
+    cannot act off the decision row. The row itself is not changed."""
     cols = row.get("columns") or {}
     new = {}
     for k, v in cols.items():
         if isinstance(v, dict):
-            new[k] = v if _null(v) else {col: (None if x is None else "hold") for col, x in v.items()}
+            new[k] = {col: (None if x is None else "hold") for col, x in v.items()}
         else:
             new[k] = None if v is None else "hold"
     return dict(row, columns=new, rule_c=None if row.get("rule_c") is None else "hold")

@@ -393,6 +393,23 @@ class AtCadence(unittest.TestCase):
             self.assertEqual(book.replay(book.at_cadence(rows, 60, t0), None, arm, "argmax", 10.0),
                              book.replay(rows, None, arm, "argmax", 10.0), arm)
 
+    def test_an_argmax_null_arm_with_a_stray_column_holds_off_the_decision_row(self):
+        # an arm whose argmax is null but which carries a non-null column (a shape rules.columns never writes, all null
+        # or all filled) acts at that column on the decision row as the raw replay would, and holds on every held row:
+        # _held turns each non-null column of it into hold too (2026-09-29 refuter: it kept the stray "buy")
+        t0 = book._epoch(self.T0)
+        rows = [self._r(m, b="hold", c="hold", d="hold") for m in (2, 5, 8)]
+        for r in rows:
+            r["columns"]["a"] = {"argmax": None, "c50": "buy", "c70": None}
+        rows[0]["columns"]["a"] = {"argmax": None, "c50": "hold", "c70": None}          # the decision row: A holds at c50
+        out = book.at_cadence(rows, 900, t0)
+        self.assertEqual([book._intent(r, "a", "c50") for r in out], ["hold", "hold", "hold"])
+        self.assertEqual([book._intent(r, "a", "argmax") for r in out], [None, None, None])
+        self.assertEqual([book._intent(r, "a", "c70") for r in out], [None, None, None])
+        self.assertEqual(book.replay(out, None, "a", "c50", 0.0)["trades"], [])
+        self.assertEqual(out[1]["columns"]["a"], {"argmax": None, "c50": "hold", "c70": None})
+        self.assertEqual(rows[1]["columns"]["a"], {"argmax": None, "c50": "buy", "c70": None})   # the input is not changed
+
     def test_bad_cadence_or_t0_is_loud(self):
         t0 = book._epoch(self.T0)
         for c in (0, -900, 900.0, True, None):
