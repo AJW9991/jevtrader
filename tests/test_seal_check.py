@@ -549,7 +549,21 @@ class Draft(Scratch):
         self.replace("PREREG-v2.md", "id `claude-test-1`", f"id `{BLANK}`")
         self.replace("PREREG-v2.md", "Nothing in the header", f"`{BLANK}` in the header")
         self.commit("blanks")
-        self.assertFails("--draft", says=[f"{BLANK} remains outside §12 at line 3 (the header), line 16 (§8)"], failed="blanks")
+        self.assertFails("--draft", says=[f"{BLANK}, `__` or `<P2>`/`<P3>` remains outside §12 at line 3 (the header), line 16"
+                                          " (§8)"], failed="blanks")
+
+    def test_a_short_blank_or_a_product_placeholder_outside_section_12_fails(self):
+        # §1's arm A row reads "`__` of 81 for `<P2>`" and §2's TICK_p and atoms lines name `<P2>` and `<P3>`: fields
+        # written before the draft tag like the ________ ones, which the search saw alone (the S5 refuter's defect 13)
+        self.replace("PREREG-v2.md", "Products: `SOL-USD`, `ETH-USD`, `XRP-USD`.",
+                     "Products: `SOL-USD`, `ETH-USD`, `XRP-USD`. `TICK_p`: `<P2>` `0.01`.")
+        self.replace("PREREG-v2.md", "Nothing here is a field.", "`__` of 81 for `ETH-USD`.")
+        self.commit("a placeholder and a short blank left")
+        self.assertFails("--draft", says=["remains outside §12 at line 7 (§0), line 12 (§2)"], failed="blanks")
+        self.replace("PREREG-v2.md", "`<P2>` `0.01`", "`ETH-USD` `0.01`")
+        self.replace("PREREG-v2.md", "`__` of 81", "`31` of 81")
+        self.commit("written")
+        self.assertPasses("--draft")
 
     def test_a_missing_probe_file_or_another_day_fails(self):
         self.git("rm", "-q", f"probe/2026-09-30/{self.products[2]}.jsonl")
@@ -644,7 +658,9 @@ class Draft(Scratch):
         labels = SC.section_labels(lines)
         self.assertTrue(any(BLANK in l for l, s in zip(lines, labels) if s == "13"))   # §13 names the token
         blank12 = {FEE_LINE.split("`")[0]: FEE_LINE, REBUILD.split("`")[0]: REBUILD, SEAL_LINE.split("`")[0]: SEAL_LINE}
-        pre = "\n".join(l.replace(BLANK, "X") if s not in ("12", "13", "14") else    # §12 blank again once it is filled
+        def written(l):                                                  # §1's `__` counts and §2's `<P2>`/`<P3>` too
+            return l.replace(BLANK, "X").replace("`__`", "`31`").replace("`<P2>`", "`ETH-USD`").replace("`<P3>`", "`XRP-USD`")
+        pre = "\n".join(written(l) if s not in ("12", "13", "14") else    # §12 blank again once it is filled
                         next((v for k, v in blank12.items() if s == "12" and l.startswith(k)), l) for l, s in zip(lines, labels))
         self.write("PREREG-v2.md", pre)
         self.commit("the real text, pre-tag fields written")

@@ -52,8 +52,10 @@ The seal (no flag) exits 0 only when all of §13's five hold:
     verdict is FAIL either way, and the suite takes minutes. (c) is NOT RUN without a draft tag on HEAD.
 
 --draft exits 0 only when all of §13's three hold:
-- no ________ remains in PREREG-v2.md outside §12: searched in the header and §0-§11, where §1, §2, §3 and §8 write
-  their values before the tag; §13 names the token in its own text and §14 is the amendment log, so neither holds a field;
+- no ________ remains in PREREG-v2.md outside §12, nor the other unwritten forms its pre-tag fields take (§1's `__` of 81
+  state counts, §2's and §1's `<P2>`/`<P3>` product placeholders): searched in the header and §0-§11, where §1, §2, §3
+  and §8 write their values before the tag; §13 names the token in its own text and §14 is the amendment log, so neither
+  holds a field;
 - probe/<D>/ is in HEAD with run.json naming D and its candidates (every p in config.PRODUCTS but SOL-USD among them),
   volume.json and <c>.jsonl for every candidate c run.json names (§2: the probe's rows are committed verbatim, not only
   the chosen products'), D the day §2 names in bold (`**D = YYYY-MM-DD**`; if §14 moves D, §2's D moves with it);
@@ -89,6 +91,7 @@ EXCLUDED = ("RESULTS.md", "HANDOFF.md", "proposals", "data/exclusions.tsv")     
 PATHSPEC = ("--", ".") + tuple(f":(exclude){p}" for p in EXCLUDED)
 DIFF = ("diff", "-U0", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames")
 BLANK = "________"
+UNWRITTEN = re.compile(r"________|`_{2,}`|`<P\d+>`")   # --draft: a blank, §1's `__` counts, the `<P2>`/`<P3>` placeholders
 REBUILD_LINE = "Tables rebuilt at the switch:"
 NO_FIELD_SECTIONS = ("12", "13", "14")      # --draft: §12 keeps its blanks, §13 names the token, §14 is the log
 PROBE_DAY_RE = re.compile(r"\*\*D = (\d{4}-\d{2}-\d{2})\*\*")
@@ -554,9 +557,10 @@ def draft(repo, products, out):
         lines = text.split("\n")
         labels = section_labels(lines)
         left = [f"line {i + 1} (§{labels[i]})" if labels[i] != "head" else f"line {i + 1} (the header)"
-                for i, l in enumerate(lines) if BLANK in l and labels[i] not in NO_FIELD_SECTIONS]
-        verdict("blanks", not left, f"no {BLANK} outside §12 (searched: the header and §0-§11; §13 names the token and"
-                " §14 is the amendment log)" if not left else f"{BLANK} remains outside §12 at " + ", ".join(left))
+                for i, l in enumerate(lines) if UNWRITTEN.search(l) and labels[i] not in NO_FIELD_SECTIONS]
+        verdict("blanks", not left, f"no {BLANK}, `__` or `<P2>`/`<P3>` outside §12 (searched: the header and §0-§11; §13"
+                " names the token and §14 is the amendment log)" if not left else
+                f"{BLANK}, `__` or `<P2>`/`<P3>` remains outside §12 at " + ", ".join(left))
     m = PROBE_DAY_RE.search(section(text, 2))
     if m is None:
         verdict("probe", False, f"§2 of {PREREG} names no day as **D = YYYY-MM-DD**")
