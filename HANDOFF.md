@@ -87,6 +87,17 @@ nothing is pending there; its record of what the branch changed is kept below un
    `make backup` beside `make status` and bootout the hourly job. Until one is done the job writes a FAIL
    line every hour and the iCloud copy is the 04:12Z one.
 
+## Prereg-v2 (drafted 2026-09-29, blind; Alex: "approved for all recommended choices")
+`PREREG-v2.md` at the repo root is the draft of the second block: one primary (B − C pooled over
+three products, held 15 min), a four-cell claimable family, arm A frozen at the v2 wording, arm D the
+wording's own table without a call, `liq` re-cut from measured fill cost (p10/p90), the direction
+nouls retired to descriptive, verified fees (50 maker, 90 taker), a promotion schedule in code, the
+no-live-rows exclusion. Its §10 lists the code changes and §13 the freeze (tag `prereg-v2-draft`
+BEFORE `make results` on 10-23) and the seal. The code is built blind on branch `prereg-v2` in the
+worktree `~/Projects/jev-paper-loop-v2` (no `data/` there), merged to `main` only after RESULTS.md is
+committed on 10-23. Review of the draft: five-lens Opus panel with refuters, 2026-09-29 (this
+session); changes from it land in the draft before the freeze tag. Nothing of v1 §4–§7 was read.
+
 ## Approved 2026-09-28 ("approved for recommended on all")
 - The nightly model is recorded, not pinned: decision 4.
 - The 81-state table: under each candidate's counts, where it changes CURRENT's answer (per
