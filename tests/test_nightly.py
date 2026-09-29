@@ -1135,7 +1135,7 @@ class LiveBranch(unittest.TestCase):
         # PREREG-v2 §8: the id is read from nightly/slow_model.py alone; blank until §8 names it, or not an id, the night
         # fails at its start: no digest, no --version, no token read, no claude call, no proposal
         stub = self._stub('echo called >"%s/called"\n' % self.saw)
-        for mid, why in (("", "no slow model id: nightly/slow_model.py MODEL_ID is blank until PREREG-v2 §8 names it"),
+        for mid, why in (("", "no slow model id: nightly/slow_model.py MODEL_ID is blank until PREREG-v2 section 8 names it"),
                          ("x; rm -rf /", "nightly/slow_model.py MODEL_ID is not a model id")):
             self.repo = _live_tree(self, mid)
             r = self._run(stub, HOME=self._home())
@@ -1247,7 +1247,7 @@ class TrialNight(unittest.TestCase):
         self.assertIn(" propose claude exit 7 after ", r.stdout)
         self.assertIn(" propose FAIL claude exit 7 ", r.stdout)
         self.assertIn("claude model unrecorded", r.stdout)
-        self.assertTrue(r.stdout.rstrip().endswith("(§8: on a config-dir failure the fallback is to pin the user-memory sha)"))
+        self.assertTrue(r.stdout.rstrip().endswith("(PREREG-v2 section 8: on a config-dir failure the fallback is to pin the user-memory sha)"))
         copy = self._tree("")                                                  # the id not yet in §8: no call at all
         r, _ = self._run(copy, self._stub('echo called >"%s/called"\n' % self.saw))
         self.assertEqual(r.returncode, 1)

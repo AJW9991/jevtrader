@@ -347,7 +347,7 @@ def build(d, data=None, prompts_root=None, now_tick=None, spec=None):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="digest", description="data/digest-<date>.md for the slow model (PREREG-v2 §8)")
+    ap = argparse.ArgumentParser(prog="digest", description="data/digest-<date>.md for the slow model (PREREG-v2 section 8)")
     ap.add_argument("--date", type=_date, default=None, help="UTC day, default: yesterday")
     ap.add_argument("--data", default=None, help="the data/ holding every product's store (default: the repo's; "
                     "propose.sh --root passes its own)")

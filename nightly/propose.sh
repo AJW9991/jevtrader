@@ -181,7 +181,7 @@ if [ $DRY -eq 0 ]; then
 print("blank" if m == "" else "id:" + m if isinstance(m, str) and re.fullmatch(s.ID_FORM, m) else "bad")' "$REPO" 2>/dev/null)"
   case "$MODEL_ID" in
     id:*) MODEL_ID="${MODEL_ID#id:}" ;;
-    blank) fail "no slow model id: nightly/slow_model.py MODEL_ID is blank until PREREG-v2 §8 names it; no claude call, nothing sent" ;;
+    blank) fail "no slow model id: nightly/slow_model.py MODEL_ID is blank until PREREG-v2 section 8 names it; no claude call, nothing sent" ;;
     *) fail "nightly/slow_model.py MODEL_ID is not a model id (or could not be read); no claude call, nothing sent" ;;
   esac
 fi

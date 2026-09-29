@@ -281,7 +281,7 @@ def table_only(a, root):
 
 def main(argv=None, now=None):
     ap = argparse.ArgumentParser(prog="promote", description="copy candidate k of a proposal into prompts/v<N+1>.json on "
-                                 "PREREG-v2 §8's schedule; run by a person, never under launchd")
+                                 "PREREG-v2 section 8's schedule; run by a person, never under launchd")
     ap.add_argument("proposal", nargs="?", help="proposals/<date>.json")
     ap.add_argument("k", nargs="?", type=int, help="candidate index, from 0")
     ap.add_argument("--reason", default=None, help="the person's reason, one line: it goes into the promote commit")

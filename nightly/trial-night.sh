@@ -58,5 +58,5 @@ printf '%s\n' "$lines" | grep -q 'user memory not loaded' || ok=0
 model="$(printf '%s\n' "$lines" | sed -n 's/.* propose claude model \([^ ]*\) .*/\1/p')"
 case "$model" in ""|unrecorded|*,*) ok=0 ;; esac
 if [ $ok -eq 1 ]; then echo "PASS: claude answered, one model ($model), user memory not loaded"; exit 0; fi
-echo "FAIL: see the lines above (§8: on a config-dir failure the fallback is to pin the user-memory sha)"
+echo "FAIL: see the lines above (PREREG-v2 section 8: on a config-dir failure the fallback is to pin the user-memory sha)"
 exit 1
