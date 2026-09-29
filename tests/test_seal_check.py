@@ -74,6 +74,16 @@ ERRATA = """# ERRATA (a test's copy)
 |---|---|---|
 """
 PIN = "a" * 64
+GETS_OK = {"book": "ok", "candles": "ok", "ticker": "ok"}
+
+
+def probe_rows(day="2026-09-30", minutes=1440, transport=0):
+    """One candidate's rows as bin/probe writes them, the fields its day verdict reads: one a minute from the day's first,
+    the first `transport` of them with a ticker GET that did not answer."""
+    d = day.replace("-", "")
+    return "".join(json.dumps({"tick_id": f"{d}T{i // 60:02d}{i % 60:02d}00Z", "ok": i >= transport,
+                               "gets": dict(GETS_OK, ticker="http-503") if i < transport else GETS_OK}) + "\n"
+                   for i in range(minutes))
 
 
 def frozen(prereg=PIN, table=PIN, spec="b" * 64):
@@ -110,7 +120,7 @@ class Scratch(unittest.TestCase):
         self.write("probe/2026-09-30/run.json", json.dumps({"day": "2026-09-30", "candidates": list(self.products[1:])}) + "\n")
         self.write("probe/2026-09-30/volume.json", "{}\n")
         for p in self.products[1:]:
-            self.write(f"probe/2026-09-30/{p}.jsonl", "{}\n")
+            self.write(f"probe/2026-09-30/{p}.jsonl", probe_rows())
         self.write("loop/code.py", "X = 1\nY = 2\nZ = 3\n")
         self.write("loop/book.py", "def at_cadence():\n    return 1\n")
         self.write("Makefile", "test:\n\t@exit $${SEALTEST_EXIT:-0}\n")
@@ -545,7 +555,7 @@ class Draft(Scratch):
         self.git("rm", "-q", f"probe/2026-09-30/{self.products[2]}.jsonl")
         self.commit("one product's rows gone")
         self.assertFails("--draft", says=[f"probe/2026-09-30/ lacks {self.products[2]}.jsonl in HEAD"], failed="probe")
-        self.write(f"probe/2026-09-30/{self.products[2]}.jsonl", "{}\n")
+        self.write(f"probe/2026-09-30/{self.products[2]}.jsonl", probe_rows())
         self.write("probe/2026-09-30/run.json", json.dumps({"day": "2026-10-01", "candidates": list(self.products[1:])}) + "\n")
         self.commit("another day's run")
         self.assertFails("--draft", says=["probe/2026-09-30/run.json names day '2026-10-01', not 2026-09-30"])
@@ -558,6 +568,32 @@ class Draft(Scratch):
         self.commit("D unnamed")
         self.assertFails("--draft", says=["§2 of PREREG-v2.md names no day as **D = YYYY-MM-DD**"])
 
+    def test_a_void_d_fails_until_section_2_names_the_next_day(self):
+        # §2: D is void when the probe wrote rows in fewer than 95 % of its minutes or transport failures pass 5 % of its
+        # candidate-minutes, and "becomes the next UTC day, once, named in §14". --draft takes bin/probe's own day
+        # verdict on §2's D, so a void day's directory no longer passes when only §14 moves D (the S5 refuter's defect 7)
+        for p in self.products[1:]:
+            self.write(f"probe/2026-09-30/{p}.jsonl", probe_rows(minutes=1300))
+        self.replace("PREREG-v2.md", "- 2026-09-29, Claude: an entry.",
+                     "- 2026-09-29, Claude: an entry.\n- 2026-10-01, Claude: D was void; D is now 2026-10-01.")
+        self.commit("D void, §14 moves it, §2 not edited")
+        self.assertFails("--draft", says=["D: FAIL: probe/2026-09-30/'s rows make D void by bin/probe's day verdict (rows"
+                                          " in 1300/1440 90.28% of D's minutes < 95%)", "§2's **D = …**"], failed="D")
+        run = {"day": "2026-10-01", "candidates": list(self.products[1:])}
+        self.write("probe/2026-10-01/run.json", json.dumps(run) + "\n")
+        self.write("probe/2026-10-01/volume.json", "{}\n")
+        for p in self.products[1:]:
+            self.write(f"probe/2026-10-01/{p}.jsonl", probe_rows("2026-10-01", transport=70))
+        self.replace("PREREG-v2.md", "**D = 2026-09-30**", "**D = 2026-10-01**")
+        self.commit("the next day's run, and §2 naming it")
+        text = self.assertPasses("--draft")
+        self.assertIn("D: PASS: probe/2026-10-01/'s rows: D stands by bin/probe's day verdict", text)
+        for p in self.products[1:]:
+            self.write(f"probe/2026-10-01/{p}.jsonl", probe_rows("2026-10-01", transport=150))
+        self.commit("too many transport failures")
+        self.assertFails("--draft", says=["make D void by bin/probe's day verdict (transport failures 300/2880 10.42% > 5%)"],
+                         failed="D")
+
     def test_every_candidates_rows_are_committed_verbatim(self):
         # §2: the probe's rows go to probe/<D>/ and are committed verbatim: every candidate run.json names, not only the
         # chosen products' (the S5 refuter's defect 7); and each chosen product is one the probe ran
@@ -567,7 +603,7 @@ class Draft(Scratch):
         self.assertFails("--draft", says=["probe/2026-09-30/ lacks DOGE-USD.jsonl, AVAX-USD.jsonl in HEAD (§2: the probe's"
                                           " rows are committed verbatim, every candidate's)"], failed="probe")
         for p in ("DOGE-USD", "AVAX-USD"):
-            self.write(f"probe/2026-09-30/{p}.jsonl", "{}\n")
+            self.write(f"probe/2026-09-30/{p}.jsonl", probe_rows())
         self.commit("every candidate's rows")
         text = self.assertPasses("--draft")
         self.assertIn("DOGE-USD.jsonl, AVAX-USD.jsonl", text)

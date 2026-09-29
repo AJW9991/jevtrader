@@ -57,6 +57,9 @@ The seal (no flag) exits 0 only when all of §13's five hold:
 - probe/<D>/ is in HEAD with run.json naming D and its candidates (every p in config.PRODUCTS but SOL-USD among them),
   volume.json and <c>.jsonl for every candidate c run.json names (§2: the probe's rows are committed verbatim, not only
   the chosen products'), D the day §2 names in bold (`**D = YYYY-MM-DD**`; if §14 moves D, §2's D moves with it);
+- D stands by bin/probe's own day verdict on those rows (its read_rows, transport_failed and day_verdict, as `bin/probe
+  summarize` reads them): a void D "becomes the next UTC day, once, named in §14", so a §14 entry that moves D while §2
+  still names the void day is refused here rather than passed on the void day's directory;
 - prompts/v2.table.<p>.json is in HEAD for every p in config.PRODUCTS and reads as prompts.table reads it;
 - PREREG-v2.md in HEAD is the tag prereg-v2-doc's, or §14 no longer reads "(none yet)" (no such tag: refused, since
   nothing can be compared).
@@ -69,7 +72,7 @@ allowlist: prompts/v<N>.json and prompts/v<N>.table.<p>.json with N >= 3 and p i
 sealed), prompts/CURRENT, HANDOFF.md, proposals/, data/exclusions-v2.tsv and data/looks.tsv. Untracked files are named on
 a NOTE line and not judged (RESULTS-v2.md is one until it is committed).
 """
-import argparse, datetime, json, os, re, subprocess, sys, tempfile, time
+import argparse, datetime, importlib.machinery, importlib.util, json, os, re, subprocess, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -426,6 +429,36 @@ def judge(repo, tree, products):
     return bad
 
 
+def _probe_tool():
+    """bin/probe as a module, for its day verdict (no bytecode written beside it; its run and volume lock, never taken
+    here, are what a running probe holds)."""
+    path = os.path.join(HERE, "probe")
+    loader = importlib.machinery.SourceFileLoader("probe_tool", path)
+    mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("probe_tool", loader))
+    before, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+    try:
+        loader.exec_module(mod)
+    finally:
+        sys.dont_write_bytecode = before
+    return mod
+
+
+def probe_void(repo, d, day, candidates):
+    """bin/probe summarize's day verdict on HEAD's `d`/ (PREREG-v2 §2): the reasons D is void, empty when it stands.
+    Each candidate's rows are read from HEAD, as its read_rows reads a file, and judged by its day_verdict."""
+    probe = _probe_tool()
+    read = []
+    with tempfile.TemporaryDirectory() as t:
+        for c in candidates:
+            path = os.path.join(t, f"{c}.jsonl")
+            with open(path, "wb") as fh:
+                fh.write(_git(repo, "cat-file", "blob", f"HEAD:{d}/{c}.jsonl", check=False).stdout)
+            read.append(probe.read_rows(path, day)[0])
+    minutes = len({r["tick_id"] for rows in read for r in rows})
+    transport = sum(1 for rows in read for r in rows if probe.transport_failed(r))
+    return probe.day_verdict(minutes, transport, len(candidates))
+
+
 # ---- the three modes -----------------------------------------------------------------------------------------------------
 def _say(out, line=""):
     out.write(line + "\n")
@@ -549,6 +582,12 @@ def draft(repo, products, out):
                else f"{d}/run.json's candidates do not include {', '.join(never)}: a product the probe never ran"
                if never else None)
         verdict("probe", why is None, f"{d}/ is in HEAD with {', '.join(want)}" if why is None else why)
+        if why is None:
+            void = probe_void(repo, d, day, cands)
+            verdict("D", not void, f"{d}/'s rows: D stands by bin/probe's day verdict (rows in >= 95 % of D's minutes,"
+                    " transport failures <= 5 % of its candidate-minutes)" if not void else
+                    f"{d}/'s rows make D void by bin/probe's day verdict ({'; '.join(void)}): §2 moves D to the next UTC"
+                    " day, once, named in §14, and §2's **D = …**, which --draft reads, names that day")
     with tempfile.TemporaryDirectory() as root:
         with open(os.path.join(root, "v2.json"), "w", encoding="utf-8") as fh:
             fh.write(blob(repo, "HEAD", "prompts/v2.json") or "")
