@@ -362,6 +362,15 @@ class StatusV2(unittest.TestCase):
         self.assertIn("prompt_b pending: none (B asks v3 this minute)",
                       self._main_at(datetime.datetime(2026, 10, 28, 0, 0, tzinfo=datetime.timezone.utc)))
 
+    def test_after_the_sample_the_line_names_v2s_run(self):
+        # v1's screen names v1's command (python3 -m loop.inference ... RESULTS.md); v2's names its own (PREREG-v2 §10)
+        t0 = report.tick_epoch(self.T0S)
+        end = datetime.datetime.fromtimestamp(t0 + 28 * 86400, datetime.timezone.utc)
+        self.assertEqual(status._sample_line_v2(t0, end), "sample: ended 2026-11-21T22:00Z; day 28's inference is `make results`"
+                         " (python3 -m loop.inference_v2 --sample --out RESULTS-v2.md), once d28 has closed")
+        self.assertEqual(status._sample_line_v2(t0, end - datetime.timedelta(seconds=1)),
+                         "sample: day d28 of 28 (T0_v2 2026-10-24T22:00Z, ends 2026-11-21T22:00Z)")
+
     def _main_at(self, now):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):

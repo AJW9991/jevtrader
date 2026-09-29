@@ -167,7 +167,8 @@ def _sample_line_v2(t0, now, why=None):
     if n < 1:
         return f"sample: not started (T0_v2 {report._iso_minute(t0)})"
     if n > report.SAMPLE_DAYS:
-        return f"sample: ended {end}"
+        return (f"sample: ended {end}; day 28's inference is `make results` (python3 -m loop.inference_v2 --sample --out"
+                " RESULTS-v2.md), once d28 has closed")
     return f"sample: day d{n:02d} of {report.SAMPLE_DAYS} (T0_v2 {report._iso_minute(t0)}, ends {end})"
 
 
