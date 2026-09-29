@@ -406,6 +406,16 @@ class FeeArithmeticOnAHandBuiltBook(unittest.TestCase):
                                  " fee of a tier its own account-level volume reaches: nothing measured here paid at the venue at $1,000"])
 
 
+class MakeResults(unittest.TestCase):
+    def test_make_results_is_the_v2_run(self):
+        # PREREG-v2 §10: "v2's own `results` target, in the build"; v1's run is made from main before the switch
+        env = {k: v for k, v in os.environ.items() if not k.startswith("MAKE")}          # not the outer `make test`'s flags
+        r = subprocess.run(["make", "-n", "-s", "-C", REPO, "results", f"PY={sys.executable}"], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", env=env, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), f"{sys.executable} -m loop.inference_v2 --sample --out RESULTS-v2.md")
+
+
 def _write(path, rows):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
