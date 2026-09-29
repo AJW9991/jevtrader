@@ -1,0 +1,99 @@
+#!/opt/homebrew/bin/python3
+"""bin/results-v1 -- v1's day-28 run behind PREREG-v2 §10's guard: `make results` on main until the switch.
+
+    bin/results-v1 [--no-v2] --out RESULTS.md -- COMMAND ...
+
+Before COMMAND runs (the Makefile passes v1's `python3 -m loop.inference --sample --out RESULTS.md`, an hour of
+bootstrap), it refuses, exit 3, unless both of PREREG-v2 §10's checks pass:
+    git rev-parse -q --verify "refs/tags/prereg-v2-draft^{tag}"      the annotated draft tag of PREREG-v2 exists
+    git merge-base --is-ancestor prereg-v2-draft prereg-v2           and is on the build branch
+so v2 is frozen before v1's result is read, or v2 as drafted is not run (PREREG-v2 §0). --no-v2 (`make results
+NO_V2=1`) runs COMMAND whatever the checks say. Then, only when COMMAND exits 0 and --out exists, it writes after
+--out's first line (its header):
+- the checks passed: "v2 draft tag: prereg-v2-draft <tag sha> (commit <sha>), an ancestor of prereg-v2 <sha>; checked
+  before this run (PREREG-v2 §10)", and with --no-v2 a line that NO_V2=1 was given and overrode nothing;
+- they failed under --no-v2: PREREG-v2 §10's sentence, "v2 draft tag absent: v2 as drafted is not run; a second block
+  is a new pre-registration written after v1 was read", and a line with what the checks found.
+The same lines go to stdout. COMMAND's own exit code is returned when it is not 0 (its refusals stand: an --out that
+exists, a day 28 not yet closed) and nothing is written. It reads the git tree this file lives in and runs COMMAND
+there; it sends nothing and never pushes or tags.
+"""
+import argparse, os, subprocess, sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(HERE)
+DRAFT_TAG = "prereg-v2-draft"
+BRANCH = "prereg-v2"
+SENTENCE = ("v2 draft tag absent: v2 as drafted is not run; a second block is a new pre-registration written after v1 "
+            "was read")
+EXIT_REFUSED = 3
+
+
+def _git(repo, *args):
+    return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True)
+
+
+def guard(repo):
+    """(ok, the header line when ok, what failed when not): PREREG-v2 §10's two checks, in its words."""
+    try:
+        t = _git(repo, "rev-parse", "-q", "--verify", f"refs/tags/{DRAFT_TAG}^{{tag}}")
+        if t.returncode != 0:
+            return False, None, f"no annotated tag {DRAFT_TAG}"
+        tag = t.stdout.strip()
+        commit = _git(repo, "rev-parse", "-q", "--verify", f"refs/tags/{DRAFT_TAG}^{{commit}}").stdout.strip()
+        r = _git(repo, "merge-base", "--is-ancestor", DRAFT_TAG, BRANCH)
+        if r.returncode != 0:
+            return False, None, (f"the annotated tag {DRAFT_TAG} {tag} (commit {commit}) is not an ancestor of {BRANCH}"
+                                 + (f" ({r.stderr.strip()})" if r.stderr.strip() else ""))
+        head = _git(repo, "rev-parse", "-q", "--verify", BRANCH).stdout.strip()
+    except OSError as e:
+        return False, None, f"git could not be run: {e}"
+    return True, (f"v2 draft tag: {DRAFT_TAG} {tag} (commit {commit}), an ancestor of {BRANCH} {head}; checked before this"
+                  " run (PREREG-v2 §10)"), None
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="results-v1", description="v1's day-28 run behind PREREG-v2 section 10's guard: "
+                                 "refuses before the run unless the annotated tag prereg-v2-draft is on prereg-v2")
+    ap.add_argument("--out", required=True, help="the file COMMAND writes (RESULTS.md): its header gets the guard's lines")
+    ap.add_argument("--no-v2", action="store_true", help="NO_V2=1: run without the draft tag, and say so in --out")
+    ap.add_argument("command", nargs=argparse.REMAINDER, help="-- and v1's run")
+    a = ap.parse_args(argv)
+    cmd = a.command[1:] if a.command[:1] == ["--"] else a.command
+    if not cmd:
+        ap.error("give v1's run after --")
+    ok, line, why = guard(REPO)
+    if not ok and not a.no_v2:
+        sys.stderr.write(f"results: refused before the run (PREREG-v2 section 10): {why}. v1's result is read only once v2 is "
+                         f"frozen by that tag on {BRANCH}; `make results NO_V2=1` runs it without v2 and writes so into "
+                         f"{a.out}\n")
+        return EXIT_REFUSED
+    lines = [line] if ok else [SENTENCE, f"(NO_V2=1 given; the guard found: {why})"]
+    if ok and a.no_v2:
+        lines.append("NO_V2=1 was given; the draft tag was there, so it overrode nothing")
+    rc = subprocess.run(cmd, cwd=REPO).returncode
+    if rc != 0:
+        return rc
+    out = a.out if os.path.isabs(a.out) else os.path.join(REPO, a.out)
+    try:
+        with open(out, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError as e:
+        sys.stderr.write(f"results: the run exited 0 but {a.out} cannot be read ({e}); the guard's lines were: "
+                         + " | ".join(lines) + "\n")
+        return 2
+    head, nl, rest = text.partition("\n")
+    with open(out + ".tmp", "w", encoding="utf-8") as fh:
+        fh.write(head + "\n" + "".join(l + "\n" for l in lines) + rest if nl else head + "\n" + "".join(l + "\n" for l in lines))
+    os.replace(out + ".tmp", out)
+    try:                                        # the lines hold a section sign; a C locale's stdout cannot
+        sys.stdout.reconfigure(errors="backslashreplace")
+    except (AttributeError, ValueError):
+        pass
+    for l in lines:
+        print(l)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
