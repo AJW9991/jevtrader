@@ -506,8 +506,8 @@ def volume(args, wall, mono, sleep, err):
     _write_json(vpath, {"generated": iso(now), "day": args.day, "start": iso(start), "end": iso(end),
                         "days": VOLUME_DAYS, "products": products})
     if silent:
-        err.write(f"probe: the candles endpoint did not answer for {' '.join(silent)} (PREREG-v2 §2: criterion (2)"
-                  " is then restated in §14)\n")
+        err.write(f"probe: the candles endpoint did not answer for {' '.join(silent)} (PREREG-v2 section 2:"
+                  " criterion (2) is then restated in section 14)\n")
         return 1
     return 0
 
@@ -734,7 +734,8 @@ def summarize(args, out, err):
             passing.append(p)
     chosen = passing[:CHOOSE]
     if void:
-        lines.append(f"chosen: none (D is void; PREREG-v2 §2: D becomes the next UTC day, once, named in §14)")
+        lines.append("chosen: none (D is void; PREREG-v2 section 2: D becomes the next UTC day, once, named in"
+                     " section 14)")                         # ASCII: summarize runs under a C locale too
     else:
         tail = "" if len(chosen) == CHOOSE else f" (only {len(chosen)} of {len(candidates)} passed; v2 runs on what passed)"
         lines.append(f"chosen: {' '.join(chosen) if chosen else 'none'}{tail}")

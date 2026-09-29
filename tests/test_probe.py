@@ -536,6 +536,7 @@ class Volume(Offline):
         code, err = self.volume(["--day", "2026-09-23", "--out", out, "--candidates", "ETH-USD,XRP-USD"], clock)
         self.assertEqual(code, 1, err)                        # XRP's endpoint did not answer
         self.assertIn("did not answer for XRP-USD", err)
+        self.assertTrue(err.isascii(), err)                  # printable under a C locale (make test-mode c-locale)
         v = self.read(out)
         self.assertEqual(v["products"]["ETH-USD"], {"usd_per_day": 2e6, "rows": 30, "candles": self.DAYS})
         self.assertEqual(v["products"]["XRP-USD"], {"error": "FeedError: http-404 /products/XRP-USD/candles"})
@@ -648,7 +649,7 @@ CRITERIA = ("criteria: (1) ok rows (the three public GETs answered, features com
             " row for any candidate; (2) sum(volume x close)/30 over exactly the 30 daily candles ending with D >="
             " 50000000 USD/day; (3) each liq word in [3%, 90%] of D's ok rows under the h-rule; (4) not a stablecoin")
 VOL_START, VOL_END = "2026-08-26T00:00:00.000Z", "2026-09-25T00:00:00.000Z"     # D = 2026-09-24: 08-26 ... 09-24
-VOID = "chosen: none (D is void; PREREG-v2 §2: D becomes the next UTC day, once, named in §14)"
+VOID = "chosen: none (D is void; PREREG-v2 section 2: D becomes the next UTC day, once, named in section 14)"
 
 
 def _h(p10, p50, p90, p99, mx):
@@ -729,6 +730,7 @@ class Summarize(unittest.TestCase):
         self.assertIn("result: FAIL", ada)
         self.assertIn("result: PASS", lines[lines.index("== ETH-USD"):lines.index("== ADA-USD")])
         self.assertEqual(lines[-1], VOID)                    # ETH passed its criteria; a void D chooses nothing
+        self.assertTrue(out.isascii(), out)                  # printable under a C locale (make test-mode c-locale)
         _write_dir(d, {"ETH-USD": PASSING[:1368]}, {"ETH-USD": 60e6})   # 1368/1440 is exactly 95 %: D stands
         code, out, _ = _summarize(d)
         self.assertEqual(code, 0)
