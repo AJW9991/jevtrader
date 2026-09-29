@@ -76,6 +76,17 @@ class AnsweredModel(unittest.TestCase):
                            capture_output=True, text=True, timeout=60)
         self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "model-alpha-1,model-gamma-3\n", ""))
 
+    def test_the_docstring_says_the_call_is_pinned_and_this_logs_what_answered(self):
+        # PREREG-v2 §8 pins the slow model (propose.sh passes --model from nightly/slow_model.py); this module still only
+        # reads what answered. Its docstring said the call "names no model" (the S4 refuter's defect 9)
+        with open(os.path.join(REPO, "nightly", "propose.sh"), encoding="utf-8") as fh:
+            self.assertIn('--model "$MODEL_ID"', fh.read())
+        doc = " ".join(answered_model.__doc__.split())
+        self.assertNotIn("names no model", doc)
+        self.assertNotIn("not to pin it", doc)
+        self.assertIn("--model", doc)
+        self.assertIn("nightly/slow_model.py", doc)
+
 
 if __name__ == "__main__":
     unittest.main()

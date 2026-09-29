@@ -1,7 +1,10 @@
 """Which Claude model answered the nightly's one `claude -p` call, read AFTER the call from the
-CLI's own transcript of that session. The call names no model and stays exactly as it was: a pin
-would change the treatment mid-sample (HANDOFF decision 4), so the option Alex approved on
-2026-09-28 is to record the model, not to pin it. This only reads what the CLI already wrote.
+CLI's own transcript of that session. The v2 call is pinned: PREREG-v2 §8 fixes the slow model,
+and propose.sh passes `--model` with nightly/slow_model.py's MODEL_ID. What answered is still
+logged each night, not fixed (§8: "the answering model line each night"), and the trial night
+needs it to be exactly one id. (v1's calls named no model, HANDOFF decision 4; this module was
+written on 2026-09-28 to record what answered them.) This only reads what the CLI already wrote,
+under the night's fresh CLAUDE_CONFIG_DIR, which propose.sh passes as CONFIG_DIR.
 
 The CLI keeps a session as <config>/projects/<its cwd, every non-alphanumeric character a '-'>/
 <session id>.jsonl, and each assistant line carries message.model. propose.sh runs the call in a
