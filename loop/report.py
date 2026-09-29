@@ -1312,7 +1312,7 @@ def tier_lines(tiers):
     return lines, list(tiers["tiers"])
 
 
-def cadence_table(per, anchor, n_of, kept, pool, sampled, tiers=(ERRATA_TIER,)):
+def cadence_table(per, anchor, n_of, kept, pool, sampled, tiers=(ERRATA_TIER,), fees=None):
     """§5 of the v2 report. per: {product: its rows, cut to the sample when `sampled`}; anchor: T0 (or, without
     one, the earliest tick over the products); n_of(c): the number of c-blocks (to the logs' last tick, capped at
     the sample's); kept(p, k, c): whether product p's block k at cadence c is kept (its day not excluded, p not
@@ -1320,8 +1320,11 @@ def cadence_table(per, anchor, n_of, kept, pool, sampled, tiers=(ERRATA_TIER,)):
     product, one replay per (product, arm, column, fee), S_k,p = the sum of d_t over the block's ticks, the per-
     product mean over its kept blocks, and the pooled series S-bar_k over the blocks with a kept pooled product.
     The minute cadence is v1's design on v2's arms (decided every minute, 900 s blocks), B - C only. After each
-    replay cadence, PREREG-v2 §6's fee arithmetic (fee_arithmetic), naming `tiers` (tier_lines' second value)."""
-    fees = _fee_list()
+    replay cadence, PREREG-v2 §6's fee arithmetic (fee_arithmetic), naming `tiers` (tier_lines' second value).
+    fees: the fee columns printed, _fee_list() (config's) when None; loop.inference_v2 passes PREREG-v2 §6's (0, 2, 10,
+    25, 50, 90) while config.FEE_BPS_COLUMNS is still v1's. A column adds cells and changes none (SPEC §10: the fee
+    enters the fills only)."""
+    fees = _fee_list() if fees is None else tuple(fees)
     plans = [("minute", BLOCK_S, False, (("b", "c"),))] + [(c, c, True, PAIRS) for c in config.CADENCES]
     lines, cells, gaps, tpd, fas = [], {}, {}, {}, {}
     prods = list(per)

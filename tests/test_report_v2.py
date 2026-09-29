@@ -372,6 +372,23 @@ class FeeArithmetic(unittest.TestCase):
         self.assertEqual(report._pair_reading("b", "c", 3.0, 3.0)[1], "fees cancel: B beats C at every fee")
         self.assertNotIn(" pays", "\n".join(l for l in out["text"].splitlines() if "Delta" in l))
 
+    def test_cadence_table_prints_the_fee_columns_it_is_given(self):
+        # PREREG-v2 §6's columns are (0, 2, 10, 25, 50, 90); config.FEE_BPS_COLUMNS stays v1's until the SPEC/config stage,
+        # so loop.inference_v2 hands the table §6's columns, and the table prints those and no other
+        per = {"SOL-USD": [r for r in self.rows if T0 <= report.tick_epoch(r["tick_id"]) < END]}
+        kept = lambda p, k, c: (int(c * k // 86400) + 1, p) != (2, "SOL-USD")
+        n_of = lambda c: int((report.tick_epoch(self.rows[-1]["tick_id"]) - T0) // c) + 1
+        ct = report.cadence_table(per, T0, n_of, kept, ["SOL-USD"], True, fees=(0.0, 50.0, 90.0))
+        self.assertEqual(ct["fees"], (0.0, 50.0, 90.0))
+        self.assertEqual({key[4] for key in ct["cells"]}, {0.0, 50.0, 90.0})
+        text = "\n".join(ct["lines"])
+        self.assertIn("pair B-C  fee 90 bps", text)
+        self.assertNotIn("fee 120 bps", text)
+        default = report.cadence_table(per, T0, n_of, kept, ["SOL-USD"], True)
+        self.assertEqual(default["fees"], report._fee_list())
+        for key in ((900, "b", "c", "argmax", 0.0), (3600, "b", "a", "argmax", 0.0), ("minute", "b", "c", "argmax", 0.0)):
+            self.assertEqual(ct["cells"][key]["S"], default["cells"][key]["S"], key)   # a column adds cells, changes none
+
     def test_tiers_from_section_12_or_errata_and_those_named(self):
         text = self._render()["text"]
         self.assertIn("fee tiers (PREREG-v2 §6.2): §12's table is blank until sealing; ERRATA.md's 2026-09-27 reading stands in", text)
