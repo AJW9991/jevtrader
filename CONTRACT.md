@@ -476,7 +476,8 @@ only the exit code and the FAIL, claude exit, claude model and "user memory not 
 `prompts/v<N+1>.json` (the other three questions carried from v1 unchanged) with `activation_tick` = T0_v2 + 86,400
 (E − 1) and `replaces` = the version active when it ran, then candidate k's column of the proposal's `.table.json` to
 `prompts/v<N+1>.table.<product>.json` for every product, then the new name to `prompts/CURRENT` (CURRENT.tmp renamed
-over); prints the diff and the commit line (the reason, the states moved per product). It refuses without a tty, on
+over); prints the diff and the commit line (the reason, the states moved per product). A promote that cannot finish
+removes what it wrote (prompts/ as it was, no version file left to count as a promotion). It refuses without a tty, on
 a dirty `git status`, without the annotated tag `prereg-v2-seal` at or before HEAD, while PREREG-v2.md §12's T0_v2 is
 blank, while a version is pending, off the schedule (run on day E − 1 for an effective day 8 ≤ E ≤ 22, at least 7
 days after the block's last promotion, at most three, and not within 600 s of the activation), unless the committed

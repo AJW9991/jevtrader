@@ -392,9 +392,70 @@ class Promote(Base):
         with mock.patch.object(self.promote.os, "replace", side_effect=OSError("disk full")):
             rc, _, err = self.run_promote(prop, "0", "--reason", "r", now=day(7))
         self.assertEqual(rc, 1)
-        self.assertIn("could not switch CURRENT (disk full); CURRENT still names v2", err)
-        self.assertEqual(prompts.named(self.root), "v2")
-        self.assertFalse(os.path.exists(os.path.join(self.root, "CURRENT.tmp")))
+        self.assertIn("could not switch CURRENT (disk full): removed v3.json, v3.table.SOL-USD.json, "
+                      "v3.table.ETH-USD.json, v3.table.XRP-USD.json; prompts/ is as it was, CURRENT still names v2", err)
+        self.untouched()                                                        # CURRENT.tmp gone too
+        self.assertEqual(self.run_promote(prop, "0", "--reason", "r", now=day(7, 2))[0], 0)   # the day's slot is kept
+
+    def test_a_failed_promote_leaves_prompts_as_it_was_and_costs_no_slot(self):
+        # the S4 refuter's defect 2: a version file left by a failed promote counted as a promotion, so the same day's
+        # rerun was refused on spacing ("0 day(s) after") and the slot was lost
+        prop = self.night([HOLDER])
+        stray = os.path.join(self.root, "v3.table.ETH-USD.json")               # a table of the version to be written
+        with open(stray, "w", encoding="utf-8") as fh:
+            fh.write("{}\n")
+        rc, _, err = self.run_promote(prop, "0", "--reason", "r", now=day(7))
+        self.assertEqual(rc, 1)
+        self.assertIn(f"{stray} exists with no v3.json beside it: a stray file, never overwritten; remove it and rerun", err)
+        self.assertEqual(self.listing(), ["CURRENT", "v1.json", "v2.json", "v3.table.ETH-USD.json"])   # nothing written
+        os.unlink(stray)
+        real, wrote = self.promote._write_new, []
+
+        def failing(path, doc):                                                 # the second table cannot be written
+            if ".table." in path and wrote:
+                raise OSError("disk full")
+            real(path, doc)
+            if ".table." in path:
+                wrote.append(path)
+        with mock.patch.object(self.promote, "_write_new", side_effect=failing):
+            rc, _, err = self.run_promote(prop, "0", "--reason", "r", now=day(7, 2))
+        self.assertEqual(rc, 1)
+        self.assertIn("could not write v3's tables (disk full): removed v3.json, v3.table.SOL-USD.json; prompts/ is as it "
+                      "was, CURRENT still names v2", err)
+        self.untouched()
+        self.assertEqual(self.promote.promotions(self.root, T0_S), {})
+        rc, _, err = self.run_promote(prop, "0", "--reason", "r", now=day(7, 3))   # the same day, the same slot
+        self.assertEqual(rc, 0, err)
+        self.assertEqual((prompts.named(self.root), prompts.load("v3", self.root)["activation_tick"]),
+                         ("v3", "20261031T220000Z"))
+
+    def test_a_version_file_cut_short_is_removed(self):
+        # _write_new creates the file (never over another's) and removes it if the write then fails
+        path = os.path.join(self.tmp, "v9.json")
+        real_open = open
+
+        class Short:                                                            # the file is made, its write fails
+            def __init__(self, fh):
+                self.fh = fh
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.fh.close()
+
+            def write(self, text):
+                raise OSError("disk full")
+        with mock.patch.object(self.promote, "open", create=True, side_effect=lambda *a, **k: Short(real_open(*a, **k))), \
+                self.assertRaisesRegex(OSError, "disk full"):
+            self.promote._write_new(path, {})
+        self.assertFalse(os.path.exists(path))
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("another promote's\n")
+        with self.assertRaises(FileExistsError):
+            self.promote._write_new(path, {})
+        with open(path, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "another promote's\n")
 
     def test_the_note_carries_the_rationale_and_frozen_is_the_utc_date(self):
         prop = self.night([HOLDER])

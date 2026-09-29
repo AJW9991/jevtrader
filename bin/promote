@@ -34,8 +34,10 @@ Then, in this order: prompts/v<N+1>.json (N the highest vN.json present, not CUR
 replaces (the version active when it ran), written only if absent; prompts/v<N+1>.table.<product>.json for every
 product, candidate k's column with prompt_sha the new file's; then CURRENT (CURRENT.tmp renamed over it: the loop reads
 it every minute). prompts.current(tick_id) follows `replaces` until the activation, so the loop, the digest and the
-policy table keep asking the version active now until then. It prints the diff of the action question, and the commit
-line: the person's reason with the states moved per product.
+policy table keep asking the version active now until then. A table of the new version already on disk (a stray file)
+is refused before anything is written; a write or the switch of CURRENT that fails removes what this run wrote, so
+prompts/ is as it was and no version file is left to count as a promotion. It prints the diff of the action question,
+and the commit line: the person's reason with the states moved per product.
 
 --table-only <proposal.json> (§8, "v2's own tables"): attended and on a clean tree, no schedule and no T0_v2 (it builds
 v2's tables before the draft tag); copies the CURRENT column of the proposal's .table.json into
@@ -262,9 +264,25 @@ def build(v1, cand, version, source, k, today, activation_tick=None, replaces=No
 
 
 def _write_new(path, doc):
-    """Written only if absent ('x'): an existing prompt file is never edited."""
+    """Written only if absent ('x'): an existing prompt file is never edited. A file this call made and could not
+    finish writing is removed (it was never anyone else's)."""
+    text = json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
     with open(path, "x", encoding="utf-8") as fh:
-        fh.write(json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
+        try:
+            fh.write(text)
+        except BaseException:
+            os.unlink(path)
+            raise
+
+
+def _undo(paths):
+    """Remove the files this promote wrote, last first; their names, for the one refusal line."""
+    for p in reversed(paths):
+        try:
+            os.unlink(p)
+        except FileNotFoundError:
+            pass
+    return ", ".join(os.path.basename(p) for p in paths)
 
 
 def _checks(a):
@@ -390,6 +408,11 @@ def main(argv=None, now=None):
         target = os.path.join(root, version + ".json")
         if os.path.exists(target):
             raise RuntimeError(f"{target} exists")
+        for p in config.PRODUCTS:                               # checked before anything is written, so a stray table
+            stray = prompts.table_path(version, p, root)         # never leaves a version file half promoted
+            if os.path.exists(stray):
+                raise RuntimeError(f"{stray} exists with no {version}.json beside it: a stray file, never overwritten; "
+                                   "remove it and rerun")
         new = build(v1, cands[a.k], version, os.path.relpath(a.proposal, REPO), a.k,
                     datetime.datetime.fromtimestamp(now, datetime.timezone.utc).strftime("%Y-%m-%d"),
                     tick_of(act), prompts.current(minute_of(now), root))
@@ -407,12 +430,21 @@ def main(argv=None, now=None):
     except OSError as e:                                        # FileExistsError: a second promote wrote it first
         print(f"promote: {target}: {e}", file=sys.stderr)
         return 1
+    # From here a promote that cannot finish removes what it wrote, so prompts/ is as it was: a version file left behind
+    # would count as a promotion (promotions()) and cost the day's slot on a rerun (the S4 refuter's defect 2).
+    made = [target]
     try:
         for p, t in tables:                                     # the tables before CURRENT changes (PREREG-v2 §8)
-            _write_new(prompts.table_path(version, p, root), t)
+            path = prompts.table_path(version, p, root)
+            _write_new(path, t)
+            made.append(path)
             prompts.table(version, p, root)                     # read back as the loop will read it, or refuse
-    except (OSError, ValueError) as e:
-        print(f"promote: wrote {target} but not its tables ({e}); CURRENT still names {cur_name}", file=sys.stderr)
+    except BaseException as e:
+        gone = _undo(made)
+        if not isinstance(e, (OSError, ValueError)):
+            raise
+        print(f"promote: could not write {version}'s tables ({e}): removed {gone}; prompts/ is as it was, CURRENT still "
+              f"names {cur_name}", file=sys.stderr)
         return 1
     # The loop reads CURRENT every minute: written whole beside it, then renamed over it, so no tick can read a
     # truncated or empty CURRENT (PromptError, an absence "guard" row).
@@ -421,13 +453,16 @@ def main(argv=None, now=None):
         with open(os.path.join(root, "CURRENT.tmp"), "w", encoding="utf-8") as fh:   # the one CURRENT writer (test_protocol_scan)
             fh.write(version + "\n")
         os.replace(tmp, os.path.join(root, "CURRENT"))
-    except OSError as e:
+    except BaseException as e:
         try:
             os.unlink(tmp)
         except OSError:
             pass
-        print(f"promote: wrote {target} and its tables but could not switch CURRENT ({e}); CURRENT still names {cur_name}",
-              file=sys.stderr)
+        gone = _undo(made)
+        if not isinstance(e, OSError):
+            raise
+        print(f"promote: could not switch CURRENT ({e}): removed {gone}; prompts/ is as it was, CURRENT still names "
+              f"{cur_name}", file=sys.stderr)
         return 1
     states_moved = ", ".join(f"{p} {moved[p]}/81" for p in config.PRODUCTS)
     when = datetime.datetime.fromtimestamp(act, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
