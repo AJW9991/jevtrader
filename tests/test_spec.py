@@ -2,10 +2,11 @@
 carries its sha and that it names PREREG-v2 §12 for T0_v2 and the fee tiers without restating them; §2's row schema
 against the row cycle.new_row writes; §5's per-product liq table against config.PRODUCTS, TICK_P, LIQ_ATOMS and
 LIQ_THIN_FALLBACK; §10's fee columns and the filled verified tier-0 taker row against config; §14 against the modules
-it names, and every constant of loop/config.py (but its paths, URL and key names) named there. tests/test_frozen.py
-pins SPEC.md's bytes and each §14 constant's value; this file says the text and the code agree. Read, never
-written."""
-import importlib, os, re, unittest
+it names, each value cell against the code's value (value_problem reads the forms §14 writes), and every constant of
+loop/config.py (but its paths, URL and key names) named there. tests/test_frozen.py pins SPEC.md's bytes and each §14
+constant's value; this file says the text and the code agree. Read, never written."""
+import ast, importlib, os, re, unittest
+from fractions import Fraction
 
 from loop import config, cycle
 
@@ -14,6 +15,8 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # where they act), the per-product store's namedtuple and the v2 globals' file names (config.EXCLUSIONS_V2, LOOKS)
 CONFIG_NOT_IN_14 = {"REPO", "DATA", "DECISIONS", "SENDS", "HALT", "LOCK", "HEARTBEAT", "PROMPTS", "PROPOSALS", "SPEC",
                     "PROTOCOL", "FORBIDDEN_PREFIXES", "JEV_URL", "KEY_PATHS", "Store"}
+# §14 names these in parentheses, beside the constant they explain, and gives their value elsewhere (Constants holds it)
+NOT_VALUED_IN_14 = {("loop.config", "FEE_BPS_VENUE_SOURCE"): "§10 quotes it whole"}
 NAME = re.compile(r"`([A-Z][A-Z0-9_]*)`")
 WHERE = re.compile(r"`((?:loop|nightly)/[a-z_0-9]+)\.py`")
 
@@ -49,6 +52,218 @@ def spec14(text=None):
         elif c[0]:
             raise ValueError(f"SPEC §14: a where cell that names no module: {c[0]!r}")
         out |= {(where, n) for n in NAME.findall(c[1])}
+    return out
+
+
+def top_split(cell, sep=" / "):
+    """`cell` split at `sep` where it stands outside parentheses and backticks (a value like `CADENCE_S / 2` or
+    (`sorted[249]` / `sorted[62]`) stays whole)."""
+    parts, cur, depth, tick, i = [], "", 0, False, 0
+    while i < len(cell):
+        ch = cell[i]
+        if not tick and depth == 0 and cell.startswith(sep, i):
+            parts.append(cur)
+            cur, i = "", i + len(sep)
+            continue
+        if ch == "`":
+            tick = not tick
+        elif not tick and ch in "([":
+            depth += 1
+        elif not tick and ch in ")]":
+            depth -= 1
+        cur += ch
+        i += 1
+    return [p.strip() for p in parts + [cur]]
+
+
+def _outside_parens(text):
+    out, depth = "", 0
+    for ch in text:
+        depth += ch == "("
+        if depth == 0:
+            out += ch
+        depth -= ch == ")" and depth > 0
+    return out
+
+
+def spec14_values(text=None):
+    """{(module, name): the text of its value cell} for §14's table: the name cell and the value cell split at " / "
+    alike, each part of the name cell naming its constant by the first backticked name outside its parentheses. A name
+    only inside parentheses (`FEE_BPS_VENUE_SOURCE`) is named, not valued: it is absent here (NOT_VALUED_IN_14 says
+    where its value is). A row whose two cells split differently raises."""
+    out, where = {}, None
+    for line in section(text or spec_text(), 14).splitlines():
+        if not line.startswith("| ") or line.startswith("| where |"):
+            continue
+        c = cells(line)
+        m = WHERE.search(c[0])
+        if m:
+            where = m.group(1).replace("/", ".")
+        names, values = top_split(c[1]), top_split(c[2])
+        if len(names) != len(values):
+            raise ValueError(f"SPEC §14: {len(names)} names and {len(values)} values in {line!r}")
+        for n, v in zip(names, values):
+            named = NAME.findall(_outside_parens(n))
+            if named:
+                out[(where, named[0])] = v
+    return out
+
+
+NUMBER = re.compile(r"(\d+)\^(\d+)|(\d[\d,]*(?:\.\d+)?(?:e-?\d+)?)(\s*MiB)?")
+ARM = re.compile(r"([A-D])\s*[−-]\s*([A-D])")
+
+
+def _number(text):
+    """(the value, whether it was written as an integer) of the number `text` starts with, or None."""
+    m = NUMBER.match(text)
+    if m is None:
+        return None
+    if m.group(1):
+        return int(m.group(1)) ** int(m.group(2)), True
+    lit = m.group(3).replace(",", "")
+    if "." in lit or "e" in lit:
+        return float(lit), False
+    return int(lit) << (20 if m.group(4) else 0), True
+
+
+def _element(text, module):
+    """One element of a tuple as §14 writes it: `NAME` (another constant, with an optional "= literal" that must agree),
+    a backticked or quoted string, B (an arm), or a number. Returns (value, how to compare: "exact" or "number")."""
+    text = text.strip()
+    ref = re.fullmatch(r"`([A-Z][A-Z0-9_]*)`(?:\s*=\s*(.+))?", text)
+    if ref:
+        for mod in (module, "loop.config"):
+            if hasattr(importlib.import_module(mod), ref.group(1)):
+                got = getattr(importlib.import_module(mod), ref.group(1))
+                if ref.group(2) is not None:
+                    lit = _number(ref.group(2))
+                    if lit is None or lit[0] != got:
+                        raise ValueError(f"{text!r}: {ref.group(1)} is {got!r}")
+                return got, "exact"
+    if re.fullmatch(r"`[^`]*`", text) or re.fullmatch(r'"[^"]*"', text):
+        return text[1:-1], "exact"
+    if re.fullmatch(r"[A-D]", text):
+        return text.lower(), "exact"
+    n = _number(text)
+    if n is not None and NUMBER.match(text).end() == len(text):
+        return n[0], ("int" if n[1] else "float")
+    return text, "exact"
+
+
+def _same(value, want, how):
+    if how == "int":
+        return type(value) is int and value == want
+    if how == "float":
+        return type(value) is float and value == want
+    return value == want
+
+
+def _paren_groups(text):
+    """The top-level parenthesised groups `text` starts with, e.g. "(a, b), (c, d) rest" -> ["a, b", "c, d"]."""
+    groups, depth, cur = [], 0, ""
+    for i, ch in enumerate(text):
+        if ch == "(":
+            depth += 1
+            if depth == 1:
+                cur = ""
+                continue
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                groups.append(cur)
+                if not text[i + 1:].startswith(", ("):
+                    return groups
+                continue
+        if depth >= 1:
+            cur += ch
+    return groups
+
+
+def value_problem(module, name, text, value):
+    """Why §14's value cell `text` does not say `value`, the code's value of module.name (None when it does). The forms
+    §14 writes: a number (10,000; 2^40; 8 MiB; 1e-9; an integer written without a point, a float with one), 1/40 (an
+    exact fraction), `NAME` (another constant) with an optional "= literal", a backticked or bare word, words or
+    backticked words for a tuple of strings ("a b c d", "`x`, `y`: ..."), "B−C, A−C" for arm pairs, "(x, y)" for a
+    tuple, "per product, §5's table (`P` v)" for a per-product dict, "0.25 × the number of products", and
+    `("P",)` and PREREG-v2 §2's two probe products. Prose after the value (in parentheses or after a colon) is not read."""
+    text = text.strip()
+    say = lambda: f"{module}.{name}: SPEC §14 says {text!r}, the code holds {value!r}"
+    try:
+        if isinstance(value, dict):
+            if "§5's table" not in text:
+                return say() + " (a per-product value names §5's table)"
+            pairs = re.findall(r"`([A-Z0-9]+-[A-Z]+)` (\([^()]*\)|[^()\s]+)", text)
+            if not pairs:
+                return say() + " (no product's value given)"
+            for p, v in pairs:
+                got = value.get(p)
+                if v in ("yes", "no"):
+                    ok = got is (v == "yes")
+                elif v.startswith("("):
+                    ok = got is not None and tuple(_element(e, module)[0] for e in v[1:-1].split(",")) == tuple(got)
+                else:
+                    ok = got is not None and _same(got, *_element(v, module))
+                if not ok:
+                    return say()
+            return None
+        m = re.match(r"([\d.]+) × the number of products\b", text)
+        if m:
+            return None if value == float(m.group(1)) * len(config.PRODUCTS) else say()
+        if isinstance(value, Fraction):
+            m = re.match(r"(\d+)/(\d+)\b", text)
+            return None if m and Fraction(int(m.group(1)), int(m.group(2))) == value else say()
+        if isinstance(value, tuple):
+            ref = re.match(r"`[A-Z][A-Z0-9_]*`", text)
+            if ref:                                                      # another constant's value
+                return None if _same(value, *_element(ref.group(0), module)) else say()
+            m = re.match(r"`(\([^`]*\))`", text)
+            if m:                                                        # a Python literal
+                lit = ast.literal_eval(m.group(1))
+                probe = re.match(r"`[^`]*` and PREREG-v2 §2's two probe products\b", text)
+                if value == lit or (probe and value[:len(lit)] == lit and len(value) == len(lit) + 2
+                                    and set(value[len(lit):]) <= set(config.PROBE_CANDIDATES)):
+                    return None
+                return say()
+            if value and all(isinstance(v, tuple) and len(v) == 2 and all(isinstance(x, str) for x in v) for v in value):
+                return None if [(x.lower(), y.lower()) for x, y in ARM.findall(text)] == list(value) else say()
+            if text.startswith("("):
+                groups = _paren_groups(text)
+                if value and all(isinstance(v, tuple) for v in value):
+                    elems = [[_element(e, module) for e in top_split(g, ", ")] for g in groups]
+                    ok = len(elems) == len(value) and all(
+                        len(e) == len(v) and all(_same(x, *y) for x, y in zip(v, e)) for e, v in zip(elems, value))
+                else:
+                    elems = [_element(e, module) for e in top_split(groups[0], ", ")] if groups else []
+                    ok = len(elems) == len(value) and all(_same(x, *y) for x, y in zip(value, elems))
+                return None if ok else say()
+            if value and all(isinstance(v, str) for v in value):
+                lead = re.split(r"\s\(|:", text, maxsplit=1)[0]
+                words = [w.strip("`") for w in re.split(r"[,\s]+", lead) if w]
+                return None if words == list(value) else say()
+            got = _element(text, module)
+            return None if _same(value, *got) else say()
+        if re.match(r"\d", text):                                        # 10,000; 2^40; 8 MiB; 1e-9
+            n = _number(text)
+            return None if _same(value, n[0], "int" if n[1] else "float") else say()
+        m = re.match(r"(`[^`]*`(?:\s*=\s*[\d.]+)?|\"[^\"]*\"|[^\s:,(]+)", text)
+        if m is None:
+            return say()
+        got = _element(m.group(1), module)
+        if isinstance(value, str) and got[1] != "exact":
+            return say()
+        return None if _same(value, *got) else say()
+    except (ValueError, SyntaxError) as e:
+        return say() + f" ({e})"
+
+
+def section14_disagreements(text=None):
+    """Every §14 constant whose value cell does not say the code's value, one line each (empty when §14 and the code
+    agree)."""
+    out = []
+    for (module, name), cell in sorted(spec14_values(text).items()):
+        problem = value_problem(module, name, cell, getattr(importlib.import_module(module), name))
+        if problem:
+            out.append(problem)
     return out
 
 
@@ -134,6 +349,39 @@ class Constants(unittest.TestCase):
         mine = {n for n, v in vars(config).items() if re.fullmatch(r"[A-Z][A-Z0-9_]*", n) and not callable(v)}
         self.assertEqual(sorted(mine - named - CONFIG_NOT_IN_14), [])
         self.assertLessEqual(CONFIG_NOT_IN_14 - {"Store"}, mine)             # the exemptions are real names
+
+    def test_every_value_in_section_14_is_the_codes(self):
+        # the S6 refuter's defect 2: this class held only that each §14 name exists and test_frozen's SPEC14 pins the
+        # code's values, so §14 could state an H1 seed or D readings the code does not use and the suite stayed green
+        self.assertEqual(section14_disagreements(), [])
+        self.assertGreater(len(spec14_values()), 60)
+        self.assertEqual(set(spec14()) - set(spec14_values()), set(NOT_VALUED_IN_14))
+        quoted = " ".join(section(spec_text(), 10).split())
+        self.assertIn(" ".join(f'`FEE_BPS_VENUE_SOURCE = "{config.FEE_BPS_VENUE_SOURCE}"`'.split()), quoted)
+
+    def test_a_value_section_14_misstates_is_named(self):
+        # the refuter's reproduction: D's readings as 0.98 / 0.90 / 12, the MAX_*_RUN row as 5 / 5 / 5 and SEED_H1 as
+        # 20261099 passed test_frozen, test_spec, test_contract, test_errata and test_config
+        text = spec_text()
+        for old, new in (("| 0.99 / 0.95 / 10 (PREREG-v2 §6's D readings) |", "| 0.98 / 0.90 / 12 (PREREG-v2 §6's D readings) |"),
+                         ("`MAX_ERROR_RUN` | 3 / 3 / 3 |", "`MAX_ERROR_RUN` | 5 / 5 / 5 |"),
+                         ("| 20261023 (family F: + i)", "| 20261099 (family F: + i)")):
+            self.assertIn(old, text)
+            text = text.replace(old, new, 1)
+        self.assertEqual([d.split(":", 1)[0] for d in section14_disagreements(text)],
+                         ["loop.inference_v2.SEED_H1", "loop.report.DRIFT_BELOW", "loop.report.LOOKUP_AT",
+                          "loop.report.MODAL_MIN", "nightly.policy_table.MAX_ERROR_RUN", "nightly.policy_table.MAX_OTHER_RUN",
+                          "nightly.policy_table.MAX_TRANSIENT_RUN"])
+        for old, new in (("| 90.0 (v1: 120.0, unverified) |", "| 90 (v1: 120.0, unverified) |"),   # a float written as an int
+                         ("| B−C, A−C, B−A, D−B, D−C |", "| B−C, A−C, B−A, D−B |"),
+                         ("(`SOL-USD` (1, 4))", "(`SOL-USD` (1, 5))"),
+                         ('(`TAKER_BPS`, "venue taker")', '(`TAKER_BPS`, "venue fee")'),
+                         ("`FEE_BPS_COLUMNS`, transcribed", "`FEE_BPS_VENUE`, transcribed")):
+            with self.subTest(new=new):
+                self.assertIn(old, spec_text())
+                self.assertEqual(len(section14_disagreements(spec_text().replace(old, new, 1))), 1)
+        with self.assertRaises(ValueError):                                  # a row whose cells split differently
+            spec14_values("# SPEC\n\n## 14. x\n\n| where | name | value |\n|---|---|---|\n| `loop/config.py` | `A` / `B` | 1 |\n")
 
     def test_the_v2_constants_are_there(self):
         # PREREG-v2 §10: "§14 the new constants (PRODUCTS, TICK_p, the atoms, CADENCES = (900, 3600, 14400),
