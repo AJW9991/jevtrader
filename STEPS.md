@@ -341,6 +341,26 @@ cd ~/Projects/jev-paper-loop && make backup && ls -la "$HOME/Library/Mobile Docu
 cd ~/Projects/jev-paper-loop && plutil -lint launchd/com.alexward.jevloop.backup.plist && cp launchd/com.alexward.jevloop.backup.plist ~/Library/LaunchAgents/ && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.alexward.jevloop.backup.plist && sleep 3 && launchctl print gui/$(id -u)/com.alexward.jevloop.backup | grep -E 'state =|last exit' && tail -1 logs/backup.log
 ```
 
+**Installed 2026-09-29 04:12Z and the first launchd run FAILED, exit 1** (logs/backup-launchd.log:
+`rsync: .../jevtrader-backup/data/: open: Operation not permitted`), while `make backup` from the
+terminal five seconds earlier was OK. iCloud Drive is a TCC-protected location: a terminal inherits
+Terminal's Files-and-Folders grant, a launchd job does not, and launchd never prompts. Two ways out,
+yours (system settings):
+- **Narrow:** System Settings → Privacy & Security → Full Disk Access → `+` → `/usr/bin/rsync` (press
+  ⌘⇧G in the file dialog and type the path). rsync is the process that opens the destination and it
+  spawns nothing. Then test the job without waiting for :45:
+  ```bash
+  launchctl kickstart gui/$(id -u)/com.alexward.jevloop.backup && sleep 5 && tail -1 ~/Projects/jev-paper-loop/logs/backup.log
+  ```
+  If TCC attributes the access to the job's `/bin/bash` instead, the line still says FAIL; then:
+- **By hand, daily:** `make backup` beside the morning `make status` (a day is the most that can be
+  lost), and boot the hourly job out so it stops writing a FAIL line every hour:
+  ```bash
+  launchctl bootout gui/$(id -u)/com.alexward.jevloop.backup
+  ```
+Not recommended: Full Disk Access for `/bin/bash`. Every launchd bash job would carry it, and the
+nightly's `claude -p`, a child of propose.sh, would inherit that reach.
+
 Undo: `launchctl bootout gui/$(id -u)/com.alexward.jevloop.backup`. Another destination:
 `bin/backup-data /Volumes/<disk>/jevtrader-backup` (edit the plist's ProgramArguments to
 match, and `tests/test_nightly.py` pins the plist).

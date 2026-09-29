@@ -79,8 +79,12 @@ in "What tonight's log should show" (State), "Known residuals" and the prereg-v2
 8. ~~The missed 2026-09-26 proposal~~ **decided by Alex 2026-09-29: the slot stays empty.** One night of
    28 produced no proposal (the 09-27 08:30Z call stalled and was capped); the write-up says so. The
    by-hand command stays in git history (a5c225e) should a later night need it.
-9. **Install the backup** (STEPS §9): `make backup` once, then bootstrap the plist; or name another
-   destination (`bin/backup-data DEST`, and the plist's argument with it).
+9. **The backup under launchd.** First copy taken by Alex 2026-09-29 04:12Z (`make backup`: 11,255,319
+   bytes to iCloud Drive `jevtrader-backup`). The plist is installed and its first run FAILED: TCC denies a
+   launchd job the iCloud folder (`rsync: open: Operation not permitted`), the terminal has the grant. STEPS
+   §9 has the two ways out: Full Disk Access for `/usr/bin/rsync` then `launchctl kickstart`, or a daily
+   `make backup` beside `make status` and bootout the hourly job. Until one is done the job writes a FAIL
+   line every hour and the iCloud copy is the 04:12Z one.
 
 ## Approved 2026-09-28 ("approved for recommended on all")
 - The nightly model is recorded, not pinned: decision 4.
