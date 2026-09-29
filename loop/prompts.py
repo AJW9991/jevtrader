@@ -24,7 +24,9 @@ promotions reads the version active then (a digest re-run for an early day asks 
 A version that carries neither key (v1.json, v2.json) is active whenever the walk reaches it.
 bin/promote writes as `replaces` the version active when it ran, so along the walk each
 activation is earlier than the one before it; a version that activates no earlier than its
-successor (a loop of `replaces` among them) was not written by it and is refused. Refusing a
+successor (a loop of `replaces` among them) was not written by it and is refused. Of a version
+walked past only those two keys are read; the version returned is checked as load() checks it,
+so a pending version is invisible to the ticks before its activation (PREREG-v2 §10). Refusing a
 second pending version is bin/promote's (PREREG-v2 §8, §10): pending(now) names the one it would stack on.
 
 Tables (PREREG-v2 §1 arm D, §8). prompts/<version>.table.<product>.json holds that wording's
@@ -97,9 +99,9 @@ def check_words(doc, version, where="?"):
                                   f"{ph!r} (PREREG-v2 §1)")
 
 
-def load(version, root=None):
-    """prompts/<version>.json as a dict. `root` exists for the tests and the --prompts flag of bin/promote,
-    nightly.digest, nightly.policy_table and loop.dash."""
+def _parse(version, root):
+    """(prompts/<version>.json as a dict, its path), its words not yet checked: load() checks them, and
+    current() reads no more than the activation keys of a version it only walks past."""
     if not isinstance(version, str) or not _VERSION.match(version):
         raise PromptError(f"not a version name: {version!r}")
     p = os.path.join(_root(root), version + ".json")
@@ -110,6 +112,13 @@ def load(version, root=None):
         raise PromptError(f"{p}: {e}") from None
     if not isinstance(doc, dict):
         raise PromptError(f"{p}: top level is {type(doc).__name__}, not an object")
+    return doc, p
+
+
+def load(version, root=None):
+    """prompts/<version>.json as a dict. `root` exists for the tests and the --prompts flag of bin/promote,
+    nightly.digest, nightly.policy_table and loop.dash."""
+    doc, p = _parse(version, root)
     check_words(doc, version, p)
     return doc
 
@@ -160,17 +169,22 @@ def current(tick_id=None, root=None):
     """The version arm B asks at `tick_id` (a row's tick_id; None: this minute), PREREG-v2 §8: from the one
     CURRENT names, `replaces` is followed while tick_id < that version's activation_tick; a version without
     one (v1, v2) is active whenever reached. A replaced version that activates no earlier than its successor
-    is refused (bin/promote never writes one; a loop of `replaces` is one), so the walk ends."""
+    is refused (bin/promote never writes one; a loop of `replaces` is one), so the walk ends. The version
+    returned is checked as load() checks it; of a version walked past only the two activation keys are read,
+    so a pending version is invisible to a tick before its activation (PREREG-v2 §10), whatever its words."""
     tick = _tick(tick_id)
     name = named(root)
-    act = activation(load(name, root), name)
+    doc, path = _parse(name, root)
+    act = activation(doc, name)
     while act is not None and tick < act[0]:
         prev = act[1]
-        before = activation(load(prev, root), prev)
+        doc, path = _parse(prev, root)
+        before = activation(doc, prev)
         if before is not None and before[0] >= act[0]:
             raise PromptError(f"{name} (activation {act[0]}) replaces {prev}, whose activation {before[0]} is no earlier:"
                               f" bin/promote writes the version active when it ran")
         name, act = prev, before
+    check_words(doc, name, path)                     # the version this tick asks
     return name
 
 
@@ -179,7 +193,7 @@ def pending(tick_id=None, root=None):
     what dash and status show on its own line and what bin/promote refuses to stack a second on."""
     tick = _tick(tick_id)
     name = named(root)
-    act = activation(load(name, root), name)
+    act = activation(_parse(name, root)[0], name)
     if act is None or tick >= act[0]:
         return None
     current(tick, root)                              # the walk behind it must hold: else refused

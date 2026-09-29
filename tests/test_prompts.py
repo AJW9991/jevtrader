@@ -360,6 +360,22 @@ class Activation(unittest.TestCase):
         with self.assertRaises(prompts.PromptError):
             prompts.current("20261030T000000Z", self.root)
 
+    def test_a_pending_version_the_loader_would_refuse_is_invisible_before_its_activation(self):
+        # PREREG-v2 §10: a pending version is invisible to readers. Its words are checked when it is asked
+        # (load), not when a tick before its activation only passes it on the walk: a hand-edited v3 naming
+        # ETH used to make every tick before its activation a guard absence
+        self._save("v3", _v3("Be long {BASE} unless ETH dumps.", activation_tick=self.ACT3, replaces="v2"))
+        for t in ("20261025T000000Z", "20261101T213900Z"):
+            self.assertEqual(prompts.current(t, self.root), "v2")
+            self.assertEqual(prompts.pending(t, self.root), "v3")
+        for t in (self.ACT3, "20261120T000000Z"):                                    # asked from its activation on:
+            with self.assertRaises(prompts.PromptError, msg=t):                      # refused
+                prompts.current(t, self.root)
+        with open(os.path.join(self.root, "v3.json"), "w", encoding="utf-8") as fh:
+            fh.write("{not json")                                                    # no activation to read: refused
+        with self.assertRaises(prompts.PromptError):
+            prompts.current("20261025T000000Z", self.root)
+
     def test_a_malformed_activation_is_refused(self):
         for extra in ({"activation_tick": self.ACT3}, {"replaces": "v2"},
                       {"activation_tick": "2026-11-01T21:40Z", "replaces": "v2"},

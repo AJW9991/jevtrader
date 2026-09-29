@@ -1428,6 +1428,28 @@ class V2TickTest(unittest.TestCase):
         body = json.loads(self.urlopen.call_args.args[0].data)
         self.assertEqual(body["questions"]["b_action"]["instructions"], "Be long SOL on strength.")
 
+    def test_a_pending_version_the_loader_refuses_costs_nothing_before_its_activation(self):
+        # a hand edit put a product word in the pending v3 (bin/promote's build refuses one): the ticks before
+        # its activation ask v1 as if v3 were not there; from its activation on, the tick is a guard absence
+        v3 = {"version": "v3", "frozen": "2026-11-01", "note": "test", "activation_tick": "20260924T022900Z",
+              "replaces": "v1", "action": {"type": "choice", "instructions": "Be long {BASE} unless ETH dumps.",
+                                           "criteria": {"buy": "pumping", "sell": "dumping", "hold": "else"}},
+              **{q: prompts.load("v1")[q] for q in prompts.CARRIED}}
+        with open(os.path.join(self.prompts_root, "v3.json"), "w", encoding="utf-8") as fh:
+            json.dump(v3, fh)
+        with open(os.path.join(self.prompts_root, "CURRENT"), "w", encoding="utf-8") as fh:
+            fh.write("v3\n")
+        self.answer()
+        self.assertEqual(cycle.main(["--once"]), 0)                              # 02:28: v3 pending
+        row = self.rows()[-1]
+        self.assertEqual((row["absence"], row["prompt_b"], row["prompt_b_sha"]), (None, "v1", prompts.sha("v1")))
+        self.assertEqual(self.urlopen.call_count, 1)
+        with mock.patch("time.time", return_value=NOW + 60), \
+                mock.patch.object(feed, "snapshot", return_value=dict(SNAP, ts_rx=cycle.iso_ms(NOW + 60))):
+            self.assertEqual(cycle.main(["--once"]), 0)                          # 02:29: v3 is asked, and refused
+        self.assertEqual((self.rows()[-1]["absence"], self.urlopen.call_count), ("guard", 1))
+        self.assertIn("product word 'ETH'", self.err.getvalue())
+
 
 
 if __name__ == "__main__":
