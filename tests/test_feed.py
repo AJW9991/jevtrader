@@ -277,6 +277,25 @@ class TestSnapshot(unittest.TestCase):
         for u in f.urls:
             self.assertTrue(u.startswith("https://api.coinbase.com/api/v3/brokerage/market/"), u)
 
+    def test_another_product_is_the_same_three_gets_and_nothing_the_state_does_not_read(self):
+        # PREREG-v2 §2-§3: a probe product's loop asks the same three public GETs for its own id, and the
+        # snapshot carries the same keys; TICK_P and the atoms are config's, never a fourth request
+        book = json.loads(json.dumps(BOOK))
+        book["pricebook"]["product_id"] = "ETH-USD"
+        f = Fake(book=book)
+        with mock.patch("urllib.request.urlopen", f):
+            s = feed.snapshot("ETH-USD", now=NOW)
+        end = int(NOW)
+        self.assertEqual(f.urls, [
+            feed.BASE + "/product_book?product_id=ETH-USD&limit=100",
+            feed.BASE + f"/products/ETH-USD/candles?start={end - 350 * 60}&end={end}&granularity=ONE_MINUTE",
+            feed.BASE + f"/products/ETH-USD/ticker?limit=1000&start={end - 300}&end={end}",
+        ])
+        self.assertEqual(set(s), KEYS)
+        self.assertEqual(s["product"], "ETH-USD")
+        with mock.patch("urllib.request.urlopen", Fake()), self.assertRaises(feed.FeedError):
+            feed.snapshot("ETH-USD", now=NOW)                                   # SOL's book under ETH's name
+
     def test_book_http_error_raises_once(self):
         f = Fake(book=http_error(500))
         with mock.patch("urllib.request.urlopen", f):
