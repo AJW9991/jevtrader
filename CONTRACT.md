@@ -71,7 +71,8 @@ jev-paper-loop/
   loop/status.py         make status: the morning check in one screen, report §1 only
   loop/exclusions.py     data/exclusions.tsv read (stop rule 3's list; inference applies it, status shows it)
   loop/exclusions_v2.py  data/exclusions-v2.tsv read, {(N, product)}, beside the rule recomputed from the log, which governs (PREREG-v2 §9.3)
-  loop/inference.py      PREREG §4-§5 once, at day 28 (make results); refuses the sample before then
+  loop/inference.py      PREREG §4-§5 once, at day 28: v1's RESULTS.md, made from main before the switch (results-v1 after it); refuses the sample before then
+  loop/inference_v2.py   PREREG-v2 §4-§7 and §9 once, at day 28 (make results, RESULTS-v2.md), over every product's store; refuses before then and while d28 is open
   nightly/digest.py      what the slow model may read
   nightly/policy_table.py  81 synthetic states per candidate
   nightly/capped.py      the claude call under a cap on awake seconds
@@ -386,6 +387,21 @@ argv, HEAD) to `data/looks.tsv` before anything is printed, and a look it cannot
 (exit 2). `--sample` without
 `--log` reads T0_v2 from §12. `make status` and the dash show every store, HALT (REPO/data) and
 each PAUSE, and the pending prompt version on its own line; still health only.
+
+**PREREG-v2's inference (`loop/inference_v2.py`, `make results`).** `python3 -m loop.inference_v2 --sample
+[--out RESULTS-v2.md] [--accept-pending]` reads every product's store once (each log's sha and byte length printed)
+and runs once, at day 28. It refuses (exit 3) while PREREG-v2.md §12's T0_v2 is blank or malformed and before
+T0_v2 + 28 d, both before any log is opened, and while d28 is open (no log has reached T0_v2 + 28 d + h + 30 s, where
+`report.days_table` closes the day) unless `--accept-pending` says the logs stopped; `--out` never overwrites. The
+clock and R are `main`'s arguments for the tests, not flags, and T0_v2 is §12's and nothing else. It prints
+RESULTS-v2: §0 (a placeholder for `bin/seal-check`'s section, `data/looks.tsv` verbatim, the set of `spec_sha` over
+the sample's rows); stop rule 3 recomputed per product, which governs, beside `data/exclusions-v2.tsv`, and void; H1
+and family F on PREREG-v2 §4's pooled series (`pooled`: the same sums, in the same order, as
+`report.cadence_table`'s cells), each cell with its own `random.Random(seed)`, v1's draw (`inference.resample_indices`)
+and the bound `sorted[ceil(alpha R) - 1]` with alpha a `fractions.Fraction` (`alpha_rank` refuses a float); F4
+withdrawn under §9.2's NO PROMOTION; stop rules 1–2 and PREREG-v2 §11's reading; §7's figures as measured; and,
+descriptive, `report.cadence_table` at PREREG-v2 §6's fee columns (`inference_v2.FEE_COLUMNS`, passed as its
+`fees`), arm D's and A's agreement and the direction probabilities per product. v1's `loop/inference.py` is unchanged.
 
 ## 5. Nightly
 
