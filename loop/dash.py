@@ -504,7 +504,40 @@ def _calendar_run(days, now, max_days=STRIP_DAYS):
     return run + [d for d in days if day(d) > today], older
 
 
-def render(rows, outs, t0=None, now=None, hb=None, halt=False, props=(), current=None, log=None, bad=()):
+def stores_html(stores, t0, now):
+    """PREREG-v2 §2's every store, one row a product: its log, rows in the sample, live answered, the heartbeat's
+    age at render, its PAUSE (REPO/data), the sample's fill and jev-err share (report §1), BAD and NO LIVE ROWS days,
+    and its whole log's spend. stores: [{"product", "log", "rows", "outs", "hb", "pause"}]. Health only."""
+    t = ["<h2>every product's store &middot; PREREG-v2 §2</h2>",
+         "<p class='sub'>one loop per product, each its own log; data/HALT stops every product, data/PAUSE.&lt;PRODUCT&gt; one"
+         " product's sends (its observation and outcomes go on). The page below is one log's.</p>",
+         "<div class='wrap'><table><tr><th class='l'>product</th><th class='l'>log</th><th>rows</th><th>live</th><th>heartbeat</th>"
+         "<th>fill</th><th>jev-err</th><th class='l'>BAD days</th><th class='l'>NO LIVE ROWS</th><th>spend, whole log</th><th class='l'>pause</th></tr>"]
+    total = 0.0
+    for st in stores:
+        sample = report.in_sample(st["rows"], t0) if t0 is not None else st["rows"]
+        last = report.last_reached(st["rows"], now.timestamp())
+        h = report.health(sample, st["outs"], t0=t0, last=last, now=now.timestamp())
+        whole = report.health(st["rows"], st["outs"], now=now.timestamp())["usd"]
+        total += whole
+        age = _age(st["hb"], now)
+        beat = ("<span class='badge warn'>none</span>" if age is None else
+                f"<span class='badge {'crit' if age > 3 * config.CADENCE_S else 'ok'}'>{age / 60:.0f} min</span>" if age > 3 * config.CADENCE_S
+                else f"<span class='badge ok'>{age:.0f} s</span>")
+        paused = st["pause"].endswith(": absent")
+        t.append(f"<tr><td class='l'>{_esc(st['product'])}</td><td class='l mono'>{_esc(st['log'])}</td><td>{h['rows']}</td><td>{h['live']}</td>"
+                 f"<td>{beat}</td><td>{_pc(h['fill'])}</td><td>{_pc(h['error_rate'])}</td><td class='l'>{_esc(', '.join(h['bad_days']) or '-')}</td>"
+                 f"<td class='l'>{_esc(', '.join(h['empty_days']) or '-')}</td><td>{'past range' if not math.isfinite(whole) else f'${whole:.4f}'}</td>"
+                 f"<td class='l'>{'-' if paused else '<span class=\'badge crit\'>' + _esc(st['pause']) + '</span>'}</td></tr>")
+    t.append("</table></div>")
+    t.append(f"<p class='sub'>spend over every product's log: {'past range' if not math.isfinite(total) else f'${total:.4f}'}; the one"
+             f" tripwire is ${config.DAILY_SPEND_HALT_USD:g} a day over them all (PREREG-v2 §2).</p>")
+    return "".join(t)
+
+
+def render(rows, outs, t0=None, now=None, hb=None, halt=False, props=(), current=None, log=None, bad=(), stores=None, pending=None):
+    """stores (PREREG-v2 §2): every product's store, shown as stores_html under the header; pending: the pending
+    prompt version's line (pending_line), on its own line under the header."""
     now = now or datetime.datetime.now(datetime.timezone.utc)
     sample = report.in_sample(rows, t0) if t0 is not None else rows
     # the whole log's last tick REACHED on this clock, as status and report --health take it: a row stamped
@@ -556,6 +589,10 @@ def render(rows, outs, t0=None, now=None, hb=None, halt=False, props=(), current
              f"rendered {now.strftime('%Y-%m-%d %H:%MZ')}" + (f" &middot; heartbeat {_esc(hb)}" if hb else "")
              + (f" &middot; T0 {report._iso_minute(t0)}" if t0 is not None else " &middot; no T0: whole log")
              + (f" &middot; prompt_b {_esc(current)}" if current else "") + "</p>"]
+    if pending:
+        parts.append(f"<p class='sub'>{_esc(pending)}</p>")
+    if stores:
+        parts.append(stores_html(stores, t0, now))
 
     # -- tiles (sample)
     hz = h["horizon"]
@@ -786,22 +823,35 @@ def main(argv=None):
     ap.add_argument("--out", default=os.path.join(config.DATA, "dash.html"))
     ap.add_argument("--prereg", default=PREREG_PATH)
     ap.add_argument("--no-t0", action="store_true", help="ignore PREREG's T0: the whole log is the sample")
-    ap.add_argument("--data", default=None, help="the data/ holding heartbeat and HALT (default: the repo's; propose.sh --root passes its own)")
+    ap.add_argument("--data", default=None, help="the data/ holding the stores and heartbeats (default: the repo's; propose.sh --root"
+                    " passes its own); data/HALT and each PAUSE are the repo's whatever it says (PREREG-v2 §10)")
     ap.add_argument("--proposals", default=None, help="the proposals/ to read the tables from (default: the repo's)")
     ap.add_argument("--prompts", default=None, help="prompts root for CURRENT (default: the repo's; the suite pins v1)")
     args = ap.parse_args(argv)
     try:
-        t0 = report._t0(args.t0) if args.t0 else (None if args.no_t0 else read_t0(args.prereg))
+        t0_v2 = read_t0_v2()                                                     # PREREG-v2 §12, once sealed, is the sample's T0
+    except ValueError:
+        t0_v2 = None                                                             # malformed: the v1 T0 below, and report says why
+    try:
+        t0 = report._t0(args.t0) if args.t0 else (None if args.no_t0 else t0_v2 if t0_v2 is not None else read_t0(args.prereg))
     except ValueError:
         ap.error(f"--t0 wants YYYY-MM-DDTHH:MM (UTC) or a tick_id, got {args.t0!r}")
     rows, bad = [], []
     if os.path.exists(args.log):
         rows = outcomes.load(args.log, bad)
     outs = outcomes.join(rows)
-    hb_path = os.path.join(args.data, "heartbeat") if args.data else None       # None: config.HEARTBEAT / config.HALT
-    halt_path = os.path.join(args.data, "HALT") if args.data else config.HALT
-    page = render(rows, outs, t0=t0, hb=heartbeat(hb_path), halt=os.path.exists(halt_path), props=proposals(args.proposals),
-                  current=current_version(args.prompts), log=args.log, bad=bad)
+    hb_path = os.path.join(args.data, "heartbeat") if args.data else None       # None: config.HEARTBEAT
+    stores = []
+    for p in config.PRODUCTS:                                                    # every product's store (PREREG-v2 §2)
+        log, hbp = store_paths(p, args.data)
+        prow = []
+        if os.path.exists(log):
+            prow = rows if os.path.abspath(log) == os.path.abspath(args.log) else outcomes.load(log, [])
+        stores.append({"product": p, "log": log, "rows": prow, "outs": outs if prow is rows else outcomes.join(prow),
+                       "hb": heartbeat(hbp), "pause": pause_line(p)})
+    now = datetime.datetime.now(datetime.timezone.utc)
+    page = render(rows, outs, t0=t0, now=now, hb=heartbeat(hb_path), halt=os.path.exists(config.HALT), props=proposals(args.proposals),
+                  current=current_version(args.prompts), log=args.log, bad=bad, stores=stores, pending=pending_line(now, args.prompts))
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     # errors="replace": a path that is not UTF-8 (Linux; APFS names are UTF-8) reaches the page as a lone
     # surrogate and stopped the write; each such character is written as '?' instead (the pre-merge check, 2026-09-28)

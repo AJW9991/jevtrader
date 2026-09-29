@@ -3,7 +3,8 @@ because every report.<name> it uses is on an allowlist of section 1-3 functions 
 import ast, contextlib, datetime, io, math, os, re, shutil, tempfile, unittest
 from unittest import mock
 
-from fixture_prereg import pin_prereg, text as prereg_text
+from fixture_prereg import pin_prereg, pin_prereg_v2, text as prereg_text
+from fixture_products import add_products
 from fixture_prompts import pin_v1
 from loop import config, dash, inference, outcomes, report, status
 from test_report import _row, _write, no_live_halt
@@ -585,7 +586,8 @@ class Dash(unittest.TestCase):
 
     def test_main_takes_its_roots_from_the_arguments(self):
         # propose.sh --root passes its own data/, proposals/ and (under test) a pinned prompts root,
-        # so the nightly's rebuild never reads the repo's heartbeat, HALT or CURRENT (2026-09-28)
+        # so the nightly's rebuild never reads the repo's heartbeat or CURRENT (2026-09-28); data/HALT is
+        # REPO/data's whatever --data says (PREREG-v2 §10: the one global stop, read where the loops read it)
         root = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, root, ignore_errors=True)
         os.makedirs(os.path.join(root, "data"))
@@ -604,10 +606,19 @@ class Dash(unittest.TestCase):
         self.assertEqual(code, 0)
         with open(out, encoding="utf-8") as fh:
             page = fh.read()
-        self.assertIn("HALT present", page)
+        self.assertNotIn("HALT present", page)                             # --data's HALT is not the stop
         self.assertIn("heartbeat 2026-09-23T10:41:00.100Z", page)
         self.assertIn("prompt_b v7", page)
+        self.assertIn("prompt_b pending: UNREADABLE:", page)                # CURRENT names a version with no file
         self.assertIn("no proposals yet", page)
+        halt = os.path.join(root, "repo-HALT")
+        with open(halt, "w", encoding="utf-8") as fh:
+            fh.write("spend\n")
+        with contextlib.redirect_stdout(io.StringIO()), mock.patch.object(config, "HALT", halt):
+            dash.main(["--log", self.log, "--out", out, "--no-t0", "--data", os.path.join(root, "data"),
+                       "--proposals", os.path.join(root, "proposals"), "--prompts", os.path.join(root, "prompts")])
+        with open(out, encoding="utf-8") as fh:
+            self.assertIn("HALT present", fh.read())
 
     def test_gaps_latency_and_absence_by_day(self):
         rows = [dict(_row(m)) for m in range(42) if m not in (20, 21, 22, 30)]   # a 3-minute hole and an isolated skip
@@ -740,6 +751,71 @@ def _capture(main, argv):
         code = main(argv)
     return code, buf.getvalue()
 
+
+
+class DashV2(unittest.TestCase):
+    """PREREG-v2 §2, §10: the page shows every product's store (its log, heartbeat, PAUSE, fill, BAD days, spend),
+    data/HALT from REPO/data, a pending prompt version on its own line, and T0_v2 from §12 once sealed; health only,
+    neither A's agreement with C nor D's with B."""
+    T0S = "20261024T220000Z"
+
+    def setUp(self):
+        import json, synth
+        from test_prompts import _v3
+        self.products = add_products(self)
+        self.data = self.enterContext(tempfile.TemporaryDirectory())
+        for k, v in (("DATA", self.data), ("DECISIONS", os.path.join(self.data, "decisions.jsonl")),
+                     ("HEARTBEAT", os.path.join(self.data, "heartbeat")), ("HALT", os.path.join(self.data, "HALT"))):
+            self.enterContext(mock.patch.object(config, k, v))
+        pin_prereg(self)
+        pin_prereg_v2(self, self.T0S)
+        self.prompts = os.path.join(self.data, "prompts")
+        os.makedirs(self.prompts)
+        for v in ("v1", "v2"):
+            shutil.copy(os.path.join(REPO, "prompts", v + ".json"), self.prompts)
+        with open(os.path.join(self.prompts, "v3.json"), "w", encoding="utf-8") as fh:
+            json.dump(_v3(activation_tick="20991231T220000Z", replaces="v2"), fh)
+        with open(os.path.join(self.prompts, "CURRENT"), "w", encoding="utf-8") as fh:
+            fh.write("v3\n")
+        synth.write_products(self.data, synth.generate_products(6, self.products, t0=self.T0S, days=1.1, pre_hours=1.0, era="v2",
+                                                                cadence_s=300))
+        with open(config.pause(self.products[2]), "w", encoding="utf-8") as fh:
+            fh.write("prereg: 3 bad days\n")
+        self.out = os.path.join(self.data, "dash.html")
+
+    def _page(self, *extra):
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(dash.main(["--out", self.out, "--prompts", self.prompts, "--proposals", os.path.join(REPO, "proposals")]
+                                       + list(extra)), 0)
+        with open(self.out, encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_every_store_each_pause_and_the_pending_version(self):
+        page = self._page()
+        self.assertIn("every product's store &middot; PREREG-v2 §2", page)
+        for p in self.products:
+            self.assertIn(f"<td class='l'>{p}</td>", page)
+            self.assertIn(dash.store_paths(p)[0], page)
+        self.assertIn(f"PAUSE.{self.products[2]} PRESENT since", page)
+        self.assertIn("prompt_b pending: v3 (CURRENT) activates at 2099-12-31T22:00Z, replacing v2; until then B asks v2", page)
+        self.assertIn("T0 2026-10-24T22:00Z", page)                           # T0_v2 from §12, sealed
+        self.assertNotIn("HALT present", page)
+        with open(config.HALT, "w", encoding="utf-8") as fh:
+            fh.write("x\n")
+        self.assertIn("HALT present", self._page())
+
+    def test_health_only_neither_agreement(self):
+        page = self._page()
+        body = page.split("<div class='foot'>")[0]
+        for word in AGREEMENT_WORDS + ("H1", "H2", "pair B-C", "mean_S", "Pearson", "Brier"):
+            self.assertNotIn(word, body)
+        now = datetime.datetime(2026, 10, 25, 23, 0, tzinfo=datetime.timezone.utc)
+        rows = outcomes.load(config.DECISIONS, [])
+        stores = [{"product": p, "log": dash.store_paths(p)[0], "rows": outcomes.load(dash.store_paths(p)[0], []), "outs": {},
+                   "hb": None, "pause": dash.pause_line(p)} for p in self.products]
+        args = dict(t0=report.tick_epoch(self.T0S), now=now, stores=stores, pending=dash.pending_line(now, self.prompts))
+        page2 = runtime_health_only(self, lambda: dash.render(rows, outcomes.join(rows), **args))
+        self.assertEqual(page2, dash.render(rows, outcomes.join(rows), **args))
 
 if __name__ == "__main__":
     unittest.main()
