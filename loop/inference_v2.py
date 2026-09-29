@@ -12,7 +12,10 @@ exists and is an ancestor of HEAD, and `bin/seal-check --since prereg-v2-seal` e
 results NO_SEAL=1` passes and RESULTS-v2 §0 and the header record; and (exit 3, after reading) while the sample's last day is open: d28 closes, and stop rule 3
 can judge its last live rows, once some product's log has reached a tick at or after T0_v2 + 28 d + h + 30 s
 (report.days_table's closure, ~16 min after the sample ends). --accept-pending is for logs that really stopped: every
-sample day is then closed and a live row whose t + h never came counts as a gap, and the header says so. Neither the
+sample day is then closed and a live row whose t + h never came counts as a gap, and the header says so. It is refused
+(exit 3, before any log is opened) until a minute after the minute d28's closing tick falls in: before then no running
+loop could have written that tick, so no log can be said to have stopped short of it, and the flag would only turn the
+last rows' pending outcomes into gaps (PREREG-v2 says nothing of the flag; v1's inference.py is its precedent). Neither the
 clock nor the resample count is a flag: main(argv, now=, resamples=) takes them for the tests, and a run at R != 10,000
 says it is not the pre-registered one. T0_v2 is §12's, read through dash.read_t0_v2, and nothing else.
 
@@ -721,6 +724,11 @@ def main(argv=None, now=None, resamples=RESAMPLES):
     if clock < end:
         return refuse(f"the sample ends {_iso(end)} and it is {datetime.datetime.fromtimestamp(clock, UTC):%Y-%m-%dT%H:%MZ}; no"
                       " bootstrap runs before day 28 (PREREG-v2 §9.5-§9.6)")
+    need = math.ceil(closes_at(t0) / 60) * 60                   # the minute d28's closing tick is written in
+    if args.accept_pending and clock < need + 60:
+        return refuse(f"--accept-pending is for logs that really stopped, and before {_iso(need + 60)} no running loop could have"
+                      f" written d28's closing tick (a tick at or after {_iso(need)}, T0_v2 + 28 d + h + 30 s): run without it"
+                      " once the logs reach that tick (PREREG-v2 §9.3: a row whose t + h has not come would count as a gap)")
     if args.out and os.path.exists(args.out):
         return refuse(f"--out {args.out} exists; the result is written once: name a new file", 2)
     sealed = seal()                                             # before any log is opened
@@ -739,7 +747,6 @@ def main(argv=None, now=None, resamples=RESAMPLES):
                         " NO_SEAL=1 (make results NO_SEAL=1, --no-seal) runs anyway and RESULTS-v2 records it")
     last = last_reached(stores, clock)
     if (last is None or last < closes_at(t0)) and not args.accept_pending:
-        need = math.ceil(closes_at(t0) / 60) * 60
         return refuse(f"the sample's last day d28 is open: stop rule 3 judges it once a product's log has reached a tick at or after"
                       f" {_iso(need)} (T0_v2 + 28 d + h + 30 s), and the latest any log has reached is"
                       f" {_iso(last) if last is not None else 'none'}; run again then, or pass --accept-pending if the logs really"

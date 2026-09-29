@@ -770,6 +770,20 @@ class Main(unittest.TestCase):
         self.assertEqual((code, out), (3, ""))
         self.assertIn("the sample's last day d28 is open: stop rule 3 judges it once a product's log has reached a tick at or after"
                       " 2026-11-21T22:16Z (T0_v2 + 28 d + h + 30 s), and the latest any log has reached is 2026-11-21T22:15Z", err)
+        # "the logs really stopped" cannot be said before a running loop could have written d28's closing tick: the minute
+        # it falls in (22:16) and that minute's own write (to 22:17); before then --accept-pending would turn the last
+        # rows' pending outcomes into gaps (stop rule 3) at T0_v2 + 28 d + 1 min
+        with mock.patch.object(inference, "read_log", side_effect=AssertionError("a log was opened")):
+            for now in (END + 60, END + 1019):
+                code, out, err = self._main(["--sample", "--accept-pending"], now=now)
+                self.assertEqual((code, out), (3, ""), now)
+                self.assertIn("refusing: --accept-pending is for logs that really stopped, and before 2026-11-21T22:17Z no running loop"
+                              " could have written d28's closing tick (a tick at or after 2026-11-21T22:16Z, T0_v2 + 28 d + h + 30 s):"
+                              " run without it once the logs reach that tick (PREREG-v2 §9.3: a row whose t + h has not come would"
+                              " count as a gap)", err)
+        code, out, err = self._main(["--sample", "--accept-pending"], now=END + 1020)
+        self.assertEqual(code, 0, err)
+        self.assertIn("--accept-pending given and the sample's last day was open", out)
 
     def test_refusals_before_any_log_is_opened(self):
         with mock.patch.object(inference, "read_log", side_effect=AssertionError("a log was opened")):
