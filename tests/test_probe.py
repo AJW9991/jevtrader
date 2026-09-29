@@ -66,14 +66,14 @@ class Offline(unittest.TestCase):
         self.enterContext(mock.patch("urllib.request.urlopen", side_effect=AssertionError("a socket")))
         self.enterContext(mock.patch("socket.create_connection", side_effect=AssertionError("a socket")))
         self.calls = []
-        self.fail = lambda url: None                        # a test sets it to raise on some URLs
+        self.refuse = lambda url: None                      # a test sets it to fail some URLs (not self.fail: that is TestCase's)
         self.hook = lambda url: None                        # and this to act mid-request
 
     def fixture_get(self, clock):
         def get(url):
             self.calls.append((clock.now(), url))
             self.hook(url)
-            why = self.fail(url)
+            why = self.refuse(url)
             if why:
                 raise feed.FeedError(why)
             if "/product_book?" in url:
@@ -136,7 +136,7 @@ class Run(Offline):
 
     def test_a_failed_get_writes_an_error_row_and_moves_on(self):
         clock, out = Clock(T_FIX), os.path.join(self.tmp, "out")
-        self.fail = lambda url: "http-503 /product_book" if "XRP-USD" in url and "product_book" in url else None
+        self.refuse = lambda url: "http-503 /product_book" if "XRP-USD" in url and "product_book" in url else None
         code, err = self.main(["run", "--day", DAY, "--out", out, "--max-minutes", "1", "--every", "1",
                                "--candidates", "ETH-USD,XRP-USD,DOGE-USD"], clock)
         self.assertEqual(code, 0, err)
@@ -188,7 +188,7 @@ class Run(Offline):
 
     def test_samples_only_its_day_and_exits_after_the_last_slot(self):
         clock, out = Clock(D0 + 86400 - 130), os.path.join(self.tmp, "out")      # 23:57:50
-        self.fail = lambda url: "http-503 /product_book"
+        self.refuse = lambda url: "http-503 /product_book"
         code, err = self.main(["run", "--day", DAY, "--out", out, "--candidates", "ETH-USD,XRP-USD"], clock)
         self.assertEqual(code, 0, err)
         self.assertEqual([r["tick_id"] for r in self.rows(out, "ETH-USD")], ["20260924T235800Z", "20260924T235900Z"])
@@ -199,7 +199,7 @@ class Run(Offline):
 
     def test_waits_for_its_day_and_refuses_one_that_is_over(self):
         clock, out = Clock(D0 - 15), os.path.join(self.tmp, "early")               # 2026-09-23T23:59:45Z
-        self.fail = lambda url: "http-503 /product_book"
+        self.refuse = lambda url: "http-503 /product_book"
         code, err = self.main(["run", "--day", DAY, "--out", out, "--candidates", "ETH-USD", "--max-minutes", "1"], clock)
         self.assertEqual(code, 0, err)
         self.assertEqual([r["ts_rx"] for r in self.rows(out, "ETH-USD")], ["2026-09-24T00:00:30.000Z"])
@@ -211,7 +211,7 @@ class Run(Offline):
 
     def test_one_line_an_hour_with_the_counts(self):
         clock, out = Clock(D0 + 3600 - 110), os.path.join(self.tmp, "out")        # 00:58:10
-        self.fail = lambda url: "http-503 /product_book"
+        self.refuse = lambda url: "http-503 /product_book"
         code, err = self.main(["run", "--day", DAY, "--out", out, "--candidates", "ETH-USD,XRP-USD",
                                "--max-minutes", "3"], clock)
         self.assertEqual(code, 0, err)
@@ -221,7 +221,7 @@ class Run(Offline):
 
     def test_a_directory_of_another_run_is_refused(self):
         out = os.path.join(self.tmp, "out")
-        self.fail = lambda url: "http-503 /product_book"
+        self.refuse = lambda url: "http-503 /product_book"
         self.assertEqual(self.main(["run", "--day", DAY, "--out", out, "--max-minutes", "1"], Clock(T_FIX))[0], 0)
         code, err = self.main(["run", "--day", "2026-09-25", "--out", out, "--max-minutes", "1"], Clock(T_FIX))
         self.assertEqual(code, 2)
@@ -231,6 +231,18 @@ class Run(Offline):
         self.assertEqual(code, 2)
         self.assertEqual(self.main(["run", "--day", DAY, "--out", out, "--max-minutes", "1"], Clock(T_FIX))[0], 0)
         self.assertEqual(len(self.rows(out, "ETH-USD")), 2)  # the same day resumes, appending
+
+
+class Harness(unittest.TestCase):
+    def test_offline_keeps_testcase_fail(self):
+        # Offline once kept its URL-failure hook in self.fail, which is TestCase.fail: every assertion that
+        # reports through fail() (assertIn, assertIs, list and str assertEqual) then passed whatever it saw
+        t = Run("test_one_cycle_one_row_per_candidate_paced")
+        t.setUp()
+        self.addCleanup(t.doCleanups)
+        for bad in (lambda: t.assertIn("x", "y"), lambda: t.assertEqual([1], [2]), lambda: t.assertIs(True, False)):
+            with self.assertRaises(AssertionError):
+                bad()
 
 
 class Pacing(unittest.TestCase):
