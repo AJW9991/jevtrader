@@ -890,8 +890,9 @@ class V2Draw(unittest.TestCase):
         self.assertEqual((z["lower"], z["reject"], z["n"]), (0.0, False, 12))
 
 
-# ---- (h) PREREG-v2 §2, §4, §9: the pooled statistic, stop rules 3-4 and §9.2's row set, ---------------------------------------
-# transcribed from PREREG-v2.md's words and held against loop/inference_v2.py on a synthetic three-product v2 log: one product void (8 days with no row), one with a day of no row, SOL with a day of jev errors.
+# ---- (h) PREREG-v2 §2, §4, §6, §9: the pooled statistic, stop rules 3-4, §9.2's row set and the fee arithmetic, -------------
+# transcribed from PREREG-v2.md's words and held against loop/inference_v2.py (and report.fee_arithmetic) on a synthetic
+# three-product v2 log: one product void (8 days with no row), one with a day of no row, SOL with a day of jev errors.
 # §2 "Live row = a row with mode: "live" and absence: null"; "Days are T0-anchored: d N = [T0_v2 + 86,400 (N - 1),
 # T0_v2 + 86,400 N)"; "Sample window = every row with T0_v2 <= tick_id < T0_v2 + 28 · 86,400 s, cut before any replay".
 # §9.3 "BAD when its outcome fill (live rows whose t + h the log has reached, with a non-gap outcome, over such live rows)
@@ -904,7 +905,11 @@ class V2Draw(unittest.TestCase):
 # columns.d (null means hold for D only)"; "S_k,p(X - Y, col, fee) = Σ over the block's rows of d_t"; "S-bar_k = mean over
 # the products p not void under §9.4 whose day containing block k is kept (§9.3) of S_k,p; a block with no such product is
 # dropped". §9.2 "If no live row on a kept product-day of a non-void product has prompt_b_sha != prompt_a_sha ... NO
-# PROMOTION".
+# PROMOTION". §6.1 "E_X,p(f) = Σ of book.replay's pnl for arm X on p's at_cadence rows over the ticks of p's kept days (an
+# open position at the window's end is marked; a fill counts when its tick is on a kept day); pooled E_X(f) = Σ over
+# non-void products of E_X,p(f). f*_X = 90 · E_X(0) / (E_X(0) − E_X(90)) ... "X never pays" when E_X(0) <= 0; undefined when
+# X has no fill"; §6.2 "X's own 30-day volume: Σ over non-void products of (fill value on p's kept days × 30 / p's kept
+# days)"; §6.3 "Δ_p(f) = E_X,p(f) − E_Y,p(f) = Σ_k S_k,p(X − Y, f) exactly; pooled Δ(f) = Σ_p Δ_p(f)".
 V2_T0S = "20261024T220000Z"
 V2_T0_MS = tick_ms(V2_T0S)
 V2_DAY_MS = 86_400_000
@@ -1062,6 +1067,71 @@ class V2Pooled(unittest.TestCase):
                 self.assertEqual(got["rank"], rank)
                 self.assertAlmostEqual(got["lower"], v2_sorted(vals, seed, self.R)[rank], places=9)
                 self.assertEqual(got["reject"], got["lower"] > 0)
+
+    def test_the_fee_arithmetic_is_6_1_to_6_3(self):
+        # report.fee_arithmetic, fed each product's at_cadence replay (as report.cadence_table feeds it), against §6.1-§6.3
+        sol, p2, p3 = self.products
+        for c in config.CADENCES:
+            kept = lambda p, t: p in self.pool and (v2_day(t), p) not in self.excluded
+            on = {p: {r["tick_id"] for r in self.sample[p] if kept(p, r["tick_id"])} for p in self.products}
+            days = {p: self.kept_days[p] if p in self.pool else 0 for p in self.products}
+            rows_c = {p: book.at_cadence(self.sample[p], c, self.t0) for p in self.products}
+            fa = report.fee_arithmetic(c, list(self.products), self.pool, on, days,
+                                       lambda p, a, f: book.replay(rows_c[p], None, a, "argmax", f),
+                                       lambda p, f: book.replay(report._bh_rows(self.sample[p]), None, "a", "argmax", f),
+                                       [report.ERRATA_TIER])
+            E = {}
+            for a in book.ARMS:
+                for p in self.pool:
+                    per = {}
+                    for f in (0.0, 90.0):
+                        pnl, trades = self.book(p, a, c, f)
+                        per[f] = sum(v for t, v in pnl.items() if kept(p, t))
+                        fills = [tr for tr in trades if kept(p, tr[0])]
+                    E[(a, p)] = (per[0.0], per[90.0], len(fills), sum(q * px for _, _, px, q in fills))
+                    got = fa["per"][p][a]
+                    self.assertAlmostEqual(got["e0"], per[0.0], places=6, msg=(c, a, p))
+                    self.assertAlmostEqual(got["e90"], per[90.0], places=6, msg=(c, a, p))
+                    self.assertEqual(got["fills"], E[(a, p)][2], (c, a, p))
+                    self.assertAlmostEqual(got["volume_30d"], E[(a, p)][3] * 30 / self.kept_days[p], places=6, msg=(c, a, p))
+                e0, e90, n = (sum(E[(a, p)][i] for p in self.pool) for i in range(3))
+                x = fa["pooled"][a]
+                self.assertAlmostEqual(x["e0"], e0, places=6)
+                self.assertEqual(x["fills"], n)
+                if not n:
+                    self.assertEqual((x["fstar"], x["reading"]), (None, "undefined: no fill on a kept day"))
+                elif e0 <= 0:
+                    self.assertEqual((x["fstar"], x["reading"]), (None, "never pays: E(0) <= 0"))
+                else:
+                    self.assertAlmostEqual(x["fstar"], 90 * e0 / (e0 - e90), places=6, msg=(c, a))
+            for x, y in report.PAIRS:                                   # §6.3: Delta = E_X - E_Y = the sum of S_k over kept blocks
+                d0 = sum(E[(x, p)][0] - E[(y, p)][0] for p in self.pool)
+                d90 = sum(E[(x, p)][1] - E[(y, p)][1] for p in self.pool)
+                pr = fa["pairs"][(x, y)]
+                self.assertAlmostEqual(pr["d0"], d0, places=6, msg=(c, x, y))
+                self.assertAlmostEqual(pr["d90"], d90, places=6, msg=(c, x, y))
+                _, S_p = self.ref_series(x, y, c)
+                s = sum(v for p in self.pool for k, v in S_p[p].items() if (k * c // 86400 + 1, p) not in self.excluded)
+                self.assertAlmostEqual(d0, s, places=6, msg=(c, x, y))
+                X, Y = x.upper(), y.upper()
+                if abs(d0 - d90) <= 1e-9:
+                    self.assertTrue(pr["reading"].startswith("fees cancel"), (c, x, y))
+                else:
+                    fs = 90 * d0 / (d0 - d90)
+                    self.assertAlmostEqual(pr["fstar"], fs, places=6)
+                    if fs > 0:
+                        self.assertEqual(pr["reading"], f"{X} {'stops' if d0 > 0 else 'starts'} beating {Y} above {fs:.2f} bps per fill")
+                    else:
+                        self.assertTrue(pr["reading"].startswith("the sign of Delta(90) holds at every fee > 0: "), (c, x, y))
+            # §6.1's buy-and-hold line over the same span: bought at the ask of the first priced row, marked to every mid after
+            for p in self.pool:
+                priced_rows = [r for r in self.ordered[p] if priced(r)]
+                qty, marks = NOTIONAL / priced_rows[0]["ask"], {}
+                for prev, r in zip([None] + priced_rows, priced_rows):
+                    usd = qty * (r["mid"] - (priced_rows[0]["ask"] if prev is None else prev["mid"]))
+                    marks[r["tick_id"]] = marks.get(r["tick_id"], 0.0) + usd * 1e4 / NOTIONAL
+                self.assertAlmostEqual(fa["per"][p]["buy-and-hold"]["e0"], sum(v for t, v in marks.items() if kept(p, t)), places=6)
+                self.assertEqual(fa["per"][p]["buy-and-hold"]["fills"], 1 if kept(p, priced_rows[0]["tick_id"]) else 0)
 
 
 if __name__ == "__main__":
