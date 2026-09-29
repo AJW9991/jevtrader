@@ -9,7 +9,7 @@ SIGTERM/SIGALRM handlers; the two signal tests raise the signal in-process."""
 import email.message, io, fcntl, hashlib, json, os, re, signal, sys, tempfile, time, unittest, urllib.error
 from unittest import mock
 from fixture_prompts import pin_v1
-from loop import book, config, cycle, feed, jev, outcomes, prompts, rules
+from loop import book, config, cycle, feed, jev, outcomes, prompts, rules, state
 
 _SLEEP = time.sleep                                  # the real one: time.sleep is mocked in setUp
 FIX = os.path.join(config.REPO, "fixtures")
@@ -86,11 +86,12 @@ class CycleTest(unittest.TestCase):
         self.enterContext(mock.patch.object(config, "SPEC", self.spec))
         self.enterContext(mock.patch.object(config, "JEV_URL", URL))
         self.enterContext(mock.patch.dict(os.environ, {"TYPESAFE_API_KEY_LOOP": KEY}))
+        os.environ.pop(config.ENV_PRODUCT, None)                  # unset inside the patch: SOL-USD, whatever the shell says
         self.protocol = os.path.join(self.tmp, "PROTOCOL.md")    # signed; the unsigned test rewrites it
         with open(self.protocol, "w", encoding="utf-8") as fh:
             fh.write("In force from: `2026-09-24`  Signed: `test`\n")
         self.enterContext(mock.patch.object(config, "PROTOCOL", self.protocol))
-        self.prompts_root = pin_v1(self)                        # never the live prompts/: CURRENT moves with bin/promote
+        self.prompts_root = pin_v1(self, frozen_a=True)         # never the live prompts/: CURRENT moves with bin/promote
         # main() clears _SIG on entry, not on exit: a SIGTERM test leaves term True, and a later test
         # that calls write_row directly would then raise _Stop. Each test starts clear and leaves it so.
         self.enterContext(mock.patch.dict(cycle._SIG, critical=False, term=False))
@@ -139,7 +140,7 @@ class CycleTest(unittest.TestCase):
     def assert_shape(self, row):
         self.assertEqual(sorted(row), sorted(cycle.new_row(TS_RX, "live")))
         self.assertEqual(sorted(row["jev"]), ["error", "input_tokens", "key_path", "latency_ms"])
-        self.assertEqual(sorted(row["columns"]), ["a", "b"])
+        self.assertEqual(sorted(row["columns"]), ["a", "b", "d"])
         self.assertRegex(row["tick_id"], r"^\d{8}T\d{4}00Z$")
         self.assertRegex(row["ts_rx"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$")
         self.assertEqual(row["tick_id"], cycle.tick_id(row["ts_rx"]))
@@ -255,9 +256,9 @@ class CycleTest(unittest.TestCase):
         self.snapshot.assert_called_once()                    # the feed ran
         self.assertEqual((row["bid"], row["ask"], row["mid"]), (SNAP["bid"], SNAP["ask"], (114.95 + 114.97) / 2))   # the 04:51:41Z book
         self.assertEqual((row["state"], row["rule_c"]), (STATE, "buy"))
-        self.assertEqual(row["prompt_a_sha"], prompts.sha("v1"))
+        self.assertEqual(row["prompt_a_sha"], prompts.sha(config.FROZEN_A))
         self.assertIsNone(row["answers"])
-        self.assertEqual(row["columns"], {"a": None, "b": None})
+        self.assertEqual(row["columns"], cycle.null_columns())
         self.assertEqual(row["jev"], {"latency_ms": None, "input_tokens": None, "error": None, "key_path": None})
         self.assertEqual(cycle.billed_tokens(row), 0)
         self.assertEqual(row["spec_sha"], "unsealed")
@@ -272,7 +273,7 @@ class CycleTest(unittest.TestCase):
         open(config.HALT, "w", encoding="utf-8").close()
         for dt in (0, 900):                                    # two halted ticks one horizon apart
             with mock.patch("time.time", return_value=NOW + dt):
-                self.snapshot.side_effect = lambda: dict(SNAP, ts_rx=cycle.iso_ms(NOW + dt))
+                self.snapshot.side_effect = lambda product=None: dict(SNAP, ts_rx=cycle.iso_ms(NOW + dt))
                 self.assertEqual(cycle.main(["--once"]), 0)
         rows = self.rows()
         self.assertEqual([r["absence"] for r in rows], ["halt", "halt"])
@@ -530,7 +531,7 @@ class CycleTest(unittest.TestCase):
         self.assert_shape(row)
         self.assertEqual((row["mode"], row["absence"], row["tick_id"], row["ts_rx"]), ("dry", None, TICK, TS_RX))
         self.assertIsNone(row["answers"])
-        self.assertEqual(row["columns"], {"a": None, "b": None})
+        self.assertEqual(row["columns"], cycle.null_columns())
         self.assertEqual(row["jev"], {"latency_ms": None, "input_tokens": None, "error": None, "key_path": None})
         self.assertIsNone(row["model_answered"])
         self.assertFalse(row["drift"])
@@ -548,9 +549,11 @@ class CycleTest(unittest.TestCase):
         self.assertIs(row["features"]["fill1k_short"], False)
         self.assertNotIn("bids", row)                                  # the levels feed the walk; the row keeps L1
         self.assertNotIn("asks", row)
-        self.assertEqual((row["prompt_a"], row["prompt_b"]), ("v1", "v1"))
-        self.assertEqual(row["prompt_a_sha"], prompts.sha("v1"))
-        self.assertEqual(row["prompt_a_sha"], row["prompt_b_sha"])
+        self.assertEqual((row["prompt_a"], row["prompt_b"]), ("v2", "v1"))          # A = FROZEN_A; CURRENT pinned v1
+        self.assertEqual(row["prompt_a_sha"], prompts.sha("v2"))
+        self.assertEqual(row["prompt_a_sha"], "b3291ca4a55091bd8a331e87ac95dfccfca6b81664f38f9430f42f0afc473c0e")   # PREREG-v2 §1
+        self.assertEqual(row["prompt_b_sha"], prompts.sha("v1"))
+        self.assertIsNone(row["table_sha"])                                          # no table in the pinned root
         self.assertEqual(row["spec_sha"], "unsealed")
         self.assert_nothing_sent()
         self.assertEqual(self.heartbeat(), TS_RX)
@@ -581,7 +584,7 @@ class CycleTest(unittest.TestCase):
         self.assertEqual((row["absence"], row["mode"], row["tick_id"], row["ts_rx"]), ("feed", "live", TICK, TS_RX))
         for k in ("bid", "ask", "mid", "features", "adj", "state", "rule_c", "prompt_a", "prompt_a_sha", "answers"):
             self.assertIsNone(row[k], k)
-        self.assertEqual(row["columns"], {"a": None, "b": None})
+        self.assertEqual(row["columns"], cycle.null_columns())
         self.assert_nothing_sent()
         self.assertIn("http-503", self.err.getvalue())
         self.assertEqual(self.heartbeat(), TS_RX)
@@ -607,7 +610,7 @@ class CycleTest(unittest.TestCase):
             with self.subTest(field=field, value=value, at=at):
                 c = json.loads(json.dumps(raw))
                 c["candles"][at][field] = value
-                self.snapshot.side_effect = lambda c=c: feed.assemble(META["product"], NOW, book_j, c, trades_j,
+                self.snapshot.side_effect = lambda product=None, c=c: feed.assemble(META["product"], NOW, book_j, c, trades_j,
                                                                       {"calls": 3, "ms": 0})
                 with mock.patch("time.time", return_value=NOW + 60 * i):
                     self.assertEqual(cycle.main(["--dry", "--once"]), 0)
@@ -651,7 +654,7 @@ class CycleTest(unittest.TestCase):
         req = self.urlopen.call_args.args[0]
         self.assertEqual(req.full_url, URL)                    # the patched URL, not api.typesafe.ai
         self.assertEqual(json.loads(req.data), {"model": config.MODEL, "state": STATE,
-                                                "questions": prompts.build(prompts.load("v1"), prompts.load("v1"), "SOL")})
+                                                "questions": prompts.build(prompts.load("v2"), prompts.load("v1"), "SOL")})
         lines = self.sends()
         self.assertEqual(lines[0], jev.HEADER.rstrip("\n"))
         self.assertEqual(len(lines), 2)                        # one attempt, one ledger row
@@ -680,7 +683,7 @@ class CycleTest(unittest.TestCase):
                 self.assertEqual((row["absence"], row["jev"]["error"]), ("jev", "http-4xx"))
                 self.assertEqual(row["jev"]["key_path"], "env:TYPESAFE_API_KEY_LOOP")
                 self.assertIsNone(row["answers"])
-                self.assertEqual(row["columns"], {"a": None, "b": None})
+                self.assertEqual(row["columns"], cycle.null_columns())
                 self.assertEqual(row["state"], STATE)          # the observation survives the refusal
                 with open(config.HALT, encoding="utf-8") as fh:
                     reason = fh.read()
@@ -759,7 +762,7 @@ class CycleTest(unittest.TestCase):
                 def sleep(s):
                     self.sleeps.append(s)
                     clock[0] += s
-                self.snapshot.side_effect = lambda: dict(SNAP, ts_rx=cycle.iso_ms(clock[0]))   # feed's own clock
+                self.snapshot.side_effect = lambda product=None: dict(SNAP, ts_rx=cycle.iso_ms(clock[0]))   # feed's own clock
                 with mock.patch("time.time", side_effect=lambda: clock[0]), \
                         mock.patch("time.sleep", side_effect=sleep):
                     self.assertEqual(cycle.main(["--dry", "--once"]), 0)
@@ -789,7 +792,7 @@ class CycleTest(unittest.TestCase):
         row = self.only_row()
         self.assertEqual((row["absence"], row["jev"]["error"]), ("jev", "parse"))
         self.assertEqual(row["answers"]["b_action"]["choice"], "maybe")   # paid for: kept
-        self.assertEqual(row["columns"], {"a": None, "b": None})
+        self.assertEqual(row["columns"], cycle.null_columns())
         self.assertEqual(row["jev"]["input_tokens"], 480)
 
     def test_a_wrong_typed_bool_or_non_finite_answer_field_is_parse_with_the_answer_logged(self):
@@ -816,7 +819,7 @@ class CycleTest(unittest.TestCase):
                 self.assertEqual(row["answers"]["a_action"]["choice"], "buy")     # paid for: kept
                 got = row["answers"][qid][field]
                 self.assertTrue(got == value or (got != got and value != value), (got, value))
-                self.assertEqual(row["columns"], {"a": None, "b": None})
+                self.assertEqual(row["columns"], cycle.null_columns())
                 self.assertEqual(row["jev"]["input_tokens"], 480)
                 self.assertNotIn("Traceback", self.err.getvalue())
         self.assertEqual(len(self.rows()), len(cases))
@@ -913,7 +916,7 @@ class CycleTest(unittest.TestCase):
         torn = whole[:len(whole) // 2]
         with open(config.DECISIONS, "ab") as fh:
             fh.write(torn)                                     # half a row, no newline
-        self.snapshot.side_effect = lambda: dict(SNAP, ts_rx=cycle.iso_ms(NOW + 60))
+        self.snapshot.side_effect = lambda product=None: dict(SNAP, ts_rx=cycle.iso_ms(NOW + 60))
         cycle.main(["--dry", "--once"])
         bad = []
         rows = outcomes.load(config.DECISIONS, bad)
@@ -942,7 +945,7 @@ class CycleTest(unittest.TestCase):
         self.assertEqual(rep.call_args.args, (config.HEARTBEAT + ".tmp." + str(os.getpid()), config.HEARTBEAT))
         self.assertEqual(sorted(os.listdir(self.data)), ["decisions.jsonl", "heartbeat", "loop.lock"])  # no temp left
         os.rmdir(config.HEARTBEAT)
-        self.snapshot.side_effect = lambda: dict(SNAP, ts_rx=cycle.iso_ms(NOW + 60))
+        self.snapshot.side_effect = lambda product=None: dict(SNAP, ts_rx=cycle.iso_ms(NOW + 60))
         self.assertEqual(cycle.main(["--dry", "--once"]), 0)                   # and the next one lands again
         self.assertEqual(self.heartbeat(), cycle.iso_ms(NOW + 60))
         self.assertEqual(len(self.rows()), 2)
@@ -955,7 +958,7 @@ class CycleTest(unittest.TestCase):
 
     # ---- the watchdog ------------------------------------------------------------------------------
     def test_watchdog_during_the_feed_is_absence_feed(self):
-        self.snapshot.side_effect = lambda: _SLEEP(5)
+        self.snapshot.side_effect = lambda product=None: _SLEEP(5)
         with mock.patch.object(cycle, "WATCHDOG_S", 1):
             t0 = time.monotonic()
             self.assertEqual(cycle.main(["--once"]), 0)
@@ -990,7 +993,7 @@ class CycleTest(unittest.TestCase):
         self.assertEqual((row["absence"], row["jev"]["error"]), ("jev", "watchdog"))   # was "guard", billed 0
         self.assertEqual(cycle.billed_tokens(row), 480)
         self.assertIsNone(row["answers"])                      # SPEC §2: answers on a parse row only
-        self.assertEqual(row["columns"], {"a": None, "b": None})
+        self.assertEqual(row["columns"], cycle.null_columns())
         self.assertEqual(self.heartbeat(), TS_RX)
         self.assertEqual(signal.alarm(0), 0)
 
@@ -1021,7 +1024,7 @@ class CycleTest(unittest.TestCase):
         cases = (("feed", ("feed", None)), ("state", ("guard", None)), ("prompts", ("guard", None)),
                  ("ask", ("jev", "watchdog")), ("columns", ("jev", "watchdog")))
         for i, (stage, want) in enumerate(cases):
-            def run(row, dry, halt, where, stage=stage):
+            def run(row, dry, halt, where, product=None, store=None, stage=stage):
                 where["stage"] = stage
                 if stage == "columns":
                     row["answers"] = ANSWERS
@@ -1132,7 +1135,7 @@ class CycleTest(unittest.TestCase):
             clock["t"] += s + 1.3                              # the wake-up plus a 1.3 s tick
             if len(self.sleeps) == 3:
                 signal.raise_signal(signal.SIGTERM)
-        self.snapshot.side_effect = lambda: dict(SNAP, ts_rx=cycle.iso_ms(clock["t"]))   # feed's own clock
+        self.snapshot.side_effect = lambda product=None: dict(SNAP, ts_rx=cycle.iso_ms(clock["t"]))   # feed's own clock
         with mock.patch("time.time", side_effect=now), mock.patch("time.sleep", side_effect=sleep):
             self.assertEqual(cycle.main(["--dry", "--forever"]), 0)
         self.assertEqual([round(x, 6) for x in self.sleeps], [11.0, 58.7, 58.7])   # each wait absorbs the tick
@@ -1169,6 +1172,260 @@ class CycleTest(unittest.TestCase):
              mock.patch("time.sleep", side_effect=sleep):
             self.assertEqual(cycle.main(["--dry", "--forever"]), 0)
         self.assertEqual(len(self.rows()), 1)
+
+
+# ---- v2 (PREREG-v2 §2, §10): one product per process, PAUSE, the spend guard over every log, arm D ----------
+V1_ROW_KEYS = ["v", "tick_id", "ts_rx", "mode", "venue", "product", "cadence_s", "horizon_s", "bid", "bid_size",
+               "ask", "ask_size", "mid", "book_time", "feed_age_s", "features", "adj", "state", "spec_sha",
+               "prompt_a", "prompt_a_sha", "prompt_b", "prompt_b_sha", "model_requested", "model_answered", "drift",
+               "jev", "answers", "rule_c", "columns", "absence"]              # the v1 writer's keys, in its order
+ETH_STATE = "ETH" + STATE[len("SOL"):]
+V1_PATHS = (config.DECISIONS, config.SENDS, config.LOCK, config.HEARTBEAT, config.HALT)   # at import: nothing patched
+
+
+class V2TickTest(unittest.TestCase):
+    setUp, tearDown = CycleTest.setUp, CycleTest.tearDown
+    rows, only_row, sends, heartbeat = CycleTest.rows, CycleTest.only_row, CycleTest.sends, CycleTest.heartbeat
+    assert_nothing_sent = CycleTest.assert_nothing_sent
+
+    def two_products(self):
+        """ETH-USD beside SOL-USD, with SOL's tick and atoms: a stand-in for the probe's products."""
+        self.enterContext(mock.patch.object(config, "PRODUCTS", ("SOL-USD", "ETH-USD")))
+        self.enterContext(mock.patch.dict(config.TICK_P, {"ETH-USD": 0.01}))
+        self.enterContext(mock.patch.dict(config.LIQ_ATOMS, {"ETH-USD": (1, 4)}))
+        self.enterContext(mock.patch.dict(config.LIQ_THIN_FALLBACK, {"ETH-USD": False}))
+        return config.store("ETH-USD")
+
+    def answer(self):
+        self.urlopen.side_effect = None
+        self.urlopen.return_value = _Resp(GOOD)
+
+    def rows_of(self, path):
+        bad = []
+        rows = outcomes.load(path, bad) if os.path.exists(path) else []
+        self.assertEqual(bad, [])
+        return rows
+
+    def table(self, version="v1", product="SOL-USD", override=None, **doc):
+        """prompts/<version>.table.<product>.json in the pinned root: rule_c's answers, with override."""
+        b = config.base(product)
+        answers = {state.state_string(a, b): state.rule_c(a) for a in state.all_states()}
+        answers.update(override or {})
+        body = {"version": version, "product": product, "prompt_sha": prompts.sha(version),
+                "model_answered": config.MODEL, "answers": answers}
+        body.update(doc)
+        with open(os.path.join(self.prompts_root, f"{version}.table.{product}.json"), "w", encoding="utf-8") as fh:
+            json.dump(body, fh)
+        return prompts.sha_of(body)
+
+    # -- v1 unchanged: JEVLOOP_PRODUCT unset -------------------------------------------------------------
+    def test_v1_unchanged_with_jevloop_product_unset(self):
+        self.assertNotIn(config.ENV_PRODUCT, os.environ)
+        self.assertEqual(config.loop_product(), "SOL-USD")
+        repo_data = os.path.join(config.REPO, "data")                          # every v1 path, as v1 wrote them
+        self.assertEqual(V1_PATHS, tuple(os.path.join(repo_data, n)
+                                         for n in ("decisions.jsonl", "sends.tsv", "loop.lock", "heartbeat", "HALT")))
+        self.assertEqual(config.store("SOL-USD"), (config.DECISIONS, config.SENDS, config.LOCK, config.HEARTBEAT))
+        # arm C on all 81 states, SOL first: v1's pin
+        pairs = [[state.state_string(a), state.rule_c(a)] for a in state.all_states()]
+        self.assertEqual(hashlib.sha256(json.dumps(pairs).encode()).hexdigest(),
+                         "289e53281bde0399848a5911e236396a0269936ec5f5608498f1786e1d578bb6")
+        # the tick writes v1's log, v1's ledger and v1's heartbeat, and its row is v1's shape plus two keys
+        self.answer()
+        self.assertEqual(cycle.main(["--once"]), 0)
+        self.snapshot.assert_called_once_with("SOL-USD")
+        row = self.only_row()
+        self.assertEqual([k for k in row if k != "table_sha"], V1_ROW_KEYS)
+        self.assertEqual(sorted(k for k in row["columns"] if k != "d"), ["a", "b"])
+        self.assertEqual((row["product"], row["state"], row["rule_c"], row["absence"]), ("SOL-USD", STATE, "buy", None))
+        self.assertEqual(len(self.sends()), 2)
+        self.assertEqual(self.heartbeat(), TS_RX)
+        self.assertEqual(sorted(os.listdir(self.data)), ["decisions.jsonl", "heartbeat", "loop.lock", "sends.tsv"])
+
+    # -- JEVLOOP_PRODUCT ------------------------------------------------------------------------------------
+    def test_a_product_outside_products_exits_2_before_any_directory(self):
+        for bad in ("DOGE-USD", "", "sol-usd", "../data"):
+            with self.subTest(bad=bad), mock.patch.dict(os.environ, {config.ENV_PRODUCT: bad}):
+                self.assertEqual(cycle.main(["--once"]), 2)
+                self.assertFalse(os.path.exists(self.data))
+                self.assertIn(config.ENV_PRODUCT, self.err.getvalue())
+        self.snapshot.assert_not_called()
+        self.assert_nothing_sent()
+
+    def test_another_product_ticks_into_its_own_store_with_its_own_base(self):
+        eth = self.two_products()
+        self.answer()
+        with mock.patch.dict(os.environ, {config.ENV_PRODUCT: "ETH-USD"}):
+            self.assertEqual(cycle.main(["--once"]), 0)
+        self.snapshot.assert_called_once_with("ETH-USD")
+        self.assertEqual(self.rows(), [])                                        # nothing in SOL's log
+        self.assertFalse(os.path.exists(config.SENDS))
+        self.assertFalse(os.path.exists(config.HEARTBEAT))
+        self.assertEqual(eth.decisions, os.path.join(self.data, "ETH-USD", "decisions.jsonl"))
+        (row,) = self.rows_of(eth.decisions)
+        self.assertEqual((row["product"], row["state"], row["absence"]), ("ETH-USD", ETH_STATE, None))
+        self.assertEqual((row["prompt_a"], row["prompt_a_sha"]), ("v2", prompts.sha("v2")))  # the file's sha, every product
+        with open(eth.heartbeat, encoding="utf-8") as fh:
+            self.assertEqual(fh.read().strip(), TS_RX)
+        with open(eth.sends, encoding="utf-8") as fh:
+            self.assertEqual(len(fh.read().splitlines()), 2)
+        body = json.loads(self.urlopen.call_args.args[0].data)
+        self.assertEqual(body["state"], ETH_STATE)
+        self.assertIn("long ETH ", body["questions"]["a_action"]["instructions"])
+        self.assertIn("long ETH ", body["questions"]["b_action"]["instructions"])            # v1 renders too
+        self.assertEqual(body["questions"], prompts.build(prompts.load("v2"), prompts.load("v1"), "ETH"))
+
+    def test_each_product_has_its_own_lock(self):
+        eth = self.two_products()
+        os.makedirs(self.data)
+        holder = open(config.LOCK, "a", encoding="utf-8")                         # SOL's lock, held elsewhere
+        self.addCleanup(holder.close)
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        self.assertEqual(cycle.tick(dry=True, product="ETH-USD"), 0)
+        self.assertEqual(self.rows_of(eth.decisions)[0]["absence"], None)
+        self.assertEqual(cycle.tick(dry=True), 0)
+        self.assertEqual(self.only_row()["absence"], "lock")
+
+    # -- HALT and PAUSE -------------------------------------------------------------------------------------
+    def test_pause_stops_only_its_own_products_send_and_observation_goes_on(self):
+        eth = self.two_products()
+        os.makedirs(self.data)
+        with open(config.pause("SOL-USD"), "w", encoding="utf-8") as fh:
+            fh.write("prereg: 3 bad days\n")
+        self.answer()
+        self.assertEqual(cycle.main(["--once"]), 0)                              # SOL: paused
+        row = self.only_row()
+        self.assertEqual((row["absence"], row["state"], row["rule_c"], row["prompt_a"]), ("halt", STATE, "buy", "v2"))
+        self.assertEqual((row["bid"], row["mid"]), (SNAP["bid"], (114.95 + 114.97) / 2))   # the marks survive
+        self.assertIsNone(row["answers"])
+        self.assertEqual(row["columns"], cycle.null_columns())
+        self.assertEqual(self.heartbeat(), TS_RX)
+        self.assertEqual(self.urlopen.call_count, 0)
+        self.assertIsNone(self.sends())
+        self.assertFalse(os.path.exists(config.HALT))                            # PAUSE is not HALT
+        self.assertIn("PAUSE.SOL-USD", self.err.getvalue())
+        self.assertEqual(cycle.tick(product="ETH-USD"), 0)                        # ETH: not paused, it sends
+        self.assertEqual(self.urlopen.call_count, 1)
+        self.assertEqual(self.rows_of(eth.decisions)[0]["absence"], None)
+
+    def test_halt_stops_every_products_send(self):
+        eth = self.two_products()
+        os.makedirs(self.data)
+        with open(config.HALT, "w", encoding="utf-8") as fh:
+            fh.write("by hand\n")
+        self.answer()
+        self.assertEqual(cycle.tick(), 0)
+        self.assertEqual(cycle.tick(product="ETH-USD"), 0)
+        self.assertEqual((self.only_row()["absence"], self.rows_of(eth.decisions)[0]["absence"]), ("halt", "halt"))
+        self.assertEqual((self.only_row()["state"], self.rows_of(eth.decisions)[0]["state"]), (STATE, ETH_STATE))
+        self.assertEqual(self.urlopen.call_count, 0)
+
+    def test_the_spend_guard_ignores_pause(self):
+        os.makedirs(self.data)
+        with open(config.DECISIONS, "w", encoding="utf-8") as fh:
+            for m in ("T010000Z", "T010100Z"):
+                fh.write(json.dumps(_row(DAY + m, OVER)) + "\n")
+        open(config.pause("SOL-USD"), "w", encoding="utf-8").close()
+        self.assertEqual(cycle.main(["--once"]), 0)
+        with open(config.HALT, encoding="utf-8") as fh:                          # the guard ran under PAUSE and tripped
+            self.assertIn(cycle.HALT_SPEND, fh.read())
+        self.assertEqual(self.rows()[-1]["absence"], "halt")
+
+    # -- the spend guard over every product's log -------------------------------------------------------------
+    def test_the_spend_guard_sums_every_products_log(self):
+        eth = self.two_products()
+        os.makedirs(os.path.dirname(eth.decisions))
+        with open(config.DECISIONS, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(_row(DAY + "T010000Z", UNDER)) + "\n")
+        with open(eth.decisions, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(_row(DAY + "T010000Z", UNDER)) + "\n")
+        usd = 2 * UNDER * config.USD_PER_MTOK / 1e6
+        self.assertAlmostEqual(cycle.spend_today(NOW), usd)                      # $0.2436 < $0.25, over two logs
+        self.assertAlmostEqual(cycle.spend_today(NOW, config.DECISIONS), usd / 2)    # one log, as status reads it
+        with open(eth.decisions, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(_row(DAY + "T010100Z", 200_000)) + "\n")
+        self.assertGreaterEqual(cycle.spend_today(NOW), config.DAILY_SPEND_HALT_USD)
+        self.assertEqual(cycle.main(["--once"]), 0)                              # SOL's tick trips on ETH's spend
+        with open(config.HALT, encoding="utf-8") as fh:
+            self.assertIn(cycle.HALT_SPEND, fh.read())
+        self.assertEqual(self.rows()[-1]["absence"], "halt")
+        self.assert_nothing_sent()
+
+    def test_an_unreadable_log_of_any_product_trips_the_guard(self):
+        eth = self.two_products()
+        os.makedirs(eth.decisions)                                                # a directory: it cannot be read
+        self.assertEqual(cycle.spend_today(NOW), float("inf"))
+        self.assertEqual(cycle.main(["--once"]), 0)
+        with open(config.HALT, encoding="utf-8") as fh:
+            reason = fh.read()
+        self.assertIn("cannot be read", reason)
+        self.assertIn(eth.decisions, reason)
+        self.assertEqual(self.rows()[-1]["absence"], "halt")
+        self.assert_nothing_sent()
+
+    # -- arm D and table_sha -------------------------------------------------------------------------------
+    def test_columns_d_is_the_current_tables_answer_and_table_sha_its_sha(self):
+        sha = self.table(override={STATE: "sell"})                               # rule_c says buy; D's table sell
+        self.answer()
+        self.assertEqual(cycle.main(["--once"]), 0)
+        row = self.only_row()
+        self.assertEqual((row["absence"], row["rule_c"], row["prompt_b"]), (None, "buy", "v1"))
+        self.assertEqual(row["columns"]["d"], "sell")
+        self.assertEqual(row["table_sha"], sha)
+        self.assertEqual(row["columns"]["a"], rules.for_arm(ANSWERS, "a"))
+        self.assertEqual(self.urlopen.call_count, 1)                             # D costs no call
+        self.assertEqual(book._intent(dict(row, columns=dict(row["columns"], d=None)), "a", "argmax"), "buy")
+
+    def test_a_halt_or_dry_row_logs_the_table_sha_and_no_d(self):
+        sha = self.table()
+        self.assertEqual(cycle.main(["--dry", "--once"]), 0)
+        row = self.rows()[-1]
+        self.assertEqual((row["table_sha"], row["columns"]), (sha, cycle.null_columns()))
+        open(config.HALT, "w", encoding="utf-8").close()
+        with mock.patch("time.time", return_value=NOW + 60):
+            self.assertEqual(cycle.main(["--once"]), 0)
+        row = self.rows()[-1]
+        self.assertEqual((row["absence"], row["table_sha"], row["columns"]), ("halt", sha, cycle.null_columns()))
+
+    def test_no_table_or_a_refused_one_is_null_d_and_the_tick_goes_on(self):
+        self.answer()
+        self.assertEqual(cycle.main(["--once"]), 0)                              # absent: silent
+        row = self.only_row()
+        self.assertEqual((row["absence"], row["table_sha"], row["columns"]["d"]), (None, None, None))
+        self.assertNotIn("table:", self.err.getvalue())
+        self.table(prompt_sha="0" * 64)                                           # another wording's table: refused
+        with mock.patch("time.time", return_value=NOW + 60):
+            self.assertEqual(cycle.main(["--once"]), 0)
+        row = self.rows()[-1]
+        self.assertEqual((row["absence"], row["table_sha"], row["columns"]["d"]), (None, None, None))
+        self.assertIsNotNone(row["columns"]["b"])
+        self.assertIn("table:", self.err.getvalue())
+
+    def test_the_table_and_prompt_b_are_the_versions_this_tick_asks(self):
+        # CURRENT names v3, pending until a minute after this tick: the row asks v1 and looks up v1's table
+        v3 = {"version": "v3", "frozen": "2026-11-01", "note": "test", "activation_tick": "20260924T022900Z",
+              "replaces": "v1", "action": {"type": "choice", "instructions": "Be long {BASE} on strength.",
+                                           "criteria": {"buy": "pumping", "sell": "dumping", "hold": "else"}},
+              **{q: prompts.load("v1")[q] for q in prompts.CARRIED}}
+        with open(os.path.join(self.prompts_root, "v3.json"), "w", encoding="utf-8") as fh:
+            json.dump(v3, fh)
+        with open(os.path.join(self.prompts_root, "CURRENT"), "w", encoding="utf-8") as fh:
+            fh.write("v3\n")
+        sha1 = self.table("v1", override={STATE: "hold"})
+        sha3 = self.table("v3", override={STATE: "sell"})
+        self.answer()
+        self.assertEqual(cycle.main(["--once"]), 0)                              # 02:28: v3 pending
+        row = self.rows()[-1]
+        self.assertEqual((row["prompt_b"], row["table_sha"], row["columns"]["d"]), ("v1", sha1, "hold"))
+        with mock.patch("time.time", return_value=NOW + 60), \
+                mock.patch.object(feed, "snapshot", return_value=dict(SNAP, ts_rx=cycle.iso_ms(NOW + 60))):
+            self.assertEqual(cycle.main(["--once"]), 0)                          # 02:29: v3 active
+        row = self.rows()[-1]
+        self.assertEqual((row["tick_id"], row["prompt_b"], row["prompt_b_sha"]), ("20260924T022900Z", "v3", prompts.sha("v3")))
+        self.assertEqual((row["table_sha"], row["columns"]["d"]), (sha3, "sell"))
+        body = json.loads(self.urlopen.call_args.args[0].data)
+        self.assertEqual(body["questions"]["b_action"]["instructions"], "Be long SOL on strength.")
+
 
 
 if __name__ == "__main__":

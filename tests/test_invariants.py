@@ -232,7 +232,9 @@ def ref_h2(sample, outs, t0=None):
 # ---- the generator itself -----------------------------------------------------------------------------
 class Generator(unittest.TestCase):
     def test_rows_have_the_writers_shape(self):
-        keys = list(cycle.new_row("2026-09-25T21:40:00.100Z", "live"))
+        # synth writes v1-era rows (A = v1, one product): the writer's shape less the two keys v2 added,
+        # table_sha and columns.d (PREREG-v2 §10), which arrive with synth's products (the tests bullet there)
+        keys = [k for k in cycle.new_row("2026-09-25T21:40:00.100Z", "live") if k != "table_sha"]
         jev = list(cycle.new_row("2026-09-25T21:40:00.100Z", "live")["jev"])
         for seed in (1, 5):
             for r in case(seed).rows:

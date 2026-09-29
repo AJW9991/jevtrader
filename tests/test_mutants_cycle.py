@@ -76,11 +76,12 @@ class CycleMutantsTest(unittest.TestCase):
         self.enterContext(mock.patch.object(config, "SPEC", self.spec))
         self.enterContext(mock.patch.object(config, "JEV_URL", URL))
         self.enterContext(mock.patch.dict(os.environ, {"TYPESAFE_API_KEY_LOOP": KEY}))
+        os.environ.pop(config.ENV_PRODUCT, None)                  # unset inside the patch: SOL-USD, whatever the shell says
         protocol = os.path.join(self.tmp, "PROTOCOL.md")
         with open(protocol, "w", encoding="utf-8") as fh:
             fh.write("In force from: `2026-09-24`  Signed: `test`\n")
         self.enterContext(mock.patch.object(config, "PROTOCOL", protocol))
-        self.prompts_root = pin_v1(self)                      # never the live prompts/
+        self.prompts_root = pin_v1(self, frozen_a=True)       # never the live prompts/
         self.urlopen = self.enterContext(mock.patch("urllib.request.urlopen",
                                                     side_effect=AssertionError("urlopen was reached")))
         self.snapshot = self.enterContext(mock.patch.object(feed, "snapshot", return_value=SNAP))
@@ -127,7 +128,7 @@ class CycleMutantsTest(unittest.TestCase):
             clock[0] += s
             if len(self.sleeps) >= stop_at:
                 signal.raise_signal(signal.SIGTERM)
-        self.snapshot.side_effect = lambda: dict(SNAP, ts_rx=cycle.iso_ms(clock[0]))
+        self.snapshot.side_effect = lambda product=None: dict(SNAP, ts_rx=cycle.iso_ms(clock[0]))
         with mock.patch("time.time", side_effect=lambda: clock[0]), mock.patch("time.sleep", side_effect=sleep):
             return cycle.main(argv)
 
@@ -142,7 +143,7 @@ class CycleMutantsTest(unittest.TestCase):
         def sleep(s):
             self.sleeps.append(s)
             clock[0] += s
-        self.snapshot.side_effect = lambda: dict(SNAP, ts_rx=cycle.iso_ms(clock[0]))
+        self.snapshot.side_effect = lambda product=None: dict(SNAP, ts_rx=cycle.iso_ms(clock[0]))
         with mock.patch("time.time", side_effect=lambda: clock[0]), mock.patch("time.sleep", side_effect=sleep):
             self.assertEqual(cycle.main(["--dry", "--once"]), 0)
         return [round(s, 6) for s in self.sleeps], self.rows()[-1]["tick_id"]
@@ -184,9 +185,9 @@ class CycleMutantsTest(unittest.TestCase):
     def test_an_alarm_after_the_row_is_complete_never_costs_it(self):
         real = cycle._finish
 
-        def finish(row):
+        def finish(row, store=None):
             signal.raise_signal(signal.SIGALRM)               # after _run returned, before write_row begins
-            return real(row)
+            return real(row, store)
         with mock.patch.object(cycle, "_finish", side_effect=finish):
             self.assertEqual(cycle.main(["--dry", "--once"]), 0)
         row = self.only_row()
