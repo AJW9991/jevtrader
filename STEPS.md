@@ -705,10 +705,34 @@ cd ~/Projects/jev-paper-loop && grep -c 'feed: http-429' logs/loop-launchd*.log
 ```
 
 It replaces every loop plist (a product ticked twice writes lock rows), so each one is booted out and disabled, which
-keeps it from loading again at the next login, before it is bootstrapped; launchd only, not the repo (§2):
+keeps it from loading again at the next login, before it is bootstrapped; launchd only, not the repo (§2). As in switch
+steps (5) and (9), one terminal (the two commands share a shell variable): the loops go once every product's heartbeat
+names the current minute (a bootout mid-tick costs the minute its row), and the one-process plist, which loads with
+RunAtLoad, comes in a later minute than their bootout (in the same minute it would tick that minute again and write
+each product a second row for it):
 
 ```bash
-cd ~/Projects/jev-paper-loop && for l in com.alexward.jevloop.loop $(python3 -c 'from loop import config; print(*["com.alexward.jevloop.loop." + p for p in config.PRODUCTS if p != config.PRODUCT])'); do launchctl bootout gui/$(id -u)/$l; launchctl disable gui/$(id -u)/$l; done; plutil -lint launchd/one-process/com.alexward.jevloop.loop.every-product.plist && cp launchd/one-process/com.alexward.jevloop.loop.every-product.plist ~/Library/LaunchAgents/ && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.alexward.jevloop.loop.every-product.plist
+cd ~/Projects/jev-paper-loop && python3 - <<'EOF' && for l in com.alexward.jevloop.loop $(python3 -c 'from loop import config; print(*["com.alexward.jevloop.loop." + p for p in config.PRODUCTS if p != config.PRODUCT])'); do launchctl bootout gui/$(id -u)/$l; launchctl disable gui/$(id -u)/$l; done; OUT=$(date -u +%H%M) && echo "loops out at $OUT"
+import datetime, time
+from loop import config
+while True:                                                   # this minute's row is written for every product
+    m = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M")
+    beats = []
+    for p in config.PRODUCTS:
+        try:
+            with open(config.store(p).heartbeat, encoding="utf-8") as fh:
+                beats.append(fh.read().startswith(m))
+        except OSError:
+            beats.append(False)
+    if all(beats):
+        break
+    time.sleep(1)
+print("every heartbeat names", m)
+EOF
+```
+
+```bash
+cd ~/Projects/jev-paper-loop && until [ "$(date -u +%H%M)" != "$OUT" ]; do sleep 1; done; plutil -lint launchd/one-process/com.alexward.jevloop.loop.every-product.plist && cp launchd/one-process/com.alexward.jevloop.loop.every-product.plist ~/Library/LaunchAgents/ && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.alexward.jevloop.loop.every-product.plist
 ```
 
 Back: `launchctl bootout gui/$(id -u)/com.alexward.jevloop.loop.every-product`, remove its file from

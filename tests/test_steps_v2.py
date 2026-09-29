@@ -1,7 +1,7 @@
 """STEPS.md §10 (PREREG-v2's tags and switch), the commands the author runs by hand: the python snippets run here on
 scratch stores, the shell steps that only touch git run on a scratch repository, and what needs launchd or the network
 is read. Where STEPS.md and PREREG-v2.md differ, PREREG-v2.md wins; these tests hold STEPS to it."""
-import contextlib, hashlib, io, json, os, re, subprocess, tempfile, unittest
+import contextlib, datetime, hashlib, io, json, os, re, subprocess, tempfile, unittest
 from unittest import mock
 
 from loop import config
@@ -30,7 +30,7 @@ def bash_blocks(text):
 
 def heredoc(block):
     """The python a block feeds to `python3 - <<'EOF'`."""
-    m = re.search(r"python3 - <<'EOF'\n(.*?)^EOF\n", block, re.M | re.S)
+    m = re.search(r"python3 - <<'EOF'[^\n]*\n(.*?)^EOF\n", block, re.M | re.S)
     if m is None:
         raise AssertionError(f"no python3 heredoc in {block[:200]!r}")
     return m.group(1)
@@ -215,6 +215,50 @@ class ShakedownModel(Stores):
         for p, line in zip(self.products, out.splitlines()):
             self.assertEqual(line, f"{p} first v2 rows: ['jev-1.14.0'] tables: jev-1.13.0 DIFFERENT: rebuild the tables"
                                    " once (PREREG-v2 §8, §12)")
+
+
+class OneProcess(Stores):
+    """10.8: the swap to the one-process plist."""
+
+    def test_the_loops_go_once_every_heartbeat_names_this_minute_and_it_comes_a_minute_later(self):
+        # the one-process plist loads with RunAtLoad true: bootstrapped in the minute the per-product loops were booted
+        # out, it ticks that minute again and writes each product a second row for it (switch step (9) waits for a
+        # later minute for exactly this); and a bootout that lands mid-tick costs the minute its row (the S5 refuter's
+        # defect 11). The loops now go once every product's heartbeat names the current minute, and the plist comes in
+        # a later minute than their bootout.
+        blocks = bash_blocks(subsection("10.8"))
+        out_block = next(b for b in blocks if "launchctl bootout" in b)
+        in_block = next(b for b in blocks if "launchctl bootstrap" in b)
+        self.assertLess(out_block.index("python3 - <<'EOF'"), out_block.index("launchctl bootout"))
+        self.assertIn('OUT=$(date -u +%H%M)', out_block[out_block.index("launchctl bootout"):])
+        self.assertLess(in_block.index('until [ "$(date -u +%H%M)" != "$OUT" ]; do sleep 1; done'),
+                        in_block.index("launchctl bootstrap"))
+        wait = heredoc(out_block)
+
+        def minute():
+            return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M")
+
+        def beat(p, m):
+            path = config.store(p).heartbeat
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(f"{m}:04.321Z\n")
+        for p in self.products[:2]:
+            beat(p, minute())
+        beat(self.products[2], "2026-10-23T22:04")                      # its tick of this minute has not written yet
+        slept = []
+
+        def sleep(s):
+            slept.append(s)
+            if len(slept) > 5:
+                raise AssertionError("the wait never ended")
+            for p in self.products:                                   # every loop's tick lands
+                beat(p, minute())
+        with mock.patch("time.sleep", sleep):
+            out, stop = self.run_snippet(wait)
+        self.assertIsNone(stop, out)
+        self.assertTrue(slept, "it booted the loops out while a product's tick was owed")
+        self.assertIn("every heartbeat names", out)
 
 
 class SealFields(Stores):
