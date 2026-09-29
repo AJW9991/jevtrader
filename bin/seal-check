@@ -63,8 +63,9 @@ The clean tree is the draft command's own `test -z "$(git status --porcelain)"`,
 
 --since TAG exits 0 only when TAG names a commit that is an ancestor of HEAD and `git diff -U0 TAG` (every tracked file as
 it is on disk against TAG, so a change not yet committed is judged too; printed in full) touches only §13's post-seal
-allowlist: prompts/v<N>.json and prompts/v<N>.table.<p>.json with N >= 3 and p in config.PRODUCTS, prompts/CURRENT
-(bin/promote's commits), HANDOFF.md, proposals/, data/exclusions-v2.tsv and data/looks.tsv. Untracked files are named on
+allowlist: prompts/v<N>.json and prompts/v<N>.table.<p>.json with N >= 3 and p in config.PRODUCTS, each added since TAG
+(bin/promote's commits: promote writes a version's files new and never overwrites one, so one TAG holds stays as
+sealed), prompts/CURRENT, HANDOFF.md, proposals/, data/exclusions-v2.tsv and data/looks.tsv. Untracked files are named on
 a NOTE line and not judged (RESULTS-v2.md is one until it is committed).
 """
 import argparse, datetime, json, os, re, subprocess, sys, tempfile, time
@@ -579,8 +580,12 @@ def since(repo, tag, products, out):
     bad = []
     for status, path in changed(repo, commit, None, ("--",)):
         v, t = VERSION_FILE.match(path), VERSION_TABLE.match(path)
-        if (path in SINCE_FILES or path.startswith(SINCE_DIRS) or (v and int(v.group(1)) >= 3)
-                or (t and int(t.group(1)) >= 3 and t.group(2) in products)):
+        if path in SINCE_FILES or path.startswith(SINCE_DIRS):
+            continue
+        if (v and int(v.group(1)) >= 3) or (t and int(t.group(1)) >= 3 and t.group(2) in products):
+            if status != "A":
+                bad.append(f"{path}: {'removed' if status == 'D' else 'changed'} since {tag}: bin/promote only adds a "
+                           f"version's files and never overwrites one, so a file {tag} holds stays as sealed")
             continue
         bad.append(f"{path}: {'added' if status == 'A' else 'removed' if status == 'D' else 'changed'} since {tag}")
     _say(out, f"allowlist: {'PASS' if not bad else 'FAIL'}: " + ("every changed path is on §13's post-seal allowlist"

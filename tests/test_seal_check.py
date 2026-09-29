@@ -622,6 +622,30 @@ class Since(Scratch):
         self.assertIn("    | +x\ty\tz", text)
         self.assertIn("NOTE: untracked, not judged: RESULTS-v2.md", text)
 
+    def test_a_version_file_the_seal_holds_may_not_change_or_go(self):
+        # §13 after the seal: bin/promote commits, and promote only adds a version's files (it never overwrites one: a
+        # stray file is refused, "never overwritten"), so a version file or table the seal holds stays as sealed (the
+        # S5 refuter's defect 6: a hand edit or removal of one passed)
+        self.write("prompts/v3.json", "{}\n")
+        self.write(f"prompts/v3.table.{self.products[0]}.json", "{}\n")
+        self.commit("v1's promote, before the seal")
+        self.git("tag", "-f", "-a", "prereg-v2-seal", "-m", "sealed")
+        self.write("prompts/v3.json", '{"action": "a hand edit after the seal"}\n')
+        self.assertFails("--since", "prereg-v2-seal", says=[
+            "prompts/v3.json: changed since prereg-v2-seal: bin/promote only adds a version's files"], failed="allowlist")
+        self.commit("the edit committed")
+        self.assertFails("--since", "prereg-v2-seal", says=["prompts/v3.json: changed since prereg-v2-seal"])
+        self.git("rm", "-q", "prompts/v3.json", f"prompts/v3.table.{self.products[0]}.json")
+        self.commit("removed")
+        self.assertFails("--since", "prereg-v2-seal", says=[
+            "prompts/v3.json: removed since prereg-v2-seal", f"prompts/v3.table.{self.products[0]}.json: removed since"])
+        self.write("prompts/v3.json", "{}\n")
+        self.write(f"prompts/v3.table.{self.products[0]}.json", "{}\n")
+        self.write("prompts/v4.json", "{}\n")
+        self.write(f"prompts/v4.table.{self.products[0]}.json", "{}\n")
+        self.commit("v3 as sealed, and v4 promoted after the seal")
+        self.assertPasses("--since", "prereg-v2-seal")
+
     def test_a_change_off_the_allowlist_fails_committed_or_not(self):
         self.replace("loop/code.py", "Y = 2", "Y = 3")
         self.assertFails("--since", "prereg-v2-seal", says=["loop/code.py: changed since prereg-v2-seal"], failed="allowlist")
