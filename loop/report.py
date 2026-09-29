@@ -1081,7 +1081,7 @@ def in_sample(rows, t0):
 # is replayed from flat at T0 over every row of the window, excluded days included, and an excluded product-day's
 # blocks are dropped afterwards; the excluded set is the rule recomputed from the log (loop.exclusions_v2, §9.3),
 # which governs, printed beside data/exclusions-v2.tsv. Descriptive: no bootstrap, no bound, no claim (that is
-# loop.inference's, once, at day 28). The withholding (§9.5) reads T0_v2 from PREREG-v2.md §12 whatever the
+# loop.inference_v2's, once, at day 28: `make results`). The withholding (§9.5) reads T0_v2 from PREREG-v2.md §12 whatever the
 # flags say: withheld_v2 below, beside v1's withheld_until.
 TITLES_V2 = ("1. health, per product and pooled", "2. adjective occupancy, per product and pooled",
              "3. test-retest (a_action vs b_action on the same question), per product and pooled",
@@ -1585,7 +1585,8 @@ def render_v2(stores, t0=None, since=None, health_only=False, withheld=(), now=N
                     "  replayed from flat at the anchor (with --since, at the first row on or after it; the blocks that start before it"
                     " are left out) over every row, excluded days included; an excluded product-day's blocks are"
                     " dropped afterwards" + (" (the recomputed set above)" if t0 is not None else " (none without --t0)")
-                    + "; D - B and D - C at argmax only; descriptive: the H1 and family-F bounds are loop.inference's, at day 28"]
+                    + "; D - B and D - C at argmax only; descriptive: the H1 and family-F bounds are loop.inference_v2's"
+                    " (make results), at day 28"]
             secs.append({"lines": head + tl + ct["lines"]})
             out["cadence"] = ct
         out["d_agreement"] = da

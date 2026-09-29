@@ -573,6 +573,7 @@ class Withheld(unittest.TestCase):
         self.assertIn("pair B-C  fee 0 bps  [* H1 cell, PREREG-v2 §5]", out)
         self.assertIn("pair D-B  fee 0 bps", out)
         self.assertIn("[F4, PREREG-v2 §6]", out)
+        self.assertIn("the H1 and family-F bounds are loop.inference_v2's (make results), at day 28", out)
         self.assertIn("Agreement(p, v)", out)
         # the shakedown before T0_v2: a --since that keeps no sample row, on a clock inside the sample, is not withheld
         code, out, err = self._run(["--since", "2026-11-30"], self.DAY1)
