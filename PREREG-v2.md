@@ -18,7 +18,8 @@ disagreement counts; its recommendation is arm A's wording), HANDOFF.md's nightl
 first twelve lines of `data/digest-2026-09-27.md` (that day's summary line, with each arm's paper
 pnl at 0 and 120 bps, and four of its disagreement rows with their 15-minute returns and labels).
 Digest pnl is an outcome proxy; an editor who has read one says so here. Whether Alex opened a
-`data/digest-*.md` or a `logs/claude-*.txt` directly before 2026-09-29: `________` (Alex states).
+`data/digest-*.md` or a `logs/claude-*.txt` directly before 2026-09-29: **No, neither** (Alex, 2026-09-29
+~07:00Z: `make status`, the dash and the proposal tables only).
 Every number here is a health quantity (report §1–§3, PREREG-v1 §8.4), a logged feature of v1's
 live rows read with no answer or outcome beside it (§3, by `bin/fill1k-quantiles`), a synthetic
 policy-table fact (`proposals/`), or a shakedown fact printed in the sealed `PREREG.md`. Until
@@ -128,7 +129,7 @@ and D is that wording's table (B vs D is §6's D-agreement).
   §14 before that day starts. Fewer than two passing → v2 runs on `SOL-USD` and what passed, and
   every count written for three products scales with the number of products
   (`DAILY_SPEND_HALT_USD` = 0.25 × products; one table per product; §7's pooling at the actual
-  count). Alex approved running the probe from the worktree during v1's sample on `________`.
+  count). Alex approved running the probe from the worktree during v1's sample on 2026-09-29 (~07:00Z; Claude starts it).
   Written before the draft tag: Products: `SOL-USD`, `________`, `________`. `TICK_p`:
   `<P2>` `________`, `<P3>` `________`. Atoms (a10, a90): `<P2>` `________`, `<P3>` `________`.
 - **Loops and stores.** One loop process per product (`JEVLOOP_PRODUCT`; unset means `SOL-USD`;
@@ -726,4 +727,6 @@ set of `spec_sha` over sample rows, which must hold exactly one value.
 
 Each entry: date, author, what changed, and what the author had read (digest included).
 
-- (none yet)
+- 2026-09-29 ~07:05Z, Claude (Fable 5.1): header — Alex's disclosure line filled ("No, neither"); §2 — the probe
+  approval date filled. Nothing else changed. The author had read nothing new since `prereg-v2-doc` (no digest, no
+  transcript, no proposal rationale).
