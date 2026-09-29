@@ -40,6 +40,19 @@ r between `up15.noul − down15.noul` and `ret_h_bps` on one row per 900 s block
 restating the rule measures rule-matching, not outcomes (report §4.7,
 descriptive).
 
+**PREREG-v2, the second block** (PREREG-v2.md, SPEC.md v2; frozen by the `prereg-v2-draft` tag,
+built on branch `prereg-v2`). Where a v1 line above differs, these hold for the v2 build, and v1's
+readers still read the v1 log as before: products `config.PRODUCTS` (`SOL-USD` and PREREG-v2 §2's
+two probe products), one loop process per product (`JEVLOOP_PRODUCT`; unset = `SOL-USD`, v1's
+paths) or one process ticking them in sequence (`--every-product`); four arms, A frozen at `v2`
+(`config.FROZEN_A`), B the CURRENT wording, C `rule_c`, D the CURRENT wording's 81-state table
+looked up by the state (no call); `liq` read in half-ticks per product (SPEC §5); H1 is B − C,
+gross, pooled over products by time block, decided once per 15-minute block (`book.at_cadence`),
+with family F at 3,600 and 14,400 s; the direction probabilities are descriptive; the venue fee
+is the verified 90 bps (`FEE_BPS_VENUE`) and the fee columns are (0, 2, 10, 25, 50, 90);
+promotion is on PREREG-v2 §8's schedule, enforced in `bin/promote`; `data/HALT` is the one global
+stop and `data/PAUSE.<PRODUCT>` pauses one product's sends.
+
 ## 1. Toolchain and layout
 
 - `/opt/homebrew/bin/python3` (3.14). **Standard library only.** No pip.
@@ -51,8 +64,11 @@ descriptive).
 jev-paper-loop/
   CONTRACT.md            this file
   PROTOCOL.md            the carve-out Alex signs (drafted; not a builder's file)
-  SPEC.md                row schema, alphabet, thresholds, arms — frozen; its sha is in every row
-  PREREG.md              the 28-day test and stop rules — sealed by git tag before the first v2 tick
+  SPEC.md                row schema, alphabet, thresholds, arms — frozen; its sha is in every row (v2 since the
+                         build: every v2 row carries SPEC v2's sha; v1's rows prereg-v1's, `git show prereg-v1:SPEC.md`)
+  PREREG.md              v1's 28-day test and stop rules — sealed by the prereg-v1 tag
+  PREREG-v2.md           the second block's test, stop rules, build and switch; §12 holds T0_v2 and the fee tiers
+  ERRATA.md              where the sealed documents and the code disagree; the v2 deviations table (PREREG-v2 §13)
   README.md  Makefile  STEPS.md  CLAUDE.md (working rules)  HANDOFF.md (the baton)
   .github/workflows/test.yml   CI: make test on every push (3.12, 3.13, 3.14)
   loop/__init__.py
@@ -81,12 +97,21 @@ jev-paper-loop/
   bin/promote            the human apply step
   bin/readers-diff       two trees' readers on one log: counts and tick_ids only (before a pull)
   bin/seal-check         PREREG-v2 §13: the seal's (a)-(e); --draft before the draft tag; --since TAG at v2's make results
+  bin/probe              PREREG-v2 §2: the added products' probe over D (run, volume, summarize); finished, never edited
+  bin/fill1k-quantiles   PREREG-v2 §3: h's quantiles, atoms and occupancy over a log's live rows (features only)
+  bin/plists             writes and checks the per-product loop plists from launchd/loop-product.plist.in
+  bin/results-v1         v1's make results behind the prereg-v2-draft guard (ERRATA PREREG §8.1)
+  bin/backup-data        the backup job's copy of every store (STEPS §9)
+  nightly/slow_model.py  PREREG-v2 §8's pinned slow-model id, the one place it lives
+  nightly/trial-night.sh PREREG-v2 §8's trial night before the draft tag
   launchd/com.alexward.jevloop.loop.plist  launchd/com.alexward.jevloop.nightly.plist  launchd/com.alexward.jevloop.backup.plist
   launchd/loop-product.plist.in  the per-product loop plist (PREREG-v2 §2): bin/plists writes launchd/com.alexward.jevloop.loop.<P>.plist from it
                          for each P in config.PRODUCTS but SOL-USD (JEVLOOP_PRODUCT=P, logs/loop-launchd-<P>.log); `bin/plists` checks them
   launchd/one-process/com.alexward.jevloop.loop.every-product.plist  §2's one-process mode (loop.cycle --once --every-product),
                          installed only instead of every loop plist, never beside them; outside launchd/*.plist on purpose
-  prompts/v1.json        frozen (written)   prompts/v2.json (promoted 2026-09-26)   prompts/CURRENT  → "v2" (one line)
+  prompts/v1.json        frozen (written)   prompts/v2.json (promoted 2026-09-26; arm A in v2)   prompts/CURRENT  → "v2" (one line)
+  prompts/v<N>.table.<PRODUCT>.json  arm D: version N's answer on the product's 81 synthetic states (bin/promote writes them)
+  probe/<D>/             bin/probe's rows over D, committed verbatim (PREREG-v2 §2)
   fixtures/              one recorded Coinbase snapshot set, committed
   tests/                 unittest, stdlib; tests/fixture_prompts.py pins a v1-only prompts root and tests/fixture_prereg.py a PREREG.md (dash.PREREG_PATH) (no test depends on what the live prompts/CURRENT names; one checks it builds, whatever it names)
   data/   logs/   proposals/   (gitignored except proposals/*.md, data/exclusions.tsv, data/exclusions-v2.tsv and data/looks.tsv, versioned when they exist)
@@ -94,10 +119,10 @@ jev-paper-loop/
 
 ## 2. Data types (plain dicts; keys exactly as written)
 
-**Snapshot** — `loop/feed.py::snapshot(product) -> dict`
+**Snapshot** — `loop/feed.py::snapshot(product=config.PRODUCT) -> dict`
 ```
 { "ts_rx": ISO8601 UTC ms (this machine's clock, the decision timestamp),
-  "product": "SOL-USD",
+  "product": str (the product asked: a product in config.PRODUCTS; its id goes into the three URLs),
   "bid": float, "bid_size": float, "ask": float, "ask_size": float,   (level 1)
   "bids": [[price, size], ...], "asks": [[price, size], ...]
           floats, best first (bids down, asks up), at most config.BOOK_LEVELS = 100 a side,
@@ -109,7 +134,7 @@ jev-paper-loop/
   "feed_age_s": float (ts_rx minus the newest candle's start+60, i.e. how stale),
   "http": {"calls": int, "ms": int} }
 ```
-Raises `FeedError(str)` on any HTTP/parse failure, fewer than 300 closed candles, a
+Raises `FeedError(str)` on any HTTP/parse failure, a book naming another product, fewer than 300 closed candles, a
 window that is not contiguous, a window candle whose open/high/low/close is not finite
 and positive (or whose volume is not finite and non-negative), a candle start outside [0, 2^40), `feed_age_s` over
 `MAX_FEED_AGE_S` (120 s), an empty or crossed book, or a level that is not a finite
@@ -127,10 +152,12 @@ retries inside feed.
   "rv15": float, "rv15_med": float, "rv_ratio": float,
   "window_min": int }
 ```
-**Adjectives** — `loop/state.py::adjectives(feat) -> dict`, each value one word:
+**Adjectives** — `loop/state.py::adjectives(feat, product=config.PRODUCT) -> dict`, each value one word:
 ```
-liq   ∈ {thin, normal, deep}      fill1k_bps > LIQ_THIN_BPS (5.0) or fill1k_short → thin;
-                                  fill1k_bps < LIQ_DEEP_BPS (1.0) → deep
+liq   ∈ {thin, normal, deep}      h = fill1k_bps·mid/(1e4·TICK_P[product]/2) (half-ticks; state.half_ticks);
+                                  h > thin cut or fill1k_short (or no reading) → thin; h < a10 + 0.5 → deep, read first
+                                  (config.liq_cuts(product): a10 + 0.5, a90 + 0.5 or a90 − 0.5 under LIQ_THIN_FALLBACK;
+                                  SOL-USD: deep h < 1.5, thin h > 4.5; SPEC §5; v2, PREREG-v2 §3)
 flow  ∈ {quiet, organic, bot_war} vol5_usd < p10 → quiet; > p90 → bot_war   (percentiles over the window's 5-min sums)
 trend ∈ {dumping, flat, pumping}  ret15_z < -1 → dumping; > +1 → pumping
 vol   ∈ {calm, normal, violent}   rv_ratio < 0.5 → calm; > 2.0 → violent
@@ -140,11 +167,14 @@ quote − mid)/mid, sell = 1e4·(mid − VWAP of walking the bids for NOTIONAL_U
 the levels cannot fill costs inf, logged as `fill1k_bps: null` with `fill1k_short: true`.
 `l1_min_usd` stays a logged feature and sets no word. 2026-09-24, decided by Alex: liq
 was `l1_min_usd < NOTIONAL → thin; > 10*NOTIONAL → deep`; level 1 swung $1–$11,580 within
-a minute and read thin 7/12 while a $1,000 order cost 0.44–2.02 bps (SPEC §5).
+a minute and read thin 7/12 while a $1,000 order cost 0.44–2.02 bps (SPEC §5). v1 then cut `fill1k_bps` itself at
+`LIQ_THIN_BPS` (5.0) and `LIQ_DEEP_BPS` (1.0); v2 reads h (above), and nothing in `loop/` reads
+those two any more.
 Exact thresholds live in `loop/config.py` and are frozen into `SPEC.md`.
 **No position in the state.** Arms A and B ride one request on one state, so
 the state must be identical for both; a position would differ per arm.
-`state_string(adj) -> str` = `"SOL: liquidity {liq}, flow {flow}, trend {trend}, vol {vol}"`.
+`state_string(adj, base="SOL") -> str` = `"{base}: liquidity {liq}, flow {flow}, trend {trend}, vol {vol}"`,
+`base` = `config.base(product)` (`SOL`, `ETH`, …; capital ASCII letters, else `ValueError`).
 Must contain no digit. `rule_c(adj) -> "buy"|"sell"|"hold"`:
 - buy  iff trend == pumping and vol != violent and liq != thin
 - sell iff trend == dumping or vol == violent
@@ -153,14 +183,39 @@ Must contain no digit. `rule_c(adj) -> "buy"|"sell"|"hold"`:
 Actions are position-free intents: **buy = want to be long, sell = want to be
 flat, hold = no change.** The book maps intent onto the current position.
 
-**Questions** — `loop/prompts.py::build(v1, current) -> dict`
+**Questions** — `loop/prompts.py::build(frozen_a, current, base, v1=None, root=None) -> dict`
 ```
-{ "a_action": v1["action"],          # choice
-  "b_action": current["action"],     # choice — identical to a_action until the first promote
-  "skip":  v1["skip"],               # noul
-  "up15":  v1["up15"],               # noul
-  "down15": v1["down15"] }           # noul
+{ "a_action": render(frozen_a["action"], base),   # choice — config.FROZEN_A's document (prompts/v2.json)
+  "b_action": render(current["action"], base),    # choice — current(tick_id)'s; identical to a_action until the first promote
+  "skip":  v1["skip"],                            # noul, never rendered
+  "up15":  v1["up15"],                            # noul
+  "down15": v1["down15"] }                        # noul
 ```
+`render` replaces the version's base placeholder with `base`: the whole word `SOL` in v1/v2
+(`LEGACY_TOKEN`; so SOL-USD's requests are byte-identical to v1's), the literal `{BASE}` in v3 and
+later (`BASE_TOKEN`). Any other product word (a base of `config.PRODUCTS` or
+`config.PROBE_CANDIDATES`, whole and capitalised, or `{BASE}` in v1/v2) raises `PromptError` in
+`load()` and `build()` (PREREG-v2 §1).
+
+**Prompt versions** — `loop/prompts.py` (PREREG-v2 §8):
+```
+named(root=None) -> "vN"                 the one name in prompts/CURRENT (a second name, or none, is PromptError)
+current(tick_id=None, root=None) -> "vN" the version B asks at tick_id (None: this minute): from named(), follow
+                                         `replaces` while tick_id < that version's `activation_tick`
+pending(tick_id=None, root=None) -> "vN"|None  the version CURRENT names while it is not yet active, else None
+activation_of(version, root=None) -> (activation_tick, replaces)|None
+table(version, product, root=None) -> {"answers": {state string: "buy"|"sell"|"hold"}, "sha": canonical sha}|None
+```
+A version file written by `bin/promote` during v2 carries `"activation_tick": "YYYYMMDDTHHMM00Z"`
+(T0_v2 + 86,400 (E − 1)) and `"replaces": "v<M>"` together, or neither (v1, v2: active whenever
+reached). A table file, `prompts/<version>.table.<product>.json`:
+```
+{ "version": "v2", "product": "SOL-USD", "prompt_sha": <canonical sha of prompts/v2.json>,
+  "model_answered": "jev-...", "answers": {"SOL: liquidity thin, flow quiet, trend dumping, vol calm": "sell", ...} }
+```
+exactly the product's 81 state strings, each `buy`, `sell` or `hold`; `table()` returns None when
+the file is absent and raises `PromptError` on any other shape, another version or product, or a
+`prompt_sha` that is not the version file's own.
 Wire format per question: `{"type": "choice"|"noul", "instructions": str, "criteria": {...}}`.
 For choice, criteria keys are exactly `buy`, `sell`, `hold`. For noul, criteria
 keys are exactly `yes`, `no` (this is what the live inject-screen sends and it
@@ -201,22 +256,30 @@ raises JevError(kind, detail)   kind ∈ {"unsigned","no-key","ledger","http-4xx
 Arm C is the single column `rule_c`. When answers are null (dry mode, error), every
 model column is `null`.
 
-**Row** — one line of `data/decisions.jsonl` per tick, append-only:
+**Row** — one line of the product's decision log per tick (`config.store(product).decisions`:
+`data/decisions.jsonl` for SOL-USD, `data/<PRODUCT>/decisions.jsonl` otherwise), append-only:
 ```
 { "v": 1, "tick_id": "YYYYMMDDTHHMM00Z", "ts_rx": ISO ms, "mode": "live"|"dry",
-  "venue": "coinbase", "product": "SOL-USD", "cadence_s": 60, "horizon_s": 900,
+  "venue": "coinbase", "product": <config.PRODUCTS>, "cadence_s": 60, "horizon_s": 900,
   "bid","bid_size","ask","ask_size","mid": float, "book_time": str|null, "feed_age_s": float,
   "features": {...}, "adj": {...}, "state": str, "spec_sha": str,
-  "prompt_a": "v1", "prompt_a_sha": str, "prompt_b": "vN", "prompt_b_sha": str,
+  "prompt_a": "v2", "prompt_a_sha": str, "prompt_b": "vN", "prompt_b_sha": str, "table_sha": str|null,
   "model_requested": str, "model_answered": str|null, "drift": bool,
   "jev": {"latency_ms": int|null, "input_tokens": int|null, "error": str|null, "key_path": str|null},
   "answers": null | {"a_action":{...},"b_action":{...},"skip":{...},"up15":{...},"down15":{...}},
   "rule_c": "buy"|"sell"|"hold",
-  "columns": {"a": {...}|null, "b": {...}|null},
+  "columns": {"a": {...}|null, "b": {...}|null, "d": "buy"|"sell"|"hold"|null},
   "absence": null | "feed"|"jev"|"halt"|"lock"|"guard" }
 ```
 `tick_id` is `ts_rx` floored to the minute. A tick that fails before the feed
 still writes a row with `absence` set and everything else null it can't fill.
+v2 (PREREG-v2 §10, SPEC §2): `product` is the loop's (`JEVLOOP_PRODUCT`); `prompt_a` is
+`config.FROZEN_A` (`v2`; v1 rows carry `v1`); `prompt_b` is `prompts.current(tick_id)` for the
+row's own tick; `table_sha` is `prompts.table(prompt_b, product)`'s sha whenever the tick read
+it (dry and halt rows included), null when absent or refused; `columns.d` is that table's answer
+for `state` on a row that reached step 7, null otherwise or when there is no table or no such
+state. `v` stays 1; a v1 row has no `table_sha` and no `columns.d`, and every reader treats the
+missing keys as null.
 
 **Outcome** — `loop/outcomes.py::join(rows, horizon_s=900) -> dict[tick_id -> outcome]`
 ```
@@ -240,31 +303,58 @@ apply(pos: dict|None, intent: str, bid, ask, fee_bps) -> (pos', fill|None)
    buy when flat  → open: qty = NOTIONAL/ask, fee = NOTIONAL*fee_bps/1e4
    sell when long → close at bid, fee = qty*bid*fee_bps/1e4 (the filled value; SPEC §10)
    buy when long, sell when flat, hold → no-op (fill None)
-replay(rows, outcomes, arm: "a"|"b"|"c", column: str, fee_bps) -> {"equity": [...], "trades": [...], "pnl_bps_per_tick": {tick_id: float},
+replay(rows, outcomes, arm: "a"|"b"|"c"|"d", column: str, fee_bps) -> {"equity": [...], "trades": [...], "pnl_bps_per_tick": {tick_id: float},
                                                                     "position": {tick_id: qty}, "forced_hold": int}
    mark-to-mid each tick; pnl per tick is computed DIRECTLY (carried qty*(mid_t - mid_prev); open qty*(mid_t - ask) - fee;
    close qty*(bid - mid_prev) - fee), in bps of NOTIONAL, so two arms with the same position give d_t == 0.0 exactly (SPEC §10)
 paired(rows, outcomes, x, y, column, fee_bps) -> [ (tick_id, d_t) ]   d_t = pnl_x - pnl_y
+at_cadence(rows, c: int, t0: epoch) -> rows   PREREG-v2 §4: each c-block's decision row as it is, every other answered
+   row of the block a copy with every intent `hold` (book._held); feed the result to replay/paired unchanged
+decision_rows(rows, c, t0) -> {block j: row}  the first row of each block (tick_id, then ts_rx) replay would not force a hold on
 ```
-Fee constants come from `config.FEE_BPS_COLUMNS` = (0, 2, 10, 25, 60, 120), ascending; the
-primary is `config.FEE_BPS_PRIMARY` = 0.0, gross, the H1 cell; the venue's own taker fee
-is `config.FEE_BPS_VENUE` = 120.0, with its UNVERIFIED source in `FEE_BPS_VENUE_SOURCE`.
-(2026-09-24, decided by Alex: the primary was the venue's taker fee.)
+Arm `d` reads `columns.d` and has the one column `argmax` (`book.D_COLUMN`; any other raises); a
+null `columns.d` on an otherwise answered row is a hold for D alone, counted in its
+`forced_hold`; every forced hold of SPEC §10 applies to D too. Fee constants come from
+`config.FEE_BPS_COLUMNS` = (0, 2, 10, 25, 50, 90), ascending; the primary is
+`config.FEE_BPS_PRIMARY` = 0.0, gross, the H1 cell; the venue's own taker fee is
+`config.FEE_BPS_VENUE` = 90.0, verified in-account 2026-09-27, its source in
+`FEE_BPS_VENUE_SOURCE` (v1: 60/120 and 120.0, UNVERIFIED). (2026-09-24, decided by Alex: the
+primary was the venue's taker fee.)
+
+**Stores and switches** — `loop/config.py` (PREREG-v2 §2), each computed at call time:
+```
+store(product) -> Store(decisions, sends, lock, heartbeat)   data/... for SOL-USD (v1's paths), data/<PRODUCT>/... otherwise
+pause(product) -> "data/PAUSE.<PRODUCT>"      loop_product(environ=None) -> JEVLOOP_PRODUCT, or "SOL-USD" unset
+base(product) -> "SOL"                        liq_cuts(product) -> (deep_below, thin_above) in h
+HALT, EXCLUSIONS_V2 ("data/exclusions-v2.tsv"), LOOKS ("data/looks.tsv"): at REPO/data whatever the product
+```
+A product outside `config.PRODUCTS` raises `ValueError` from `store`, `pause` and `liq_cuts` (never a
+path), and a `JEVLOOP_PRODUCT` outside it from `loop_product`; `base` only splits the id.
 
 ## 3. The tick (`loop/cycle.py`)
 
+One tick is one product's: `JEVLOOP_PRODUCT` names it (unset: `SOL-USD`; a value not in
+`config.PRODUCTS` exits 2 before any directory is made), and every file below that is not
+`data/HALT` or `data/PAUSE.*` is that product's (`config.store(product)`). `--every-product` ticks
+every product in sequence in one process under one 50 s watchdog budget a round (a product
+reached with less than a second left is not ticked that minute, no row); with `JEVLOOP_PRODUCT`
+set it is a usage error (exit 2).
+
 Order, every time:
 1. **Guards.** Resolved repo path must not start with either prefix in
-   `config.FORBIDDEN_PREFIXES` → exit 3. `data/HALT` exists → this tick is
-   HALTED. Today's spend (sum over today's rows of the billed tokens: the logged
+   `config.FORBIDDEN_PREFIXES` → exit 3. `data/HALT` exists (the one global stop) → this tick is
+   HALTED. Today's spend (summed over EVERY product's decision log, PREREG-v2 §2; sum over today's rows of the billed tokens: the logged
    `jev.input_tokens` when positive, else `config.JEV_TOKENS_IF_UNKNOWN` = 2000 for a
    live row that reached the model, SPEC §13.3; × `config.USD_PER_MTOK` / 1e6) ≥
    `config.DAILY_SPEND_HALT_USD` → write
    `data/HALT` with the reason; this tick is HALTED. A log that exists but cannot be read (a
    0200 mode, a directory, EIO), or a count, or today's sum of them, past a float's range,
    counts as over the limit: the guard cannot count, so it trips (2026-09-28); a missing log
-   is $0. `fcntl.flock` on
-   `data/loop.lock` non-blocking; if held → `absence: "lock"`, exit 0.
+   is $0 (`config.DAILY_SPEND_HALT_USD` = 0.25 × the number of products). `data/PAUSE.<PRODUCT>`
+   exists → this tick is HALTED too, for its product only (PREREG-v2 §2: written by hand, "prereg:
+   3 bad days"; the spend guard and the nightly ignore it; observation and t+h outcomes go on).
+   `fcntl.flock` on the product's `loop.lock` (`data/loop.lock` for SOL-USD) non-blocking; if held →
+   `absence: "lock"`, exit 0.
    **HALT stops sends only** (PROTOCOL §3.8, SPEC §13.2): a HALTED tick runs
    steps 2–4 as usual and then writes its row with `absence: "halt"` in place
    of steps 5–7 — no ledger row, no send, no body printed — and exits 0. The
@@ -273,16 +363,21 @@ Order, every time:
    that did not happen.
 2. **Feed.** `snapshot()`. On `FeedError` → row with `absence: "feed"`, exit 0.
 3. **State.** features → adjectives → state string → rule_c.
-4. **Prompts.** load v1 and CURRENT; shas; questions.
-5. **Dry?** `--dry` → write the row with `answers: null`, `columns: {a:null,b:null}`,
+4. **Prompts.** `current(tick_id)` for this tick; load v1, `config.FROZEN_A` (v2) and it; shas;
+   questions rendered for the product's base. Then arm D's table, `prompts.table(current,
+   product)`: `table_sha`, and its answer for the state, kept for step 7. A table that does not load
+   (absent, refused, or any other exception short of the watchdog and SIGTERM) leaves `table_sha`
+   and `columns.d` null, is said on stderr, and costs nothing else.
+5. **Dry?** `--dry` → write the row with `answers: null`, `columns: {a:null,b:null,d:null}`,
    `mode: "dry"`. No ledger row, no send. This is the free thing, run first.
 6. **Ask.** `jev.ask()`. On `JevError` → row with `absence: "jev"`, `jev.error` set.
    On 401/403 also write `data/HALT` ("key rejected"). Any other exception once
    the send has begun → `absence: "jev"`, `jev.error: "unexpected"` (the request
    may have left, so the spend guard must charge it; `guard` rows cost $0).
-7. **Columns.** `rules.columns()` for a and b.
-8. **Write** the row (atomic append: build the line, one `write`, `flush`, `fsync`).
-9. **Heartbeat.** touch `data/heartbeat` with `ts_rx`.
+7. **Columns.** `rules.columns()` for a and b; `d` the table's answer from step 4.
+8. **Write** the row to the product's log (atomic append: build the line, one `write`, `flush`,
+   `fsync`; a line that follows a torn one starts with a newline).
+9. **Heartbeat.** touch the product's heartbeat (`data/heartbeat` for SOL-USD) with `ts_rx`.
 
 `--once`: one tick, exit. `--forever`: loop, sleeping until the next wall-clock
 minute boundary (compute from `time.time()`; do not accumulate drift). A 50 s
@@ -312,9 +407,10 @@ Print, plain text, in this order:
    the arms are on different SIDES (long vs flat) into or out of the tick
    ("disagreement ticks"; a quantity difference between two longs is not one),
    mean d_t, mean d_t on disagreement ticks, hit rate on disagreement ticks,
-   trades/day each side. Primary cell is marked; the venue fee (`FEE_BPS_VENUE`), its
-   UNVERIFIED source and a per-arm line at it are printed beside the table as the
-   realistic-cost column (2026-09-24, decided by Alex). Beside the all-ticks figure,
+   trades/day each side. Primary cell is marked; the venue fee (`FEE_BPS_VENUE`, 90 bps since
+   the v2 build, verified; v1's 120 UNVERIFIED), its source and a per-arm line at it are printed
+   beside the table as the realistic-cost column (2026-09-24, decided by Alex). PREREG-v2 adds D − B
+   and D − C at argmax only (`report.PAIRS`, on rows that carry `columns.d`). Beside the all-ticks figure,
    PREREG §3's statistic: 900 s blocks anchored at T0 (`--t0`; else at the log's
    first tick), n blocks, mean S_k, disagreement blocks and their share, mean S_k
    on them. `--t0` cuts the rows to [T0, T0 + 28 d) before any replay, so every
@@ -391,7 +487,9 @@ Every `--unblind` is a look, whether or not it lifts a withholding: `loop/looks.
 argv, HEAD) to `data/looks.tsv` before anything is printed, and a look it cannot record is refused
 (exit 2). `--sample` without
 `--log` reads T0_v2 from §12. `make status` and the dash show every store, HALT (REPO/data) and
-each PAUSE, and the pending prompt version on its own line; still health only.
+each PAUSE, and the pending prompt version on its own line; still health only: neither A's
+agreement with C nor arm D's agreement, both answer-level and withheld with §4–§7 until
+T0_v2 + 28 d (PREREG-v2 §6; `HEALTH_N` stays 3).
 
 **PREREG-v2's inference (`loop/inference_v2.py`, `make results`).** `python3 -m loop.inference_v2 --sample
 [--out RESULTS-v2.md] [--accept-pending] [--no-seal]` reads every product's store once (each log's sha and byte length
@@ -417,6 +515,14 @@ descriptive, `report.cadence_table` at PREREG-v2 §6's fee columns (`inference_v
 `fees`), arm D's and A's agreement and the direction probabilities per product. v1's `loop/inference.py` is unchanged.
 
 ## 5. Nightly
+
+**Which version a reader asks (PREREG-v2 §8; this contract amended for v2).** Every reader calls
+`prompts.current(tick_id)` with the tick it describes: the loop its own tick, the digest each
+row's tick, `policy_table` and `bin/promote` now, dash and status now, with `pending(now)` shown on
+a line of its own. So a promotion written on day E − 1 changes nothing before its
+`activation_tick`, every row and every c-block of a product-day carries one `prompt_b`, and a
+pending version is invisible to the digest and to `policy_table` (both test it). A hand edit of
+CURRENT after T_first_v2 is a deviation.
 
 `nightly/digest.py [--date YYYY-MM-DD] [--data DIR]` → `data/digest-<date>.md` (PREREG-v2 §8): the UTC day just
 closed, over every product's log (where `config.store` puts it, under `--data` when given), only the rows carrying
@@ -529,6 +635,47 @@ why). Tests must pass offline.
   `undefined (no variance in lean)` and the whole report still renders; Brier
   and base-rate Brier by hand; tail counts at their edges; `--t0` cuts the
   units to the sample.
+
+v2 (PREREG-v2 §10's tests bullet and each change's own; `tests/synth.py` writes a synthetic
+log per product, v1-era and v2-era rows, with a cadence knob):
+- config and cycle: with `JEVLOOP_PRODUCT` unset every v1 path (`data/decisions.jsonl`,
+  `sends.tsv`, `loop.lock`, `heartbeat`) and the `RULE_C` pin are unchanged; a product outside
+  `PRODUCTS` exits 2 before any directory; each per-product table holds exactly `PRODUCTS`;
+  `data/PAUSE.<X>` stops only X's sends while X's observation and t + h outcomes continue, and
+  `data/HALT` stops every product and the nightly; the spend guard sums every product's log;
+  `--every-product`'s budget; the row carries `table_sha` and `columns.d`, and a table that fails
+  costs D alone.
+- state and prompts: `liq` at and around each product's cuts in h, the thin fallback; the state
+  string's base; each product's rendered A differs from SOL's only in the base token, SOL's is
+  byte-identical to v1's; a product word is refused; `current(tick_id)` follows `replaces` for as
+  many steps as the tick needs and refuses a loop; a pending version is invisible to the digest
+  and to `policy_table`; every added product's table strings begin with its own base.
+- book: `at_cadence`'s decision row and hold, shared by every arm; D's one column; a null
+  `columns.d` a hold for D alone.
+- report, dash, status: withholding of §4–§7 with no flags, with `--t0` T0_v2 and with
+  `--since`, over a three-product synthetic log; every `--unblind` a line in `data/looks.tsv`;
+  dash and status print health only, neither A-agreement nor D-agreement.
+- inference: `tests/test_invariants.py` holds the readers to independent transcriptions of
+  PREREG-v2 §4–§6 (H1's seed 20261023 at `sorted[249]`, F's 20261024–20261027 at `sorted[62]`, L = 4
+  units, R = 10,000, each cell's bound on a fixed series hard-coded, a golden series on which
+  `sorted[61] ≠ sorted[62]`); `tests/test_report_v2.py` replays an excluded day between two kept
+  days with arm positions that differ across it; `test_inference_golden` stays at v1's seed for
+  v1's readers.
+- `bin/promote`: refuses with §12's T0_v2 blank, at E < 8, at E > 22, at spacing < 7, within
+  600 s of the activation, on a second pending version and without the `prereg-v2-seal` tag;
+  `--table-only` refuses a table whose CURRENT sha is not `prompts/v2.json`'s.
+- nightly: the digest's bytes on a fixed three-product day (`tests/golden/digest-v2.md`);
+  `policy_table` per product, its `.table.json` and `--fill`; `propose.sh`'s `--model` and fresh
+  `CLAUDE_CONFIG_DIR`; the per-product loop plists and the one-process plist.
+- documents: `tests/test_spec.py` holds SPEC v2 to the code (the row's keys, §5's per-product
+  table, §10's fees and verified row, §14's names); `tests/test_contract.py` holds this file's v2
+  interfaces to the code; `tests/test_errata.py` reads ERRATA.md as `bin/seal-check` does, and
+  every SPEC and PREREG row folded; `tests/test_frozen.py` pins by sha SPEC v2, this file,
+  PREREG-v2.md, `nightly/PROMPT.md` v2, the sources of `nightly/digest.py` and
+  `nightly/policy_table.py`, `prompts/v1.json` and `prompts/v2.json` (and one v2 table per product
+  once they exist), and by value every SPEC §14 constant and the inference constants; v1's SPEC sha
+  resolves with `git show prereg-v1:SPEC.md`. `tests/test_products_added.py` runs the suite with
+  three products; `tests/test_seal_check.py` runs `bin/seal-check` on scratch repositories.
 
 ## 7. Style
 
