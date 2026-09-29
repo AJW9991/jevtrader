@@ -5,7 +5,8 @@ through loop.outcomes.load; keep only the rows carrying this tree's SPEC sha (th
 runs the v2 loop), so the switch-day digests never mix v1-code rows in; join every row to its t+h outcome within its
 own product (loop.outcomes.join, the 15-minute join); replay arms A, B and C (loop.book) at 0 bps (direction, gross
 of fees, the H1 cell) and at the venue's verified retail maker and taker (MAKER_BPS, TAKER_BPS); and write
-data/digest-<date>.md: one summary line per product and one pooled over the products, up to DISAGREE_MAX arm-B
+data/digest-<date>.md: one summary line per product and one pooled over the products (each arm's trades and PnL the
+mean over the products, as PREREG-v2 §4 pools; the counts summed), up to DISAGREE_MAX arm-B
 disagreement rows over the products, a per-state table of the 81 states per product, the CURRENT `action` question
 verbatim with its base token written {BASE}, and the prompt shas.
 May not: read the key or name its value, copy a raw log line, or print a single feature value. The model that reads
@@ -215,8 +216,10 @@ def _fees_s():
 
 
 def _arms_s(pnl):
-    """'A 3 trades +1.0 / -149.0 / -269.0 bps, B ...': per arm the fills and the PnL at each fee of FEES."""
-    return ", ".join(f"{arm.upper()} {pnl[0][arm][0]} trades " + " / ".join(f"{p[arm][1]:+.1f}" for p in pnl) + " bps"
+    """'A 3 trades +1.0 / -149.0 / -269.0 bps, B ...': per arm the fills and the PnL at each fee of FEES (fills a count
+    on a product's line, a mean to one decimal on the pooled line)."""
+    n = lambda x: str(x) if isinstance(x, int) else f"{x:.1f}"
+    return ", ".join(f"{arm.upper()} {n(pnl[0][arm][0])} trades " + " / ".join(f"{p[arm][1]:+.1f}" for p in pnl) + " bps"
                      for arm in ARMS)
 
 
@@ -243,11 +246,16 @@ def summary_line(label, s):
 
 
 def pooled(sums):
-    """The products' figures added up: counts, fills and PnL summed (each product replayed on its own), occupancy over
-    every product's rows."""
+    """The products' day pooled: each arm's fills and PnL the MEAN over the products, each replayed on its own (PREREG-v2
+    §4: the pooled statistic is the mean over the products, a product with no row adding zero, as an empty block sums
+    to zero there; the digest has no exclusions); the counts summed; occupancy over every product's rows. One product:
+    its own figures."""
+    if len(sums) == 1:
+        return dict(sums[0])
     pnl = []
     for i in range(len(FEES)):
-        pnl.append({arm: (sum(s["pnl"][i][arm][0] for s in sums), sum(s["pnl"][i][arm][1] for s in sums)) for arm in ARMS})
+        pnl.append({arm: (sum(s["pnl"][i][arm][0] for s in sums) / len(sums), sum(s["pnl"][i][arm][1] for s in sums) / len(sums))
+                    for arm in ARMS})
     return {"day": [r for s in sums for r in s["day"]], "ticks": sum(s["ticks"] for s in sums),
             "answered": sum(s["answered"] for s in sums), "absent": sum((s["absent"] for s in sums), collections.Counter()),
             "priced": sum(s["priced"] for s in sums), "filled": sum(s["filled"] for s in sums), "pnl": pnl,
@@ -298,7 +306,8 @@ def render(d, sums, cur_name, cur_doc, sha_a, shas_b, skipped):
     out = [f"# digest {d.isoformat()}", "", f"{d.isoformat()} UTC, the rows of this tree's SPEC" + (f"; {note}" if note else ""),
            ""]
     out += [summary_line(s["product"], s) for s in sums]
-    out += [summary_line(f"pooled over {len(sums)} product{'s' if len(sums) != 1 else ''} (sums)", pool), "",
+    out += [summary_line(f"pooled over {len(sums)} product{'s' if len(sums) != 1 else ''} (trades and PnL: the mean over "
+                         "the products, as PREREG-v2 pools; counts: sums)", pool), "",
             f"## arm B disagreements (confidence >= {DISAGREE_CONF:g}, label at t+h contradicts the "
             f"choice; {len(shown)} of {len(dis)} shown over the products, highest confidence first)", "",
             "| state | choice | confidence | ret_h_bps | label |", "|---|---|---|---|---|"]

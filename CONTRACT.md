@@ -416,7 +416,8 @@ descriptive, `report.cadence_table` at PREREG-v2 §6's fee columns (`inference_v
 `nightly/digest.py [--date YYYY-MM-DD] [--data DIR]` → `data/digest-<date>.md` (PREREG-v2 §8): the UTC day just
 closed, over every product's log (where `config.store` puts it, under `--data` when given), only the rows carrying
 this tree's SPEC sha (the v2 spec_sha: a switch-day digest mixes no v1-code rows in). One summary line per product
-and one pooled (sums): ticks, absences, outcomes joined, occupancy, trades and paper PnL per arm (A, B, C) at 0 bps
+and one pooled (each arm's trades and PnL the mean over the products, as PREREG-v2 §4 pools; the counts summed):
+ticks, absences, outcomes joined, occupancy, trades and paper PnL per arm (A, B, C) at 0 bps
 (direction), at the venue's verified maker (50) and taker (90), the versions B was read from, and B's disagreement
 count. Every arm-B figure comes from rows whose `prompt_b` is the version `prompts.current(tick_id)` names for that
 row's tick (a promotion inside the day splits B's rows at its activation; a row asking any other wording is counted,

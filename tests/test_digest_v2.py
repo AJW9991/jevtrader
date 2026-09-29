@@ -18,6 +18,7 @@ from nightly import digest
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GOLDEN = os.path.join(REPO, "tests", "golden", "digest-v2.md")
+POOLED = "pooled over 3 products (trades and PnL: the mean over the products, as PREREG-v2 pools; counts: sums)"
 DAY = datetime.date(2026, 10, 30)
 T0 = datetime.datetime(2026, 10, 30, 10, 0, 0, tzinfo=datetime.timezone.utc)
 PRODUCTS3 = ("SOL-USD", "ETH-USD", "XRP-USD")
@@ -226,7 +227,7 @@ class DigestV2(unittest.TestCase):
     def test_per_product_and_pooled_at_zero_and_the_verified_maker_and_taker(self):
         text, _ = self._build()
         fees = "paper PnL at 0 bps (direction) / 50 bps (venue maker) / 90 bps (venue taker): "
-        for label in PRODUCTS3 + ("pooled over 3 products (sums)",):
+        for label in PRODUCTS3 + (POOLED,):
             self.assertIn(fees, _line(text, label))
         # SOL is v1's fixture: B opens at 0, closes at 1, opens at 2, closes at 5 (four fills); C buys at 0 and holds
         sol = _line(text, "SOL-USD")
@@ -237,15 +238,19 @@ class DigestV2(unittest.TestCase):
         c = s["SOL-USD"]["pnl"]
         self.assertAlmostEqual(c[0]["c"][1] - c[1]["c"][1], 50.0, places=9)             # one fill: the maker exactly
         self.assertAlmostEqual(c[0]["c"][1] - c[2]["c"][1], 90.0, places=9)             # and the taker exactly
+        # pooled as PREREG-v2 §4 pools (S-bar: the MEAN over the products), not the sum the digest printed before (the S4
+        # refuter's defect 7); the counts stay sums. B: 4, 2 and 1 fills at -1 bps each at 0 bps
         pool = digest.pooled(list(s.values()))
         for i in range(3):
             for arm in digest.ARMS:
-                self.assertEqual(pool["pnl"][i][arm][0], sum(s[p]["pnl"][i][arm][0] for p in PRODUCTS3))
-                self.assertAlmostEqual(pool["pnl"][i][arm][1], sum(s[p]["pnl"][i][arm][1] for p in PRODUCTS3), places=9)
-        line = _line(text, "pooled over 3 products (sums)")
-        self.assertTrue(line.startswith("pooled over 3 products (sums) | ticks 113, answered 110, absence feed:1 halt:1 jev:1,"), line)
-        self.assertIn(f"B {pool['pnl'][0]['b'][0]} trades " + " / ".join(f"{pool['pnl'][i]['b'][1]:+.1f}" for i in range(3)), line)
+                self.assertAlmostEqual(pool["pnl"][i][arm][0], sum(s[p]["pnl"][i][arm][0] for p in PRODUCTS3) / 3, places=9)
+                self.assertAlmostEqual(pool["pnl"][i][arm][1], sum(s[p]["pnl"][i][arm][1] for p in PRODUCTS3) / 3, places=9)
+        line = _line(text, POOLED)
+        self.assertTrue(line.startswith(POOLED + " | ticks 113, answered 110, absence feed:1 halt:1 jev:1,"), line)
+        self.assertIn("B 2.3 trades -2.3 / -119.0 / -212.3 bps", line)                  # (4 + 2 + 1) / 3; -7 / 3; ...
+        self.assertIn("C 0.3 trades -0.3 / -17.0 / -30.3 bps", line)
         self.assertTrue(line.endswith("| B disagreements 7"), line)
+        self.assertEqual(digest.pooled([s["SOL-USD"]])["pnl"], s["SOL-USD"]["pnl"])      # one product: its own figures
 
     def _parts(self, p):
         day = [r for r in self.logs[p] if r["spec_sha"] == self.spec]
