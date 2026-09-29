@@ -2,7 +2,7 @@
 request per state per product carrying the candidates and CURRENT, each rendered for the product's base; beside
 proposals/<date>.md a proposals/<date>.table.json holding every wording's 81 answers per product, whose sha the .md
 names; the deadline scaled by the product count; a pending version invisible (CURRENT is what current() names now);
-and a CURRENT-only table from a proposal with no candidates.
+a CURRENT-only table from a proposal with no candidates; and --fill, attended, re-sending only unanswered states.
 Offline: loop.jev.ask is mocked and urlopen raises; config.HALT, PROPOSALS and PROMPTS point at temp dirs."""
 import fnmatch, hashlib, io, json, os, tempfile, unittest
 from contextlib import redirect_stdout
@@ -218,6 +218,105 @@ class PolicyTableV2(unittest.TestCase):
         self.assertEqual(first, "dry: 243 payloads, 0 sent")
         self.assertEqual(json.loads(body)["state"], policy_table.states("SOL-USD")[0][0])
         self.ask.assert_not_called()
+
+
+class Fill(unittest.TestCase):
+    """--fill proposals/<date>.table.json: attended; asks only unanswered states, with the questions the night sent;
+    writes their answers into the same file and its new sha into the .md; never re-sends an answered state."""
+
+    def setUp(self):
+        t = PolicyTableV2("test_dry_counts_every_products_payloads")
+        t.setUp()
+        self.addCleanup(t.doCleanups)
+        self.t = t
+        self.attended = self.enterContext(mock.patch.object(policy_table, "_attended", return_value=True))
+        # the night: three of ETH's sends time out, never two in a row (three in a row would end the night)
+        n = [0]
+
+        def night(s, qs, **kw):
+            n[0] += 1
+            if n[0] - 82 in (4, 6, 68):
+                raise jev.JevError("timeout", "slow")
+            return t._reply(s, qs)
+        t.ask.side_effect = night
+        rc, self.md, self.tj = t._night()
+        self.assertEqual(rc, policy_table.EXIT_INCOMPLETE)
+        self.missed = [policy_table.states("ETH-USD")[i][0] for i in (4, 6, 68)]
+        t.ask.reset_mock()
+        t.ask.side_effect = t._reply
+
+    def _fill(self):
+        return self.t._main("--fill", self.tj)
+
+    def test_only_the_unanswered_states_are_sent_and_the_md_names_the_new_sha(self):
+        with open(self.tj, "rb") as fh:
+            before = json.loads(fh.read())
+        rc, out, _ = self._fill()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual([c.args[0] for c in self.t.ask.call_args_list], self.missed)
+        for c in self.t.ask.call_args_list:
+            self.assertEqual(c.args[1], before["products"]["ETH-USD"]["questions"])      # the night's questions, as sent
+        with open(self.tj, "rb") as fh:
+            raw = fh.read()
+        after = json.loads(raw)
+        for p in PRODUCTS3:
+            for b, a in zip(before["products"][p]["rows"], after["products"][p]["rows"]):
+                if b["answers"]:
+                    self.assertEqual(a, b)                                                 # an answered state is untouched
+                else:
+                    self.assertEqual(a["answers"]["cand_0"], ["hold", 0.7])
+                    self.assertIsNone(a["error"])
+        self.assertEqual(policy_table.vouched_sha(self.md), hashlib.sha256(raw).hexdigest())
+        with open(self.md, encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertIn("requests: 243, answered: 243, errors: 0  \n", text)
+        self.assertNotIn("INCOMPLETE", text)
+        self.assertEqual(out, f"{self.tj}\tfilled 3, unanswered 0\n")
+        rc, out, _ = self._fill()                                                           # nothing left: no send
+        self.assertEqual((rc, out), (0, f"{self.tj}\tfilled 0, unanswered 0\n"))
+        self.assertEqual(self.t.ask.call_count, 3)
+
+    def test_a_table_json_the_md_does_not_vouch_for_is_refused(self):
+        with open(self.tj, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        doc["products"]["SOL-USD"]["rows"][0]["answers"]["cand_0"] = ["buy", 0.99]           # edited after the night
+        with open(self.tj, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh)
+        rc, _, err = self._fill()
+        self.assertEqual(rc, 1)
+        self.assertIn("is not the one", err)
+        self.t.ask.assert_not_called()
+
+    def test_fill_is_attended_and_stops_on_halt(self):
+        self.attended.return_value = False
+        rc, _, err = self._fill()
+        self.assertEqual(rc, 1)
+        self.assertIn("attended", err)
+        self.attended.return_value = True
+        with open(self.t.halt, "w", encoding="utf-8") as fh:
+            fh.write("by hand\n")
+        rc, out, _ = self._fill()
+        self.assertEqual(rc, 0)
+        self.assertIn("HALT present", out)
+        self.t.ask.assert_not_called()
+
+    def test_a_fill_that_leaves_states_unanswered_says_so(self):
+        self.t.ask.side_effect = [self.t._reply(self.missed[0], {"cand_0": None, "current": None}),
+                                  jev.JevError("timeout", "slow"), self.t._reply(self.missed[2], {"cand_0": None, "current": None})]
+        rc, out, _ = self._fill()
+        self.assertEqual(rc, policy_table.EXIT_INCOMPLETE)
+        self.assertEqual(out, f"{self.tj}\tfilled 2, unanswered 1 INCOMPLETE\n")
+        with open(self.md, encoding="utf-8") as fh:
+            self.assertIn("requests: 243, answered: 242, errors: 1 -- INCOMPLETE", fh.read())
+        doc, sha = policy_table.read_table(self.tj)
+        self.assertEqual(policy_table.vouched_sha(self.md), sha)
+
+    def test_fill_and_a_proposal_are_one_or_the_other(self):
+        with mock.patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit) as cm:
+            policy_table.main([self.t.prop, "--fill", self.tj])
+        self.assertEqual(cm.exception.code, 2)
+        with mock.patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
+            policy_table.main([])
 
 
 if __name__ == "__main__":

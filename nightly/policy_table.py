@@ -21,6 +21,9 @@ product for K+1 wordings, not 81 x (K+1)); and write two files beside each other
                                the unified diff of its instructions+criteria against CURRENT, the counts of states where
                                it differs from CURRENT and from rule_c, and where those changes land (landing(): per
                                adjective, and the CURRENT -> wording moves); its "table sha256" line is the json's sha.
+`--fill proposals/<date>.table.json` (attended: a person at a terminal) re-sends ONLY the states that have no answer,
+each with the questions the night sent, writes their answers into the same file and the new sha into the .md (which it
+re-renders); an answered state is never re-sent, and a .table.json the .md does not vouch for is refused.
 May not: read a log, the key (jev.py holds it), or anything under the crypto repo; write under prompts/ or data/
 (jev.py appends its own ledger row per send; the one exception is data/HALT on a rejected key, CONTRACT §2 "the caller
 writes HALT", the same rule as cycle.py); send anything while data/HALT exists (PROTOCOL §3.8: HALT stops sends, and
@@ -417,6 +420,41 @@ def vouched_sha(md):
     return m.group(1) if m else None
 
 
+def _attended():
+    """A person at a terminal (--fill is attended, PREREG-v2 §8). Patched in tests; nowhere else."""
+    return sys.stdin.isatty()
+
+
+def fill(path, ask=None, clock=time.monotonic):
+    """--fill: re-send only the unanswered states of the .table.json at `path`, with the questions the night sent to
+    that product; write their answers into it and re-render the .md beside it with the new sha. Returns (answered now,
+    still unanswered). Raises ValueError when the .md does not vouch for the file's bytes."""
+    doc, sha = read_table(path)
+    md = md_path(path)
+    if vouched_sha(md) != sha:
+        raise ValueError(f"{path} sha256 {sha[:12]} is not the one {md} names: the file changed after its table was made")
+    jobs, where = [], {}
+    for p, pd in doc["products"].items():
+        todo = [(i, r) for i, r in enumerate(pd["rows"]) if not r.get("answers")]
+        if todo:
+            jobs.append((p, pd["questions"], [(r["state"], r["rule_c"]) for _, r in todo]))
+            where[p] = [i for i, _ in todo]
+    if not jobs:
+        return 0, 0
+    got = run_night(jobs, ask, DEADLINE_S * len(jobs), clock)
+    now = 0
+    for p, idx in where.items():
+        for i, new in zip(idx, got[p]):
+            row = doc["products"][p]["rows"][i]
+            row["error"], row["model"] = new["error"], new["model"]
+            if new["answers"]:
+                row["answers"] = {q: list(v) for q, v in new["answers"].items()}
+                now += 1
+    left = sum(1 for pd in doc["products"].values() for r in pd["rows"] if not r.get("answers"))
+    write(md, doc)
+    return now, left
+
+
 def _date_of(path):
     base = os.path.splitext(os.path.basename(path))[0]
     return base if _DATE.match(base) else base
@@ -425,7 +463,7 @@ def _date_of(path):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="policy_table",
                                  description="81 synthetic states per product per candidate; scores nothing against outcomes")
-    ap.add_argument("proposal", help="proposals/<date>.json")
+    ap.add_argument("proposal", nargs="?", help="proposals/<date>.json")
     ap.add_argument("--dry", action="store_true", help="print payload count and the first payload; send nothing")
     ap.add_argument("--out", default=None,
                     help="default: <date>.md under the repo's proposals/ (config.PROPOSALS), wherever the json is; "
@@ -433,7 +471,25 @@ def main(argv=None):
     ap.add_argument("--prompts", default=None, help="prompts root (tests)")
     ap.add_argument("--writer-model", default=None,
                     help="the model that wrote the proposal, for the table's header (propose.sh passes it)")
+    ap.add_argument("--fill", metavar="TABLE_JSON", default=None,
+                    help="attended: re-send only the unanswered states of proposals/<date>.table.json")
     a = ap.parse_args(argv)
+    if (a.fill is None) == (a.proposal is None):
+        ap.error("give a proposal json, or --fill <date>.table.json (not both)")
+    if a.fill is not None:
+        if not _attended():
+            print("policy_table: --fill is attended: run it at a terminal", file=sys.stderr)
+            return 1
+        if os.path.exists(config.HALT):
+            print(f"policy_table: HALT present at {config.HALT}; no sends")
+            return 0
+        try:
+            now, left = fill(a.fill)
+        except (OSError, ValueError) as e:
+            print(f"policy_table: {e}", file=sys.stderr)
+            return 1
+        print(f"{a.fill}\tfilled {now}, unanswered {left}" + (" INCOMPLETE" if left else ""))
+        return EXIT_INCOMPLETE if left else 0
     try:
         with open(a.proposal, "rb") as fh:          # read ONCE: the candidates and the sha are of the same bytes
             raw = fh.read()
