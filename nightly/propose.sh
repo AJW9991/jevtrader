@@ -208,7 +208,7 @@ Fixture reply (propose.sh --dry): one candidate, no digits, full text.
 ```json
 {"candidates": [
   {"rationale": "fixture for --dry: buy only on a deep book, so the table differs from CURRENT on the normal-liquidity pumping states and nowhere else",
-   "instructions": "Decide whether to be long SOL for the next quarter of an hour. Buy on strength only when the book is deep enough to absorb the order without moving it; get flat the moment the move fades or the market turns violent.",
+   "instructions": "Decide whether to be long {BASE} for the next quarter of an hour. Buy on strength only when the book is deep enough to absorb the order without moving it; get flat the moment the move fades or the market turns violent.",
    "criteria": {"buy": "the trend is pumping, volatility is not violent, and liquidity is deep",
                 "sell": "the trend is dumping, or volatility is violent",
                 "hold": "anything else: keep whatever position is already on"}}

@@ -48,7 +48,8 @@ class PolicyTableHeld(unittest.TestCase):
         self.cands = policy_table.load_candidates(self.prop)
         self.cur_name, self.cur_q, self.cur_sha = policy_table.current_action()
         self.qs = policy_table.questions(self.cands, self.cur_q)
-        self.rule = dict(policy_table.states())
+        self.rule = {s: rc for p in config.PRODUCTS for s, rc in policy_table.states(p)}   # every product's: main() asks all
+        self.n = 81 * len(config.PRODUCTS)                                   # main()'s requests: 81 a product
 
     def _proposal(self, name, cands):
         p = os.path.join(self.indir, name)
@@ -171,7 +172,9 @@ class PolicyTableHeld(unittest.TestCase):
 
     def test_a_candidate_worded_as_current_says_identical(self):
         # module docstring: per wording, the diff against CURRENT; an empty block would read as a missing one
-        cands = policy_table.parse_candidates(json.dumps({"candidates": [_wording(self.cur_q)]}).encode(), "p.json")
+        same = {"instructions": self.cur_q["instructions"].replace("SOL", "{BASE}"),       # a candidate names the product
+                "criteria": {k: v.replace("SOL", "{BASE}") for k, v in self.cur_q["criteria"].items()}}   # as {BASE}
+        cands = policy_table.parse_candidates(json.dumps({"candidates": [same]}).encode(), "p.json")
         text = policy_table.render("2026-09-22", self.cur_name, self.cur_sha, cands, self.cur_q, [])
         self.assertIn("```diff\n(identical wording)\n```", text)
 
@@ -184,7 +187,7 @@ class PolicyTableHeld(unittest.TestCase):
         # CONTRACT §5 / module docstring: counts of states where a wording differs from CURRENT and from rule_c
         results = policy_table.run(self.qs, ask=lambda s, qs: self._reply(s, cur="hold", cand=self.rule[s]))
         text = policy_table.render("2026-09-22", self.cur_name, self.cur_sha, self.cands, self.cur_q, results)
-        moves = sum(rc != "hold" for rc in self.rule.values())
+        moves = sum(rc != "hold" for _, rc in policy_table.states())
         self.assertGreater(moves, 0)
         current, cand = text.split("\n## cand_0\n")
         self.assertIn(f"differs from rule_c on {moves} of 81 answered states", current)
@@ -217,14 +220,14 @@ class PolicyTableHeld(unittest.TestCase):
         with open(md, encoding="utf-8") as fh:
             self.assertEqual(fh.readline(), "# policy table 2026-09-22\n")
         self.assertEqual(os.listdir(self.indir), ["2026-09-22.json"])
-        self.assertTrue(out.startswith(md + "\t81/81 answered"), out)
+        self.assertTrue(out.startswith(md + f"\t{self.n}/{self.n} answered"), out)
 
     def test_a_json_not_named_for_a_date_gets_a_table_of_its_own_stem(self):
         # CONTRACT §5 / bin/promote vouched(): the table is found by the json's own stem, so no two proposals share one
         self.ask.side_effect = lambda s, qs, **kw: self._reply(s)
         rc, _, _ = self._main(self._proposal("2026-09-22-rerun.json", [CAND]))
         self.assertEqual(rc, 0)
-        self.assertEqual(os.listdir(self.proposals), ["2026-09-22-rerun.md"])
+        self.assertEqual(sorted(os.listdir(self.proposals)), ["2026-09-22-rerun.md", "2026-09-22-rerun.table.json"])
 
     def test_an_incomplete_table_exits_4_and_says_how_many_answered(self):
         # module docstring: exit 4 INCOMPLETE (written, some states unanswered)
@@ -236,9 +239,9 @@ class PolicyTableHeld(unittest.TestCase):
         out = os.path.join(self.tmp, "t.md")
         rc, stdout, _ = self._main(self.prop, "--out", out)
         self.assertEqual(rc, 4)
-        self.assertEqual(stdout, f"{out}\t80/81 answered INCOMPLETE\n")
+        self.assertEqual(stdout, f"{out}\t{self.n - 1}/{self.n} answered INCOMPLETE\n")
         with open(out, encoding="utf-8") as fh:
-            self.assertIn("requests: 81, answered: 80, errors: 1 -- INCOMPLETE", fh.read())
+            self.assertIn(f"requests: {self.n}, answered: {self.n - 1}, errors: 1 -- INCOMPLETE", fh.read())
 
 
 class CappedHeld(unittest.TestCase):

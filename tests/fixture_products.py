@@ -26,3 +26,19 @@ def add_products(tc, n=3):
         enter(mock.patch.object(config, "PRODUCTS", have + tuple(add)))
         enter(mock.patch.object(config, "DAILY_SPEND_HALT_USD", per * (len(have) + len(add))))
     return tuple(config.PRODUCTS)[:n]
+
+
+def exactly(tc, products):
+    """config.PRODUCTS exactly `products` for the test's lifetime (the class's, when `tc` is the class): SOL-USD as
+    configured, every other product with its STAND_IN tick, atoms and thin fallback even where config holds the
+    probe's real ones, and the tripwire at 0.25 x the products. For a test whose expected bytes must not move when the
+    probe's products are added to config.PRODUCTS."""
+    enter = tc.enterClassContext if isinstance(tc, type) else tc.enterContext
+    add = [p for p in products if p != config.PRODUCT]
+    per = config.DAILY_SPEND_HALT_USD / len(config.PRODUCTS)
+    enter(mock.patch.dict(config.TICK_P, {p: STAND_IN[p][0] for p in add}))
+    enter(mock.patch.dict(config.LIQ_ATOMS, {p: STAND_IN[p][1] for p in add}))
+    enter(mock.patch.dict(config.LIQ_THIN_FALLBACK, {p: STAND_IN[p][2] for p in add}))
+    enter(mock.patch.object(config, "PRODUCTS", tuple(products)))
+    enter(mock.patch.object(config, "DAILY_SPEND_HALT_USD", per * len(products)))
+    return tuple(products)

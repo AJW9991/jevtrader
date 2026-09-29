@@ -425,7 +425,9 @@ class PolicyTableTest(unittest.TestCase):
                  "- trend: dumping 9/26, flat 9/27, pumping 9/27\n"
                  "- vol: calm 0/26, normal 0/27, violent 27/27\n"
                  "- moves: sell -> hold 27\n")
-        self.assertIn("differs from CURRENT on 27 of 80 answered states; from rule_c on 27 of 80\n\n" + block + "\n```diff", text)
+        self.assertIn("## cand_0\n\nrationale: test\n\ndiffers from CURRENT on 27 of 80 answered states; from rule_c on 27 of 80\n", text)
+        self.assertIn("### SOL-USD\n\ndiffers from CURRENT on 27 of 80 answered states; from rule_c on 27 of 80\n\n" + block
+                      + "\n| state | choice | confidence | rule_c | current | moved |", text)
         from loop import dash                                      # the dash still reads the counts line
         self.assertEqual(dash.PROPOSAL_COUNTS.search(text).groups(), ("27", "80", "27", "80"))
 
@@ -493,7 +495,8 @@ class PolicyTableTest(unittest.TestCase):
         self.assertEqual(sum(1 for r in results if r["error"] == "deadline"), 81 - self.ask.call_count)
 
     def test_bad_candidates_refused_before_any_send(self):
-        for bad in ({"candidates": []}, {"candidates": [CAND] * 4},
+        for bad in ({"candidates": [CAND] * 4}, {"candidates": [{**CAND, "instructions": "Decide whether to be long SOL."}]},
+                    {"candidates": [{**CAND, "criteria": {**CAND["criteria"], "buy": "ETH is pumping"}}]},
                     {"candidates": [{**CAND, "criteria": {"yes": "a", "no": "b"}}]},
                     {"candidates": [{**CAND, "instructions": "wait 15 minutes"}]}):
             with open(self.prop, "w", encoding="utf-8") as fh:
