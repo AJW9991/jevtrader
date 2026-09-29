@@ -890,5 +890,179 @@ class V2Draw(unittest.TestCase):
         self.assertEqual((z["lower"], z["reject"], z["n"]), (0.0, False, 12))
 
 
+# ---- (h) PREREG-v2 §2, §4, §9: the pooled statistic, stop rules 3-4 and §9.2's row set, ---------------------------------------
+# transcribed from PREREG-v2.md's words and held against loop/inference_v2.py on a synthetic three-product v2 log: one product void (8 days with no row), one with a day of no row, SOL with a day of jev errors.
+# §2 "Live row = a row with mode: "live" and absence: null"; "Days are T0-anchored: d N = [T0_v2 + 86,400 (N - 1),
+# T0_v2 + 86,400 N)"; "Sample window = every row with T0_v2 <= tick_id < T0_v2 + 28 · 86,400 s, cut before any replay".
+# §9.3 "BAD when its outcome fill (live rows whose t + h the log has reached, with a non-gap outcome, over such live rows)
+# is < 95 %, or its Jev error share (rows with absence: "jev", every error kind, over rows with mode: "live" and absence
+# null or "jev") is > 5 %. A product-day with no live row is excluded whole." §9.4 "A product with fewer than 21 kept days
+# is void for v2 and leaves the pool." §4 "within each c-block [T0_v2 + c·j, T0_v2 + c·(j+1)), an arm's intent is its
+# argmax ... on the block's decision row -- the first row of the block in book._order (least tick_id, then ts_rx) on which
+# book.replay would not force a hold: a live row, priced ..., whose columns.a and columns.b are not both null or
+# argmax-null -- and hold on every other row of the block ... A and B read columns.a/columns.b, C reads rule_c, D reads
+# columns.d (null means hold for D only)"; "S_k,p(X - Y, col, fee) = Σ over the block's rows of d_t"; "S-bar_k = mean over
+# the products p not void under §9.4 whose day containing block k is kept (§9.3) of S_k,p; a block with no such product is
+# dropped". §9.2 "If no live row on a kept product-day of a non-void product has prompt_b_sha != prompt_a_sha ... NO
+# PROMOTION".
+V2_T0S = "20261024T220000Z"
+V2_T0_MS = tick_ms(V2_T0S)
+V2_DAY_MS = 86_400_000
+
+
+def v2_null(x):
+    return x is None or (isinstance(x, dict) and x.get("argmax") is None)
+
+
+def v2_decides(r):
+    return decision(r) and priced(r) and not (v2_null((r.get("columns") or {}).get("a")) and v2_null((r.get("columns") or {}).get("b")))
+
+
+def v2_order(rows):
+    return sorted(rows, key=lambda r: (r["tick_id"], ms_of(r["ts_rx"])))
+
+
+def v2_intent(r, arm):
+    if arm == "c":
+        return r.get("rule_c")
+    x = (r.get("columns") or {}).get(arm)
+    return x.get("argmax") if isinstance(x, dict) else x          # D's column is the table's answer itself
+
+
+def v2_book(rows, arm, c, fee=0.0):
+    """§4's cadence transform and SPEC §10's book in one walk over `rows` in v2_order: the arm acts on its block's
+    decision row and holds elsewhere. ({tick_id: pnl bps}, [(tick_id, side, price, qty)]), from flat."""
+    acts = {}
+    for r in rows:
+        j = (tick_ms(r["tick_id"]) - V2_T0_MS) // (c * 1000)
+        if j not in acts and v2_decides(r):
+            acts[j] = id(r)
+    acts_ids = set(acts.values())
+    qty, last, pnl, trades = 0.0, None, {}, []
+    for r in rows:
+        tid, usd = r["tick_id"], 0.0
+        if priced(r):
+            bid, ask, mid = r["bid"], r["ask"], r["mid"]
+            intent = v2_intent(r, arm) if id(r) in acts_ids else "hold"
+            if intent == "buy" and qty == 0.0:
+                qty = NOTIONAL / ask
+                usd = qty * (mid - ask) - NOTIONAL * fee / 1e4
+                trades.append((tid, "buy", ask, qty))
+            elif intent == "sell" and qty > 0.0:
+                usd = qty * (bid - last) - qty * bid * fee / 1e4
+                trades.append((tid, "sell", bid, qty))
+                qty = 0.0
+            elif qty:
+                usd = qty * (mid - last)
+            last = mid
+        pnl[tid] = pnl.get(tid, 0.0) + usd * 1e4 / NOTIONAL
+    return pnl, trades
+
+
+def v2_day(tid):
+    return (tick_ms(tid) - V2_T0_MS) // V2_DAY_MS + 1
+
+
+def v2_excluded(logs):
+    """§9.3, recomputed per product from its own log: {(N, product)}."""
+    out = set()
+    for p, rows in logs.items():
+        outs = ref_join(rows)[0]
+        per = {n: [0, 0, 0, 0] for n in range(1, 29)}                  # [live, filled, jev, attempted]
+        for r in rows:
+            n = v2_day(r["tick_id"])
+            if not 1 <= n <= 28 or r.get("mode") != "live":
+                continue
+            if r.get("absence") in (None, "jev"):
+                per[n][3] += 1
+            if r.get("absence") == "jev":
+                per[n][2] += 1
+            elif r.get("absence") is None:
+                per[n][0] += 1
+                per[n][1] += outs[r["tick_id"]]["absence"] is None
+        for n, (live, filled, jev, att) in per.items():
+            if live == 0 or filled / live < 0.95 or (att and jev / att > 0.05):
+                out.add((n, p))
+    return out
+
+
+class V2Pooled(unittest.TestCase):
+    R = 300                                                          # sorted[7] at 1/40, sorted[1] at 1/160
+
+    @classmethod
+    def setUpClass(cls):
+        cls.products = add_products(cls, 3)
+        sol, p2, p3 = cls.products
+        logs = synth.generate_products(7, cls.products, encode=False, t0=V2_T0S, days=28.0, pre_hours=1.0, post_minutes=40,
+                                       cadence_s=300, era="v2", promotions_h=(150.0,),
+                                       per_product={p2: {"empty_days": (5,)}, p3: {"empty_days": tuple(range(2, 10))}})
+        cls.logs = {p: log.rows for p, log in logs.items()}
+        for i, r in enumerate(r for r in cls.logs[sol] if v2_day(r["tick_id"]) == 12 and decision(r)):
+            if i % 8 == 0:                                           # d12 of SOL: an eighth of its live rows a jev error, BAD
+                r.update(absence="jev", answers=None, columns={"a": None, "b": None, "d": None}, jev=dict(r["jev"], error="timeout"))
+        cls.t0 = report.tick_epoch(V2_T0S)
+        stores = [{"product": p, "log": p, "missing": False, "rows": cls.logs[p], "bad": [], "sha": "-", "bytes": 0} for p in cls.products]
+        cls.out = inference_v2.run(stores, cls.t0, cls.t0 + 29 * 86400, resamples=cls.R, descriptive=False)
+        cls.sample = {p: [r for r in rows if V2_T0_MS <= tick_ms(r["tick_id"]) < V2_T0_MS + 28 * V2_DAY_MS] for p, rows in cls.logs.items()}
+        cls.ordered = {p: v2_order(rows) for p, rows in cls.sample.items()}
+        cls.books = {}
+        cls.excluded = v2_excluded(cls.logs)
+        cls.kept_days = {p: 28 - sum(1 for _, q in cls.excluded if q == p) for p in cls.products}
+        cls.pool = [p for p in cls.products if cls.kept_days[p] >= 21]
+
+    def book(self, p, arm, c, fee=0.0):
+        key = (p, arm, c, fee)
+        if key not in self.books:
+            self.books[key] = v2_book(self.ordered[p], arm, c, fee)
+        return self.books[key]
+
+    def ref_series(self, x, y, c, fee=0.0):
+        """§4: [(k, S-bar_k)] and {p: {k: S_k,p}}."""
+        S_p = {}
+        for p in self.pool:
+            px, py = self.book(p, x, c, fee)[0], self.book(p, y, c, fee)[0]
+            s = {}
+            for t in px:
+                k = (tick_ms(t) - V2_T0_MS) // (c * 1000)
+                s[k] = s.get(k, 0.0) + px[t] - py[t]
+            S_p[p] = s
+        out = []
+        for k in range(28 * 86400 // c):
+            ps = [p for p in self.pool if (k * c // 86400 + 1, p) not in self.excluded]
+            if ps:
+                out.append((k, sum(S_p[p].get(k, 0.0) for p in ps) / len(ps)))
+        return out, S_p
+
+    def test_stop_rules_3_and_4_and_the_row_set_of_9_2(self):
+        sol, p2, p3 = self.products
+        self.assertFalse(self.out["pending"])
+        self.assertEqual(self.out["excluded"], self.excluded)
+        self.assertLessEqual({(12, sol), (5, p2)} | {(n, p3) for n in range(2, 10)}, self.excluded)
+        self.assertEqual(self.out["kept_days"], self.kept_days)
+        self.assertEqual(self.out["pool"], self.pool)
+        self.assertEqual(self.pool, [sol, p2])                       # p3: 20 kept days, void
+        promoted = sum(1 for p in self.pool for r in self.sample[p]
+                       if decision(r) and (v2_day(r["tick_id"]), p) not in self.excluded and r["prompt_b_sha"] != r["prompt_a_sha"])
+        self.assertGreater(promoted, 0)
+        self.assertEqual(self.out["promoted"], promoted)
+
+    def test_each_cells_pooled_series_mean_and_bound_are_the_texts(self):
+        for name, x, y, c, seed, _ in V2_CELLS:
+            with self.subTest(cell=name):
+                want, _ = self.ref_series(x, y, c)
+                got = self.out["cells"][name]
+                self.assertEqual([k for k, _ in got["series"]], [k for k, _ in want])
+                for (k, g), (_, w) in zip(got["series"], want):
+                    self.assertAlmostEqual(g, w, places=9, msg=(name, k))
+                self.assertGreater(len(want), 0)
+                self.assertTrue(any(v != 0.0 for _, v in want))
+                vals = [v for _, v in want]
+                self.assertAlmostEqual(got["mean"], sum(vals) / len(vals), places=9)
+                rank = math.ceil(self.R / (40 if name == "H1" else 160)) - 1  # sorted[⌈α·R⌉ − 1]: 7 and 1 at R = 300
+                self.assertEqual(got["rank"], rank)
+                self.assertAlmostEqual(got["lower"], v2_sorted(vals, seed, self.R)[rank], places=9)
+                self.assertEqual(got["reject"], got["lower"] > 0)
+
+
 if __name__ == "__main__":
     unittest.main()
