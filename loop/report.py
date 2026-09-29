@@ -1359,7 +1359,9 @@ def render_v2(stores, t0=None, since=None, health_only=False, withheld=(), now=N
     lines = [f"jev-paper-loop report (PREREG-v2): {config.VENUE} {', '.join(prods)}; cadence {config.CADENCE_S} s, horizon"
              f" {config.HORIZON_S} s, replay cadences {'/'.join(str(c) for c in config.CADENCES)} s"
              + (f", since {since}" if since else "")
-             + (f", T0 {_iso_minute(t0)} (sample [T0, T0 + {SAMPLE_DAYS} d), each product replayed from flat at T0)" if t0 is not None
+             + (f", T0 {_iso_minute(t0)} (sample [T0, T0 + {SAMPLE_DAYS} d), each product replayed from flat at "
+                + (f"its first row on or after --since {since}: rows before it are cut before the replay, and the blocks that start"
+                   " before it are left out)" if since else "T0)") if t0 is not None
                 else ", no --t0: blocks anchored at the products' first tick, descriptive only")]
     if health_only:
         lines.append(f"health only: sections 1-{HEALTH_N}; sections {HEALTH_N + 1}-{len(TITLES_V2)} are neither computed nor printed")
@@ -1423,13 +1425,16 @@ def render_v2(stores, t0=None, since=None, health_only=False, withheld=(), now=N
             def kept(p, k, c):
                 if p in void:
                     return False
+                if since_ep is not None and anchor + c * k < since_ep:
+                    return False                         # --since cut its rows (all or some) before the replay: not S_k = 0
                 return t0 is None or (int(c * k // 86400) + 1, p) not in recomputed
             ct = cadence_table(per, anchor, n_of, kept, [p for p in prods if p not in void], t0 is not None)
             head = [f"  d_t = pnl_x - pnl_y in bps of NOTIONAL per tick; S_k,p = the sum of d_t over block k's ticks for product p;"
                     " pooled: n = pooled blocks (those with a kept, non-void product), mean_S = the mean of S-bar_k, dis = pooled blocks"
                     " with a kept product's disagreement tick (the SIDES differ into or out of the tick), pdis = disagreement"
                     " product-blocks; per product: n kept blocks, mean S_k,p, dis blocks",
-                    "  replayed from flat at the anchor over every row, excluded days included; an excluded product-day's blocks are"
+                    "  replayed from flat at the anchor (with --since, at the first row on or after it; the blocks that start before it"
+                    " are left out) over every row, excluded days included; an excluded product-day's blocks are"
                     " dropped afterwards" + (" (the recomputed set above)" if t0 is not None else " (none without --t0)")
                     + "; D - B and D - C at argmax only; descriptive: the H1 and family-F bounds are loop.inference's, at day 28"]
             secs.append({"lines": head + ct["lines"]})

@@ -124,6 +124,43 @@ class ExcludedDayBetweenKeptDays(unittest.TestCase):
         self.assertEqual(cell["n"], cell["per"]["SOL-USD"]["n"])                         # every block has a kept product
 
 
+class SinceWithT0(unittest.TestCase):
+    """--since cuts rows before the replay (its help: rows whose tick_id date is on or after the day), so with --t0
+    the replay starts flat at the first row on or after --since, not at T0. The blocks that start before the cut
+    hold no row, or only part of theirs, and are left out of n and every mean rather than counted as S_k = 0; the
+    header says where the replay starts. 2026-09-29 refuter: --since 2026-10-26 kept n = 296 with 104 empty blocks."""
+
+    def setUp(self):
+        self.enterContext(mock.patch.object(config, "HALT", os.path.join(self.enterContext(tempfile.TemporaryDirectory()), "no-HALT")))
+
+    def test_blocks_before_the_since_cut_leave_every_mean(self):
+        rows = [r for day in (1, 2, 3) for r in _day_rows(day, lambda i: 100.0 + (i % 2), b="buy")]
+        rows += _day_rows(4, lambda i: 100.0)[:8]
+        full = _store("SOL-USD", rows)
+        since = "2026-10-26"
+        since_ep = report.tick_epoch("20261026T000000Z")                              # T0 + 26 h
+        cut = dict(full, rows=[r for r in full["rows"] if r["tick_id"][:8] >= "20261026"])
+        out = report.render_v2([cut], t0=T0, since=since, now=END + 86400)
+        for c in config.CADENCES:
+            first = -(-int(since_ep - T0) // c)                                          # the first block starting at or after the cut
+            cell = out["cadence"]["cells"][(c, "b", "c", "argmax", 0.0)]
+            ks = [k for k, _ in cell["S"]]
+            self.assertEqual(ks[0], first, c)
+            n_all = int((report.tick_epoch(rows[-1]["tick_id"]) - T0) // c) + 1
+            self.assertEqual(cell["n"], n_all - first, c)
+            self.assertEqual(cell["per"]["SOL-USD"]["n"], n_all - first, c)
+            self.assertAlmostEqual(cell["mean"], sum(v for _, v in cell["S"]) / len(ks), places=12)
+        self.assertEqual([k for k, _ in out["cadence"]["cells"][(900, "b", "c", "argmax", 0.0)]["S"]][0], 104)
+        self.assertEqual([k for k, _ in out["cadence"]["cells"][(14400, "b", "c", "argmax", 0.0)]["S"]][0], 7)   # block 6 straddles
+        head = out["text"].splitlines()[0]
+        self.assertIn("each product replayed from flat at its first row on or after --since 2026-10-26", head)
+        self.assertNotIn("replayed from flat at T0)", head)
+        # without --since the header is unchanged and every block from 0 counts
+        whole = report.render_v2([full], t0=T0, now=END + 86400)
+        self.assertIn("each product replayed from flat at T0)", whole["text"].splitlines()[0])
+        self.assertEqual(whole["cadence"]["cells"][(900, "b", "c", "argmax", 0.0)]["S"][0][0], 0)
+
+
 class AStoppedLoop(unittest.TestCase):
     """The calendar does not stop with one product's loop: its days close on the latest tick any product's log has
     reached, so the days after its last row are NO LIVE ROWS, excluded whole (§9.3), and its blocks there dropped

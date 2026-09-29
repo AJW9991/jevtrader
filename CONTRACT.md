@@ -369,7 +369,9 @@ disagreement named; PREREG-v2 §9.4's void once every product's d28 has closed);
 days included, its excluded days' blocks dropped after, per product and pooled over the time
 block, `gap_blocks` per cadence, trades/day per arm and product, D − B and D − C at argmax only;
 §6–§7 per product. §4, §6, §7 and trades/day read only the rows of kept product-days of non-void
-products (PREREG-v2 §2, §9.4); §1–§3 read every row, since they judge the days. Every product's
+products (PREREG-v2 §2, §9.4); §1–§3 read every row, since they judge the days. `--since` cuts rows
+before the replay, so with `--t0` each product is replayed from flat at its first row on or after
+it, and the blocks that start before it are left out of n and every mean. Every product's
 days close on the latest tick any product's log has reached.
 PREREG-v2's withholding sits beside v1's in both forms: T0_v2 is read from the repository's
 PREREG-v2.md §12 (`dash.read_t0_v2`) whatever the flags say, and §4–§7 are withheld while the
