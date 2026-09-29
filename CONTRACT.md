@@ -483,8 +483,9 @@ days after the block's last promotion, at most three, and not within 600 s of th
 .md vouches for the json and the .table.json and the table was scored against the version CURRENT names, unless
 candidate k answered 81/81 on every product, for a candidate that moves 0 of 81 states on every product, and for a
 product word other than `{BASE}`. `bin/promote --table-only proposals/<date>.json` (attended, clean tree, no schedule
-or seal) copies the CURRENT column into `prompts/<CURRENT>.table.<product>.json` for every product, refusing unless
-the table's CURRENT sha is that version file's; it replaces an existing table only saying so. Neither form sends
+or seal) copies the CURRENT column into `prompts/v2.table.<product>.json` for every product, refusing unless the
+table's CURRENT sha is `prompts/v2.json`'s, whatever CURRENT names (a promoted version's tables are its promotion's);
+it replaces an existing table only saying so. Neither form sends
 anything. A person runs it. Nothing else writes `prompts/`.
 
 ## 6. Tests (`tests/`, `python3 -m unittest`)

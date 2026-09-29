@@ -449,6 +449,26 @@ class TableOnly(Base):
         self.assertIn(f"the table's CURRENT is v1 sha {prompts.sha('v1', self.root)[:12]}, not v2.json's", err)
         self.untouched()
 
+    def test_writes_v2s_tables_alone_whatever_current_names(self):
+        # PREREG-v2 §8 and §10: --table-only "refuses unless the table's CURRENT sha equals prompts/v2.json's". A
+        # promoted version's tables are its promotion's; --table-only never writes or replaces them, active or pending.
+        v3 = version_doc("v3", {"instructions": "Be long {BASE}.", "criteria": HOLDER["criteria"]},
+                         activation_tick=self.promote.tick_of(T0_S + 7 * DAY), replaces="v2")
+        self.root = pin_versions(self, "v3", {"v3": v3})
+        prop = self.night([], date="2026-11-02", now=day(9))                   # v3 active: the table's CURRENT is v3
+        rc, _, err = self.run_promote("--table-only", prop)
+        self.assertEqual(rc, 1)
+        self.assertIn(f"the table's CURRENT is v3 sha {prompts.sha('v3', self.root)[:12]}, not v2.json's "
+                      f"{prompts.sha('v2', self.root)[:12]}", err)
+        self.assertEqual(self.listing(), ["CURRENT", "v1.json", "v2.json", "v3.json"])
+        prop = self.night([], date="2026-10-30", now=day(7))                   # v3 pending: the table's CURRENT is v2
+        rc, out, err = self.run_promote("--table-only", prop)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.listing(), sorted(["CURRENT", "v1.json", "v2.json", "v3.json"]
+                                                + [f"v2.table.{p}.json" for p in PRODUCTS3]))
+        self.assertEqual(prompts.named(self.root), "v3")
+        self.assertEqual(self.promote.TABLE_ONLY_VERSION, "v2")
+
     def test_refuses_short_of_81_of_81(self):
         prop = self.night([], fail=(policy_table.states("ETH-USD")[3][0],))
         rc, _, err = self.run_promote("--table-only", prop)

@@ -2,7 +2,7 @@
 """bin/promote -- the human apply step, and the ONLY writer of prompts/ (CONTRACT §5), on PREREG-v2 §8's schedule.
 
 Usage:  bin/promote proposals/<date>.json <k> --reason "one line"   k = candidate index, from 0
-        bin/promote --table-only proposals/<date>.json             the CURRENT version's own per-product tables
+        bin/promote --table-only proposals/<date>.json             v2's own per-product tables (prompts/v2.json's)
 
 A person runs this at a terminal. It never runs under launchd, from a plist, a cron, a hook or another script: nothing
 in this repo self-deploys, and a wording no one read before it went live would turn the measurement into the thing it
@@ -39,8 +39,9 @@ line: the person's reason with the states moved per product.
 
 --table-only <proposal.json> (§8, "v2's own tables"): attended and on a clean tree, no schedule and no seal (it builds
 v2's tables before the draft tag); copies the CURRENT column of the proposal's .table.json into
-prompts/<version CURRENT names>.table.<product>.json for every product under the same 81/81 refusal, refusing unless
-the table's CURRENT sha equals that version file's sha. CURRENT is not touched.
+prompts/v2.table.<product>.json (TABLE_ONLY_VERSION) for every product under the same 81/81 refusal, refusing unless
+the table's CURRENT sha equals prompts/v2.json's (§8, §10), whatever CURRENT names: a promoted version's tables are
+written by its promotion and by nothing else. CURRENT is not touched.
 
 May not: touch data/, send anything, read the key, edit an existing version file, or pick k itself.
 """
@@ -57,6 +58,7 @@ PREREG_TAG = "prereg-v2-seal"
 DAY_S = 86400
 E_MIN, E_MAX, E_SPACING, MAX_PROMOTIONS = 8, 22, 7, 3       # PREREG-v2 §8: days 8, 15, 22 at most
 LEAD_S = 600                                                  # refused when now >= activation - 600 s
+TABLE_ONLY_VERSION = "v2"                                     # --table-only writes this version's tables, no other's (§8)
 
 
 def _attended():
@@ -250,12 +252,13 @@ def _checks(a):
 
 
 def table_only(a, root):
-    """--table-only: the CURRENT version's own tables from the proposal night's .table.json (PREREG-v2 §8)."""
+    """--table-only: v2's own tables from the proposal night's .table.json (PREREG-v2 §8: "refuses unless the table's
+    CURRENT sha equals prompts/v2.json's"), whatever CURRENT names."""
     _checks(a)
     with open(a.table_only, "rb") as fh:
         raw = fh.read()
     doc, _ = vouched(a.table_only, raw)
-    version = prompts.named(root)
+    version = TABLE_ONLY_VERSION
     vsha = prompts.sha(version, root)
     if doc["current"].get("version") != version or doc["current"].get("sha") != vsha:
         raise RuntimeError(f"the table's CURRENT is {doc['current'].get('version')} sha {str(doc['current'].get('sha'))[:12]}, "
@@ -286,7 +289,7 @@ def main(argv=None, now=None):
     ap.add_argument("k", nargs="?", type=int, help="candidate index, from 0")
     ap.add_argument("--reason", default=None, help="the person's reason, one line: it goes into the promote commit")
     ap.add_argument("--table-only", metavar="PROPOSAL_JSON", default=None,
-                    help="copy the CURRENT version's per-product tables from the proposal's .table.json; sends nothing")
+                    help="copy v2's own per-product tables from the proposal's .table.json; sends nothing")
     ap.add_argument("--prompts", default=None, help="prompts root (tests)")
     ap.add_argument("--repo", default=REPO, help="git tree to check (tests)")
     ap.add_argument("--prereg", default=None, help="PREREG-v2.md to read T0_v2 from (tests)")
