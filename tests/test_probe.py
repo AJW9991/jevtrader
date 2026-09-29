@@ -273,6 +273,49 @@ class Run(Offline):
         self.assertEqual(len(self.rows(out, "ETH-USD")), 2)
 
 
+class Deadline(Offline):
+    """A slow cycle stops two seconds before the live loop's :00: at the defaults no request starts at or
+    after :58 of the slot's minute (T_FIX is 02:28:49, so the slot is 02:29:30 and the deadline 02:29:58)."""
+    def slow(self, clock, cost):
+        def take(url):                                      # each request costs `cost` seconds of the fake clock
+            clock.t += cost
+        self.hook = take
+
+    def test_candidates_not_begun_by_the_deadline_get_no_row(self):
+        clock, out = Clock(T_FIX), os.path.join(self.tmp, "out")
+        self.slow(clock, 2.5)                               # four candidates fit: 12 GETs from :30.0 to :57.5
+        code, err = self.main(["run", "--day", DAY, "--out", out, "--max-minutes", "1"], clock)
+        self.assertEqual(code, 0, err)
+        until = T_FIX - 49 + 60 + 58                          # 02:29:58
+        self.assertEqual(len(self.calls), 12)
+        self.assertLess(max(t for t, _ in self.calls), until)
+        for p in probe.DEFAULT_CANDIDATES[:4]:
+            self.assertEqual([r["tick_id"] for r in self.rows(out, p)], ["20260924T022900Z"], p)
+        for p in probe.DEFAULT_CANDIDATES[4:]:
+            self.assertFalse(os.path.exists(os.path.join(out, f"{p}.jsonl")), p)
+        self.assertIn("LINK-USD ok 0 error 0 skipped 1; ADA-USD ok 0 error 0 skipped 1", err)
+
+    def test_a_get_after_the_deadline_is_not_sent_and_is_no_transport_failure(self):
+        clock, out = Clock(T_FIX), os.path.join(self.tmp, "out")
+        self.slow(clock, 1.7)                               # the 18th GET (ADA's ticker) would start at :58.9
+        code, err = self.main(["run", "--day", DAY, "--out", out, "--max-minutes", "1"], clock)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(self.calls), 17)
+        self.assertLess(max(t for t, _ in self.calls), T_FIX - 49 + 60 + 58)
+        (ada,) = self.rows(out, "ADA-USD")
+        self.assertEqual(ada["gets"], {"book": "ok", "candles": "ok", "ticker": "deadline"})
+        self.assertEqual(ada["trades_5m"], -1)              # the feed tolerates a ticker it did not get
+        self.assertFalse(probe.ok_row(ada))
+        self.assertFalse(probe.transport_failed(ada))
+
+    def test_a_start_second_that_leaves_no_room_is_a_usage_error(self):
+        with mock.patch("sys.stderr", io.StringIO()):
+            for s in ("58", "59"):
+                with self.assertRaises(SystemExit):
+                    probe.main(["run", "--day", DAY, "--out", os.path.join(self.tmp, "x"), "--start-second", s])
+        self.assertEqual(probe.LIVE_GUARD_S, 2)
+
+
 class Harness(unittest.TestCase):
     def test_offline_keeps_testcase_fail(self):
         # Offline once kept its URL-failure hook in self.fail, which is TestCase.fail: every assertion that

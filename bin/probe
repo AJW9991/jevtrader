@@ -16,7 +16,11 @@ failure; the feed tolerates a failed ticker, so only this record shows one). A s
 and the exception's one-line text (no traceback), and the next candidate goes on. It samples the
 UTC day --day only: before it, it waits; it exits 0 after the day's last slot (23:59:30 with the
 defaults), and refuses a day that is already over. SIGTERM finishes the row being written and exits
-0. One line an hour goes to stderr with the counts so far. DIR/run.json records the day, the
+0. No request of a cycle starts later than 60 - start_second - LIVE_GUARD_S seconds after its slot
+(at the defaults :58, two seconds before the live loop's :00, which a slow cycle would otherwise
+reach: 18 GETs of up to 10 s each): a candidate not begun by then gets no row that minute (counted
+as skipped), and a GET that would start after it is not sent (the row's record says "deadline",
+which is no transport failure). One line an hour goes to stderr with the counts so far. DIR/run.json records the day, the
 candidates, --every and --start-second; a restart into the same DIR continues the run only when
 all four are the same (PREREG-v2 §2: a restart within D continues it), and is refused otherwise.
 volume: once, 30 closed ONE_DAY candles per candidate (the venue's candles endpoint, public) ->
@@ -72,6 +76,8 @@ STABLECOINS = frozenset({"USDT", "USDC", "DAI", "PYUSD", "EURC", "GUSD", "USDP",
                          "USDS", "RLUSD", "BUSD", "LUSD", "FRAX", "USDE"})   # a base here fails "no stablecoin"
 # ---- the probe's own ---------------------------------------------------------------------------
 MIN_GAP_S = 1.0                     # never two requests less than this apart, whatever the endpoint
+LIVE_GUARD_S = 2                    # a cycle's last request starts at least this long before the live loop's :00
+DEADLINE = "deadline"               # a GET's record when the cycle's deadline stopped it (not a transport failure)
 LOCK_PATH = os.path.abspath(__file__)   # run and volume flock this file (read-only): one of them at a time
 LIVE_CHECKOUT = "/Users/alexanderward/Projects/jev-paper-loop"
 FORBIDDEN = (LIVE_CHECKOUT,) + tuple(config.FORBIDDEN_PREFIXES)
@@ -215,18 +221,33 @@ def endpoint(url):
     return url[len(feed.BASE):].split("?")[0]
 
 
+class Deadline:
+    """The wall time from which no request of the current cycle may start (None: no limit)."""
+    def __init__(self, wall):
+        self.wall, self.at = wall, None
+
+    def passed(self):
+        return self.at is not None and self.wall() >= self.at
+
+
 @contextlib.contextmanager
-def paced_feed(pacer, gets=None):
+def paced_feed(pacer, gets=None, deadline=None):
     """Every feed._get in this process waits for the pacer first, and what it did goes into `gets`
     (the caller's dict, emptied per snapshot): endpoint -> "ok" when it answered, or the FeedError's
     text when it did not (http-..., net ..., parse ...: a transport failure). feed.snapshot
     swallows a failed ticker (trades_5m -1), so this record is the only place that failure shows.
+    Once `deadline` has passed, a GET is not sent: it raises a FeedError and records DEADLINE.
     Restored on the way out."""
     real = feed._get
 
     def get(url):
-        pacer.mark()
+        pacer.ready()
         name = endpoint(url)
+        if deadline is not None and deadline.passed():
+            if gets is not None:
+                gets[name] = DEADLINE
+            raise feed.FeedError(f"{DEADLINE}: no request of this cycle starts at or after {iso(deadline.at)}")
+        pacer.mark()
         try:
             j = real(url)
         except feed.FeedError as e:
@@ -327,7 +348,8 @@ def next_slot(t, start_second, every):
 
 
 def _counts(counts):
-    return "; ".join(f"{p} ok {c['ok']} error {c['error']}" for p, c in counts.items())
+    return "; ".join(f"{p} ok {c['ok']} error {c['error']}" + (f" skipped {c['skipped']}" if c["skipped"] else "")
+                     for p, c in counts.items())
 
 
 def run(args, wall, mono, sleep, err):
@@ -362,13 +384,13 @@ def run(args, wall, mono, sleep, err):
     def on_term(signum, frame):
         stop.append(signum)
     previous = signal.signal(signal.SIGTERM, on_term)
-    counts = {p: {"ok": 0, "error": 0} for p in args.candidates}
+    counts = {p: {"ok": 0, "error": 0, "skipped": 0} for p in args.candidates}
     pacer, cycles, log_hour, last, why = Pacer(MIN_GAP_S, mono, sleep), 0, None, day0 - 1, "the day is over"
     err.write(f"{iso(wall())} probe: run {args.day} into {out}, {len(args.candidates)} candidates,"
               f" every {args.every} s at second {args.start_second}\n")
     try:
-        gets = {}
-        with paced_feed(pacer, gets):
+        gets, deadline = {}, Deadline(wall)
+        with paced_feed(pacer, gets, deadline):
             while not stop:
                 slot = next_slot(max(wall(), day0, last + 1), args.start_second, args.every)   # never one slot twice
                 if slot >= day1:
@@ -385,9 +407,13 @@ def run(args, wall, mono, sleep, err):
                 if log_hour is not None and hour != log_hour:
                     err.write(f"{iso(slot)} probe: {cycles} cycles; {_counts(counts)}\n")
                 log_hour = hour
+                deadline.at = slot + 60 - LIVE_GUARD_S - args.start_second   # :58 at the defaults
                 for p in args.candidates:
                     if stop:
                         break
+                    if deadline.passed():                     # not begun by the deadline: no row this minute
+                        counts[p]["skipped"] += 1
+                        continue
                     row = append(out, p, probe_one(p, wall, pacer, gets))
                     counts[p]["ok" if row["ok"] else "error"] += 1
                 if stop:
@@ -496,8 +522,9 @@ def ok_row(r):
 
 def transport_failed(r):
     """A GET of this row did not answer (its record holds the feed's error text). A window the feed
-    refused (a quiet minute, a stale candle) is not one: its three GETs answered."""
-    return any(v != "ok" for v in r["gets"].values())
+    refused (a quiet minute, a stale candle) is not one: its three GETs answered; nor is a GET the
+    cycle's deadline kept from being sent."""
+    return any(v not in ("ok", DEADLINE) for v in r["gets"].values())
 
 
 def tick_mode(rows):
@@ -697,8 +724,9 @@ def _second(s):
         n = int(s)
     except ValueError:
         n = -1
-    if not 0 <= n <= 59:
-        raise argparse.ArgumentTypeError("a whole second 0-59")
+    if not 0 <= n < 60 - LIVE_GUARD_S:
+        raise argparse.ArgumentTypeError(f"a whole second 0-{59 - LIVE_GUARD_S} (a cycle's requests stop"
+                                         f" {LIVE_GUARD_S} s before the next :00)")
     return n
 
 
