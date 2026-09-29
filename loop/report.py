@@ -1273,15 +1273,18 @@ def cadence_table(per, anchor, n_of, kept, pool, sampled):
                 dcache[(p, x, y, col)] = _disagreement(rep(p, x, col, PRIMARY[3]), rep(p, y, col, PRIMARY[3]))
             return dcache[(p, x, y, col)]
         gaps[label] = {p: gap_blocks(per[p], anchor, c, lambda k, p=p: 0 <= k < n and kept(p, k, c)) for p in prods}
-        n_ticks = {p: len({r["tick_id"] for r in per[p]}) for p in prods}
-        tpd[label] = {p: {a: _rate(len(rep(p, a, "argmax", PRIMARY[3])["trades"]) * TICKS_PER_DAY, n_ticks[p]) for a in ARMS}
+        # trades/day on kept blocks only (PREREG-v2 §2: an excluded product-day's rows leave every statistic; §6: a fill counts
+        # when its tick is on a kept day): the trades whose tick is in a kept block, per TICKS_PER_DAY of the kept blocks' ticks
+        on = {p: {t for t, k in kof[p].items() if 0 <= k < n and kept(p, k, c)} for p in prods}
+        tpd[label] = {p: {a: _rate(sum(1 for x in rep(p, a, "argmax", PRIMARY[3])["trades"] if x["tick_id"] in on[p]) * TICKS_PER_DAY,
+                                   len(on[p])) for a in ARMS}
                       for p in prods}
         name = "minute (decided every minute, 900 s blocks: v1's design on v2's arms, descriptive)" if label == "minute" else \
             f"{c} s ({c // 60} min), book.at_cadence"
         lines += ["", f"  cadence {name}: {n} blocks from the anchor; pooled over {', '.join(pool) or 'no product'}",
                   "    gap_blocks (kept blocks holding the first priced tick after > 900 s without one): "
                   + ", ".join(f"{p} {len(gaps[label][p])}" for p in prods),
-                  "    trades/day at argmax, 0 bps: " + " | ".join(
+                  "    trades/day at argmax, 0 bps, on kept blocks (trades per 1440 of their ticks): " + " | ".join(
                       f"{p} " + " ".join(f"{a.upper()} {_f(tpd[label][p][a], 1)}" for a in ARMS) for p in prods)]
         head = (f"    {'':1} {'column':<9}{'n':>6}{'dis':>6}{'dis%':>7}{'pdis':>6}{'mean_S':>10}{'mean_S|dis':>12}  |"
                 + "".join(f"  {p}: {'n':>5}{'mean_S':>9}{'dis':>5}" for p in prods))
@@ -1329,6 +1332,15 @@ def cadence_table(per, anchor, n_of, kept, pool, sampled):
     return {"lines": lines, "cells": cells, "gap_blocks": gaps, "trades_per_day": tpd, "fees": fees}
 
 
+def _day_n(r, t0):
+    """A row's T0_v2-anchored day number N (d N = [T0 + 86400 (N - 1), T0 + 86400 N)), as exclusions_v2 names it."""
+    return int((tick_epoch(r["tick_id"]) - t0) // 86400) + 1
+
+
+def _void_line(p):
+    return [f"  -- {p}: void (PREREG-v2 §9.4, fewer than {VOID_KEPT_DAYS} kept days): its rows enter no statistic"]
+
+
 def render_v2(stores, t0=None, since=None, health_only=False, withheld=(), now=None, listed=None):
     """PREREG-v2's report over every product's store. stores: [{"product", "log", "missing", "rows" (cut to
     --since and the sample), "bad", "outs" (the join over the product's WHOLE log), "last" (its last tick reached
@@ -1374,6 +1386,14 @@ def render_v2(stores, t0=None, since=None, health_only=False, withheld=(), now=N
                     + (", ".join(f"{p} {kept_days[p]} kept{' VOID' if p in void else ''}" for p in prods) if judged else
                        "not judged until every product's d28 has closed; every product is pooled meanwhile"))
     secs = [{"lines": sec1}]
+    # PREREG-v2 §2: an excluded product-day removes that product's rows from every row-level descriptive, and §9.4: a void
+    # product leaves the pool; health (§1-§3) reads every row, since it is what judges the days. The replay reads every row.
+    kept_rows = {p: [] if p in void else [r for r in per[p] if (_day_n(r, t0), p) not in recomputed] if t0 is not None else per[p]
+                 for p in prods}
+    left_out = sum(len(per[p]) - len(kept_rows[p]) for p in prods)
+    cut_line = (f"  rows of excluded product-days (the recomputed set, §1) and of void products are left out of every row-level"
+                f" descriptive below (PREREG-v2 §2, §9.4): {left_out} of {len(rows_all)} rows" if t0 is not None else
+                "  no --t0: no day is judged, so every row is read")
     occ_lines = ["  pooled:"] + occupancy(rows_all, pooled=True)["lines"]
     rt_lines = ["  pooled:"] + retest(rows_all)["lines"]
     for p in prods:
@@ -1382,10 +1402,10 @@ def render_v2(stores, t0=None, since=None, health_only=False, withheld=(), now=N
     secs += [{"lines": occ_lines}, {"lines": rt_lines}]
     out = {"health": hs, "recomputed": recomputed, "void": void}
     if not health_only:
-        ag = ["  A's argmax vs rule_c, pooled:"] + agreement(rows_all)["lines"]
+        ag = [cut_line, "  A's argmax vs rule_c, pooled:"] + agreement([r for p in prods for r in kept_rows[p]])["lines"]
         for p in prods:
-            ag += [f"  -- {p}"] + agreement(per[p])["lines"]
-        da = d_agreement(per)
+            ag += _void_line(p) if p in void else [f"  -- {p}"] + agreement(kept_rows[p])["lines"]
+        da = d_agreement({p: kept_rows[p] for p in prods if p not in void})
         secs.append({"lines": ag + da["lines"]})
         firsts = [min(r["tick_id"] for r in per[p]) for p in prods if per[p]]
         anchor = t0 if t0 is not None else (tick_epoch(min(firsts)) if firsts else None)
@@ -1415,10 +1435,14 @@ def render_v2(stores, t0=None, since=None, health_only=False, withheld=(), now=N
             secs.append({"lines": head + ct["lines"]})
             out["cadence"] = ct
         out["d_agreement"] = da
-        h2l, cal = [], []
+        h2l, cal = [cut_line], [cut_line]
         for p in prods:
-            h2l += [f"  -- {p}"] + h2(per[p], stores[prods.index(p)]["outs"], t0)["lines"]
-            cal += [f"  -- {p}"] + calibration(per[p], stores[prods.index(p)]["outs"])["lines"]
+            if p in void:
+                h2l += _void_line(p)
+                cal += _void_line(p)
+                continue
+            h2l += [f"  -- {p}"] + h2(kept_rows[p], stores[prods.index(p)]["outs"], t0)["lines"]
+            cal += [f"  -- {p}"] + calibration(kept_rows[p], stores[prods.index(p)]["outs"])["lines"]
         secs += [{"lines": h2l}, {"lines": cal}]
     for title, sec in zip(TITLES_V2, secs):
         lines += ["", title] + sec["lines"]

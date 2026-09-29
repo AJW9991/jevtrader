@@ -177,6 +177,78 @@ class Void(unittest.TestCase):
         self.assertIn("not judged until every product's d28 has closed", early["text"])
 
 
+class RowLevelDescriptivesTakeKeptRowsOnly(unittest.TestCase):
+    """PREREG-v2 §2: an excluded product-day removes that product's blocks "(and its rows, for row-level
+    descriptives) from every statistic"; §9.4: a void product leaves the pool. So A's agreement with C, arm D's
+    Agreement(p, v) and its reading, §6's direction probabilities, §7's confidence table and trades/day read the
+    rows of kept product-days of non-void products only. The replay still runs over every row (§4). 2026-09-29
+    refuter: an excluded d02 on which D says sell while B holds turned D's LOOKUP into DRIFT (200/286)."""
+
+    def setUp(self):
+        self.enterContext(mock.patch.object(config, "HALT", os.path.join(self.enterContext(tempfile.TemporaryDirectory()), "no-HALT")))
+
+    def _log(self, product="SOL-USD"):
+        d02 = _day_rows(2, lambda i: 100.0, d="sell", a="buy", c="sell", product=product)   # D and B, A and C differ all day
+        for i in range(0, 96, 10):                                                            # 10 of 96 jev errors: BAD
+            d02[i] = _row(report.tick_epoch(d02[i]["tick_id"]), 100.0, absence="jev", product=product)
+        return (_day_rows(1, lambda i: 100.0, product=product) + d02 + _day_rows(3, lambda i: 100.0, product=product)
+                + _day_rows(4, lambda i: 100.0, product=product)[:8])
+
+    def test_an_excluded_day_leaves_every_row_level_descriptive(self):
+        rows = self._log()
+        seen = {}
+
+        def spy(name, fn):
+            def wrapped(rs, *a, **k):
+                seen.setdefault(name, []).append(sorted({int((report.tick_epoch(r["tick_id"]) - T0) // 86400) + 1 for r in rs}))
+                return fn(rs, *a, **k)
+            return wrapped
+        for name in ("h2", "calibration", "agreement"):
+            self.enterContext(mock.patch.object(report, name, spy(name, getattr(report, name))))
+        out = report.render_v2([_store("SOL-USD", rows)], t0=T0, now=END + 86400)
+        self.assertEqual(out["recomputed"], {(2, "SOL-USD")})
+        da = out["d_agreement"]
+        self.assertEqual(da["cells"][("SOL-USD", "v2")], {"n": 200, "agree": 200, "null": 0, "share": 1.0, "readable": True})
+        self.assertTrue(da["reading"].startswith("LOOKUP"), da["reading"])
+        sec4 = out["text"].split(report.TITLES_V2[3])[1].split(report.TITLES_V2[4])[0]
+        self.assertIn("a.argmax == rule_c on 200/200 (100.0%)", sec4)
+        self.assertNotIn("/286", sec4)
+        for name in ("h2", "calibration", "agreement"):
+            self.assertTrue(seen[name], name)
+            for days in seen[name]:
+                self.assertNotIn(2, days, name)                                         # no d02 row reaches it
+        self.assertIn("left out of every row-level descriptive", sec4)
+        # trades/day counts the kept days only: A's one buy is on d02 (excluded), so A trades 0 a day on kept ones
+        tpd = out["cadence"]["trades_per_day"]
+        for label in ("minute",) + tuple(config.CADENCES):
+            self.assertEqual(tpd[label]["SOL-USD"]["a"], 0.0, label)
+        # the replay itself still reads d02: A is long from d02's first decision row on
+        pos = book.replay(book.at_cadence(rows, 900, T0), None, "a", "argmax", 0.0)["position"]
+        self.assertGreater(pos[report._tick_of(T0 + 2 * 86400)], 0.0)
+
+    def test_a_void_product_leaves_the_pooled_and_its_own_row_level_lines(self):
+        add_products(self, 2)
+        p2 = config.PRODUCTS[1]
+
+        def days(product, which, a="hold"):
+            rows = []
+            for d in which:
+                t = T0 + 86400 * (d - 1) + 3600
+                rows += [_row(t, 100.0, product=product, a=a), _row(t + 900, 100.5, product=product, absence="halt")]
+            return rows + [_row(END + 3600, 100.0, product=product)]
+        stores = [_store("SOL-USD", days("SOL-USD", range(1, 29))), _store(p2, days(p2, range(1, 21), a="buy"))]
+        out = report.render_v2(stores, t0=T0, now=END + 86400)
+        self.assertEqual(out["void"], {p2})
+        sec4 = out["text"].split(report.TITLES_V2[3])[1].split(report.TITLES_V2[4])[0]
+        pooled = sec4.split(f"-- ")[0]
+        self.assertIn("a.argmax == rule_c on 28/28 (100.0%)", pooled)                  # SOL's 28 rows, not p2's 20 buys
+        self.assertIn(f"-- {p2}: void (PREREG-v2 §9.4, fewer than 21 kept days): its rows enter no statistic", sec4)
+        self.assertNotIn(p2, "\n".join(l for l in out["d_agreement"]["lines"] if l.startswith("    ") and "product" not in l))
+        for title in report.TITLES_V2[5:]:
+            sec = out["text"].split(title)[1]
+            self.assertIn(f"-- {p2}: void (PREREG-v2 §9.4, fewer than 21 kept days): its rows enter no statistic", sec)
+
+
 class DAgreement(unittest.TestCase):
     """§6: Agreement(p, v), its denominator and null count; a null marks the cell a defect; the three readings."""
 
