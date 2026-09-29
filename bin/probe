@@ -30,14 +30,16 @@ Rate: this process never starts two requests less than MIN_GAP_S = 1 s apart. fe
 its three GETs back to back, so the probe routes each of them through its pacer by wrapping
 feed._get in this process only (the loop's own processes never import this file); run and volume
 are not meant to run at the same time. Six candidates are 18 GETs a minute, ~18 s of the 60.
-Writes only DIR/<product>.jsonl, DIR/run.json and DIR/volume.json. DIR is refused (exit 3, before
+Writes only DIR/<product>.jsonl, DIR/run.json and DIR/volume.json, each opened without following
+a symlink and written only when it is a regular file with one link (a file in DIR that is a symlink
+or a hard link to somewhere else is refused, exit 3, and nothing is written through it). DIR is refused (exit 3, before
 anything is created) when it resolves inside the live checkout LIVE_CHECKOUT, under a forbidden
 prefix of loop/config.py, or under any directory named data or logs (PREREG-v2 §2: nothing under
 any data/ or logs/). Never imports the loop's send path
 (its jev and cycle modules); nothing here sends to Jev or reads a key. Exit 2 on a usage error.
 """
 import argparse, collections, contextlib, datetime as dt, importlib.machinery, importlib.util, json, math, os, re
-import signal, statistics, sys, time
+import signal, stat, statistics, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -119,6 +121,35 @@ def refused(path, prefixes=None):
             break
         a = up
     return None
+
+
+class Refused(Exception):
+    """A file inside DIR that is not a regular file of its own: nothing is written through it."""
+
+
+def open_plain(path, flags):
+    """os.open(path) for writing, never through a symlink (O_NOFOLLOW), and refused unless what is open
+    is a regular file with one link, checked before a byte is written (no O_TRUNC here: the caller
+    truncates after the check). O_NONBLOCK: a FIFO without a reader is refused, not waited on."""
+    try:
+        fd = os.open(path, flags | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0), 0o644)
+    except OSError as e:
+        raise Refused(f"{path}: {e.strerror or e} (a symlink is never written through)") from None
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+        os.close(fd)
+        raise Refused(f"{path} is not a regular file of its own (links {st.st_nlink}); nothing is written through it")
+    return fd
+
+
+def check_plain(path):
+    """Refused unless path is absent or a regular file with one link (lstat: a symlink is refused)."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return
+    if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+        raise Refused(f"{path} is not a regular file of its own (a symlink or a link); nothing is written through it")
 
 
 def prepare_out(path, err):
@@ -217,14 +248,18 @@ def append(out, product, row):
         row = {k: row[k] for k in ("tick_id", "ts_rx", "product")}
         row.update(ok=False, error=one_line(e))
         line = json.dumps(row, sort_keys=True)
-    with open(os.path.join(out, f"{product}.jsonl"), "a", encoding="utf-8") as fh:
+    fd = open_plain(os.path.join(out, f"{product}.jsonl"), os.O_WRONLY | os.O_APPEND | os.O_CREAT)
+    with os.fdopen(fd, "a", encoding="utf-8") as fh:
         fh.write(line + "\n")
     return row
 
 
 def _write_json(path, obj):
     tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
+    check_plain(path)
+    fd = open_plain(tmp, os.O_WRONLY | os.O_CREAT)
+    os.ftruncate(fd, 0)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump(obj, fh, indent=1, sort_keys=True)
         fh.write("\n")
     os.replace(tmp, path)
@@ -249,6 +284,8 @@ def run(args, wall, mono, sleep, err):
     out = prepare_out(args.out, err)
     if out is None:
         return 3
+    for p in args.candidates:                                # before run.json: a refused DIR gets nothing
+        check_plain(os.path.join(out, f"{p}.jsonl"))
     manifest = {"day": args.day, "candidates": list(args.candidates), "every": args.every,
                 "start_second": args.start_second}
     mpath = os.path.join(out, "run.json")
@@ -584,10 +621,14 @@ def main(argv=None, wall=time.time, mono=time.monotonic, sleep=time.sleep, out=N
     s.add_argument("--candidates", type=_candidates, default=DEFAULT_CANDIDATES,
                    help="the order when DIR has no run.json")
     args = ap.parse_args(argv)
-    if args.cmd == "run":
-        return run(args, wall, mono, sleep, err)
-    if args.cmd == "volume":
-        return volume(args, wall, mono, sleep, err)
+    try:
+        if args.cmd == "run":
+            return run(args, wall, mono, sleep, err)
+        if args.cmd == "volume":
+            return volume(args, wall, mono, sleep, err)
+    except Refused as e:
+        err.write(f"probe: refusing to write: {e}\n")
+        return 3
     return summarize(args, out, err)
 
 

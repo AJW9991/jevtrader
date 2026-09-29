@@ -308,6 +308,68 @@ class Guard(unittest.TestCase):
             self.assertEqual(os.listdir(self.live), [])
 
 
+class Files(Offline):
+    """A file inside an accepted DIR that is a symlink or a hard link is never written through."""
+    def setUp(self):
+        super().setUp()
+        self.out = os.path.join(self.tmp, "out")
+        self.elsewhere = os.path.join(self.tmp, "data")      # where a link would carry the rows
+        os.makedirs(self.out)
+        os.makedirs(self.elsewhere)
+        self.target = os.path.join(self.elsewhere, "target.jsonl")
+        with open(self.target, "w", encoding="utf-8") as fh:
+            fh.write("sealed\n")
+
+    def assertTargetUntouched(self):
+        with open(self.target, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "sealed\n")
+
+    def test_a_symlinked_product_file_refuses_the_run_before_anything(self):
+        os.symlink(self.target, os.path.join(self.out, "ETH-USD.jsonl"))
+        code, err = self.main(["run", "--day", DAY, "--out", self.out, "--candidates", "ETH-USD", "--max-minutes",
+                               "1", "--every", "1"], Clock(T_FIX))
+        self.assertEqual(code, 3, err)
+        self.assertIn("refusing to write", err)
+        self.assertTargetUntouched()
+        self.assertEqual(os.listdir(self.out), ["ETH-USD.jsonl"])     # no run.json either
+        self.assertEqual(self.calls, [])
+
+    def test_a_hard_linked_product_file_is_refused_too(self):
+        os.link(self.target, os.path.join(self.out, "ETH-USD.jsonl"))
+        code, err = self.main(["run", "--day", DAY, "--out", self.out, "--candidates", "ETH-USD", "--max-minutes",
+                               "1", "--every", "1"], Clock(T_FIX))
+        self.assertEqual(code, 3, err)
+        self.assertTargetUntouched()
+
+    def test_a_link_swapped_in_mid_run_is_refused_at_the_write(self):
+        def swap(url):                                      # while ETH is fetched, XRP's file becomes a symlink
+            path = os.path.join(self.out, "XRP-USD.jsonl")
+            if "ETH-USD" in url and not os.path.lexists(path):
+                os.symlink(self.target, path)
+        self.hook = swap
+        code, err = self.main(["run", "--day", DAY, "--out", self.out, "--candidates", "ETH-USD,XRP-USD",
+                               "--max-minutes", "1", "--every", "1"], Clock(T_FIX))
+        self.assertEqual(code, 3, err)
+        self.assertTargetUntouched()
+        self.assertEqual(len(self.rows(self.out, "ETH-USD")), 1)
+
+    def test_a_symlinked_tmp_or_json_file_is_refused(self):
+        os.symlink(self.target, os.path.join(self.out, "run.json.tmp"))
+        code, err = self.main(["run", "--day", DAY, "--out", self.out, "--candidates", "ETH-USD", "--max-minutes",
+                               "1", "--every", "1"], Clock(T_FIX))
+        self.assertEqual(code, 3, err)
+        self.assertTargetUntouched()
+        vol = os.path.join(self.tmp, "vol")
+        os.makedirs(vol)
+        os.symlink(self.target, os.path.join(vol, "volume.json"))
+        c = Clock(T_FIX)
+        with mock.patch.object(feed, "_get", lambda url: {"candles": []}):
+            code = probe.main(["volume", "--out", vol, "--candidates", "ETH-USD"], wall=c.now, mono=c.now,
+                              sleep=c.sleep, err=io.StringIO())
+        self.assertEqual(code, 3)
+        self.assertTargetUntouched()
+
+
 class Volume(Offline):
     def test_thirty_closed_days_per_candidate(self):
         clock, out = Clock(T_FIX), os.path.join(self.tmp, "out")
