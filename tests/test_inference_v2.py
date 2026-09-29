@@ -343,7 +343,7 @@ class Section0(unittest.TestCase):
         looks = {"path": "<looks.tsv>", "lines": ["utc\targv\thead", "2026-11-01T09:00:00Z\tpython3 -m loop.report --unblind\tabc"],
                  "error": None}
         text = _run(_store("SOL-USD", rows), looks=looks, tree_sha=SHA)["text"]
-        self.assertIn("§0. The seal, the looks and the sample's spec_sha (PREREG-v2 §9.5, §13)", text)
+        self.assertIn("§0. The seal, the looks, the sample's spec_sha and prompt_b (PREREG-v2 §8, §9.5, §13)", text)
         self.assertIn("seal: PLACEHOLDER. bin/seal-check is not built in this tree yet", text)
         self.assertIn("<looks.tsv>: 1 look(s), each `report --unblind` as (UTC, argv, HEAD) (§9.5), verbatim:", text)
         self.assertIn("    | 2026-11-01T09:00:00Z\tpython3 -m loop.report --unblind\tabc", text)
@@ -356,6 +356,36 @@ class Section0(unittest.TestCase):
         self.assertIn("    old 1 rows", text)
         self.assertIn("NOT ONE VALUE: 2 values over the sample's rows; §13 requires exactly one", text)
         self.assertIn("<l>: cannot be read: Permission denied", text)
+
+
+class Section0PromptB(unittest.TestCase):
+    """PREREG-v2 §8: "RESULTS-v2 §0 prints each product-day's `prompt_b` set and names any day with two values". A
+    promotion takes effect at a day's first tick (activation_tick = T0_v2 + 86,400 (E - 1)), so every row of a
+    product-day carries one prompt_b; two on one day is a hand edit of CURRENT or a version activated off its boundary.
+    A row stopped before the prompts step carries a null prompt_b and no version."""
+
+    def setUp(self):
+        self.p2 = add_products(self, 2)[1]
+
+    def test_each_product_day_and_the_days_with_two_values(self):
+        def row(n):
+            if n == 96 * 2 + 7:
+                return {"absence": "feed"}                                               # null prompt_b below: not a value
+            return {"b": "buy" if n == 0 else "hold", "promoted": 96 * 4 + 48 <= n < 96 * 5 or n >= 96 * 7}
+        sol = _log(mid=_rising, row=row)
+        i = next(j for j, r in enumerate(sol) if r["absence"] == "feed")
+        sol[i] = dict(sol[i], prompt_a=None, prompt_a_sha=None, prompt_b=None, prompt_b_sha=None)
+        p2 = _log(self.p2, days=[d for d in range(1, 29) if d != 10], mid=_rising, row=_b_buys)
+        out = _run(_store("SOL-USD", sol), _store(self.p2, p2))
+        s0 = out["text"].split("\n§0.")[1].split("\n§1.")[0]
+        self.assertIn("  prompt_b per product-day (PREREG-v2 §8: every row of a product-day carries one; over the sample's rows"
+                      " that reached the prompts step, a null prompt_b carrying none):", s0)
+        self.assertIn("\n    SOL-USD: d01-d04 {v2}; d05 {v2, v3} TWO VALUES; d06-d07 {v2}; d08-d28 {v3}\n", s0)
+        self.assertIn(f"\n    {self.p2}: d01-d09 {{v3}}; d10 {{}}; d11-d28 {{v3}}\n", s0)
+        self.assertIn("  product-days with two or more prompt_b values (§8): SOL-USD d05\n", s0)
+        clean = _run(_store("SOL-USD", _log(mid=_rising, row=_b_buys)))["text"]
+        self.assertIn("\n    SOL-USD: d01-d28 {v3}\n", clean)
+        self.assertIn("  product-days with two or more prompt_b values (§8): none\n", clean)
 
 
 class FeeArithmeticOnAHandBuiltBook(unittest.TestCase):

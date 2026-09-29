@@ -41,8 +41,10 @@ What it computes (PREREG-v2 §2, §4-§7, §9; SPEC §10), in this order:
   replay cadence §6's fee arithmetic: E_X,p at 0 and 90 bps over kept days, pooled sums, f*_X for A, B, C, D and
   buy-and-hold, the 30-day account-level volume, the tiers of §12's table, each pair's Delta and f*_XY); arm D's
   agreement and A's agreement with C; the direction probabilities per product (PREREG-v1 §5's beside-numbers).
-RESULTS-v2 §0 (§9.5, §13): the seal section (a placeholder until bin/seal-check is built), data/looks.tsv verbatim, and
-the set of spec_sha over the sample's rows, which must hold exactly one value (printed, never a refusal).
+RESULTS-v2 §0 (§8, §9.5, §13): the seal section (a placeholder until bin/seal-check is built), data/looks.tsv verbatim,
+the set of spec_sha over the sample's rows, which must hold exactly one value (printed, never a refusal), and each
+product-day's prompt_b set, naming every product-day with two or more values (§8: a promotion takes effect at a day's
+first tick, so a product-day carries one; a row stopped before the prompts step has a null prompt_b and carries none).
 
 The draw and the bound (PREREG-v2 §5, §6): a circular block bootstrap of a cell's pooled block series in block order,
 L = 4 units of the cell's own cadence, R = 10,000 resamples each the length of the series, one random.Random(seed)
@@ -237,9 +239,47 @@ def read_looks(path=None):
         return {"path": path, "lines": None, "error": str(e)}
 
 
-def section0(looks, shas, tree_sha):
-    """RESULTS-v2 §0: the seal (a placeholder), the looks verbatim, the sample's spec_sha set (§9.5, §13)."""
-    lines = ["§0. The seal, the looks and the sample's spec_sha (PREREG-v2 §9.5, §13)",
+def prompt_b_days(rows, t0):
+    """§8: {N: the set of non-null prompt_b over one product's sample rows on day N}, N = 1 .. 28. A null prompt_b (a row
+    stopped before the prompts step, cycle.new_row's) names no version and is left out."""
+    out = {n: set() for n in range(1, N_DAYS + 1)}
+    for r in rows:
+        v = r.get("prompt_b")
+        if v is not None:
+            out[report._day_n(r, t0)].add(str(v))
+    return out
+
+
+def prompt_b_lines(pb):
+    """§8's lines of §0: per product, the sample days as runs of one prompt_b set ({} for none), a day with two or more
+    values on its own and marked; then every such product-day named."""
+    lines = ["  prompt_b per product-day (PREREG-v2 §8: every row of a product-day carries one; over the sample's rows that"
+             " reached the prompts step, a null prompt_b carrying none):"]
+    named = []
+    for p, days in pb.items():
+        runs = []                                               # [first day, last day, the set]
+        for n in range(1, N_DAYS + 1):
+            v = frozenset(days[n])
+            if len(v) > 1:
+                named.append(f"{p} d{n:02d}")
+            if runs and runs[-1][2] == v and len(v) < 2:
+                runs[-1][1] = n
+            else:
+                runs.append([n, n, v])
+        parts = []
+        for a, b, v in runs:
+            vs = ", ".join(sorted(v, key=lambda x: (len(x), x)))          # v2 before v10
+            parts.append((f"d{a:02d}" if a == b else f"d{a:02d}-d{b:02d}") + f" {{{vs}}}"
+                         + (f" {'TWO' if len(v) == 2 else len(v)} VALUES" if len(v) > 1 else ""))
+        lines.append(f"    {p}: " + "; ".join(parts))
+    lines.append("  product-days with two or more prompt_b values (§8): " + (", ".join(named) or "none"))
+    return lines
+
+
+def section0(looks, shas, tree_sha, pb=None):
+    """RESULTS-v2 §0: the seal (a placeholder), the looks verbatim, the sample's spec_sha set (§9.5, §13) and, with `pb`
+    (prompt_b_days per product), each product-day's prompt_b set (§8)."""
+    lines = ["§0. The seal, the looks, the sample's spec_sha and prompt_b (PREREG-v2 §8, §9.5, §13)",
              "  seal: PLACEHOLDER. bin/seal-check is not built in this tree yet; once it is, this section prints its verdict on"
              " `--since prereg-v2-seal`, `git diff -U0 prereg-v2-seal HEAD`, the --stat of the excluded paths and every T0_v2"
              " re-derivation (§13). This run checked no tag and no diff."]
@@ -263,6 +303,8 @@ def section0(looks, shas, tree_sha):
     else:
         lines.append(f"  NOT ONE VALUE: {len(shas)} values over the sample's rows; §13 requires exactly one (a sample row whose"
                      " sha is not SPEC v2's does not mean what SPEC v2 says)")
+    if pb is not None:
+        lines += prompt_b_lines(pb)
     return lines
 
 
@@ -478,7 +520,7 @@ def run(stores, t0, now, resamples=RESAMPLES, accept=False, listed=None, tiers=N
     data/exclusions-v2.tsv; tiers: dash.read_fee_tiers()'s (None, {"error"} or the table); looks: read_looks()'s;
     tree_sha: dash.v2_spec_sha(); descriptive: False skips report.cadence_table, §7's agreements and the direction
     probabilities (tests of the tested cells). Returns {"text", "cells", "rules", "excluded", "kept_days", "void_products",
-    "pool", "void", "promoted", "pending", "ct"}. Reads no file."""
+    "pool", "void", "promoted", "pending", "shas", "prompt_b", "ct"}. Reads no file."""
     listed = listed or {"set": set(), "lines": [], "path": config.EXCLUSIONS_V2, "error": None}
     looks = looks or {"path": config.LOOKS, "lines": None, "error": None}
     end = t0 + N_DAYS * 86400
@@ -500,11 +542,13 @@ def run(stores, t0, now, resamples=RESAMPLES, accept=False, listed=None, tiers=N
     cells = tested(per, t0, excluded, pool, promoted > 0, resamples)
     rules = rules12(cells, void, promoted > 0)
     shas = collections.Counter(r.get("spec_sha") for p in prods for r in per[p])
+    pb = {p: prompt_b_days(per[p], t0) for p in prods}
     gaps = {c: {p: report.gap_blocks(per[p], t0, c, lambda k, p=p, c=c: p in pool and (day_of_block(k, c), p) not in excluded)
                 for p in prods} for c in config.CADENCES}
 
     out = {"cells": cells, "rules": rules, "excluded": excluded, "kept_days": kept_days, "void_products": void_p, "pool": pool,
-           "void": void, "promoted": promoted, "pending": pending, "days": days, "shas": shas, "gaps": gaps, "ct": None}
+           "void": void, "promoted": promoted, "pending": pending, "days": days, "shas": shas, "prompt_b": pb, "gaps": gaps,
+           "ct": None}
     ct = da = None
     if descriptive:
         tl, used = report.tier_lines(tiers)
@@ -541,7 +585,7 @@ def run(stores, t0, now, resamples=RESAMPLES, accept=False, listed=None, tiers=N
     if void:
         head.append(f"  VOID (§9.4): no product has {MIN_KEPT_DAYS} kept days; every verdict is prefixed VOID and stop rules 1 and 2"
                     " are not read")
-    lines = head + [""] + section0(looks, shas, tree_sha) + [""] + rule3_lines(stores, days, excluded, kept_days, void_p, listed)
+    lines = head + [""] + section0(looks, shas, tree_sha, pb) + [""] + rule3_lines(stores, days, excluded, kept_days, void_p, listed)
     lines.append(f"  pooled products (not void): {', '.join(pool) or 'none'}")
     lines.append(f"  §9.2's row set, live rows on the kept product-days of the pooled products: {len(live_kept)}; with prompt_b_sha !="
                  f" prompt_a_sha: {promoted} -> " + ("not read: the block is void" if void else

@@ -395,7 +395,8 @@ T0_v2 + 28 d, both before any log is opened, and while d28 is open (no log has r
 `report.days_table` closes the day) unless `--accept-pending` says the logs stopped; `--out` never overwrites. The
 clock and R are `main`'s arguments for the tests, not flags, and T0_v2 is §12's and nothing else. It prints
 RESULTS-v2: §0 (a placeholder for `bin/seal-check`'s section, `data/looks.tsv` verbatim, the set of `spec_sha` over
-the sample's rows); stop rule 3 recomputed per product, which governs, beside `data/exclusions-v2.tsv`, and void; H1
+the sample's rows, each product-day's `prompt_b` set with every product-day holding two or more values named, PREREG-v2
+§8); stop rule 3 recomputed per product, which governs, beside `data/exclusions-v2.tsv`, and void; H1
 and family F on PREREG-v2 §4's pooled series (`pooled`: the same sums, in the same order, as
 `report.cadence_table`'s cells), each cell with its own `random.Random(seed)`, v1's draw (`inference.resample_indices`)
 and the bound `sorted[ceil(alpha R) - 1]` with alpha a `fractions.Fraction` (`alpha_rank` refuses a float); F4
