@@ -615,8 +615,9 @@ the pins of both in `tests/test_frozen.py`. Same: §12's line reads `no` (it can
 ### 10.6 The seal (on `main`, once §12 is filled, before T0_v2)
 
 T_first_v2 is the latest, over products, of each product's first live row carrying this tree's SPEC sha (§2), read as
-that row's `ts_rx` (its decision time; `tick_id` is the minute it is filed under); T0_v2 is the first minute boundary
-at or after T_first_v2 + 86,400 s:
+that row's `tick_id`, as the sealed PREREG.md reads T_first ("`tick_id` of the first row", its §2) and as the sample
+window is cut; T0_v2 is the first minute boundary at or after T_first_v2 + 86,400 s, which is T_first_v2 + 86,400 s
+itself, a `tick_id` being a minute boundary:
 
 ```bash
 cd ~/Projects/jev-paper-loop && python3 - <<'EOF'
@@ -626,30 +627,35 @@ with open("SPEC.md", "rb") as fh:
     sha = hashlib.sha256(fh.read()).hexdigest()
 first = {}
 for p in config.PRODUCTS:
-    with open(config.store(p).decisions, encoding="utf-8", errors="replace") as fh:
-        for line in fh:
-            try:
-                r = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(r, dict) and r.get("spec_sha") == sha and r.get("mode") == "live" and r.get("absence") is None:
-                first[p] = datetime.datetime.fromisoformat(r["ts_rx"].replace("Z", "+00:00"))
-                print(p, "first v2 live row:", r["tick_id"], r["ts_rx"])
-                break
+    try:
+        with open(config.store(p).decisions, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if sha not in line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(r, dict) and r.get("spec_sha") == sha and r.get("mode") == "live" and r.get("absence") is None:
+                    first[p] = datetime.datetime.strptime(r["tick_id"], "%Y%m%dT%H%M%SZ").replace(tzinfo=datetime.timezone.utc)
+                    print(p, "first v2 live row:", r["tick_id"], r.get("ts_rx"))
+                    break
+    except FileNotFoundError:
+        pass
 missing = [p for p in config.PRODUCTS if p not in first]
 if missing:
     raise SystemExit(f"no v2 live row yet for {missing}")
 t = max(first.values())
 end = t + datetime.timedelta(days=1)
-t0 = end.replace(second=0, microsecond=0) + datetime.timedelta(minutes=1 if (end.second or end.microsecond) else 0)
-print("T_first_v2:", t.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z", "  T0_v2:", t0.strftime("%Y%m%dT%H%M00Z"))
+t0 = end.replace(second=0) + datetime.timedelta(minutes=1 if end.second else 0)
+print("T_first_v2:", t.strftime("%Y%m%dT%H%M%SZ"), "  T0_v2:", t0.strftime("%Y%m%dT%H%M00Z"))
 EOF
 ```
 
 Fill §12 in one commit with the PREREG-v2.md pin in `tests/test_frozen.py`: the fee tiers as read in-account, with the
 read time (`Fee tiers (30-day band / maker / taker, read UTC `2026-10-24T09:00Z`): `$0-$10K / 0.60 % / 1.20 %;
 $10K-$50K / ...``, rows joined by `;`, the form `make dash` and the report read), the rebuild line if (11a) did not
-write it, T_first_v2, T0_v2 (a tick_id, `YYYYMMDDTHHMM00Z`), who sealed and the date. Then:
+write it, T_first_v2 and T0_v2 (each a tick_id, `YYYYMMDDTHHMM00Z`, as printed), who sealed and the date. Then:
 
 ```bash
 cd ~/Projects/jev-paper-loop && bin/seal-check && git tag -a prereg-v2-seal -m "PREREG-v2 sealed" HEAD && git push origin prereg-v2-seal
