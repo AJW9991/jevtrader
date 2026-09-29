@@ -1,5 +1,6 @@
 data/*
 !data/exclusions.tsv
+!data/exclusions-v2.tsv
 logs/
 proposals/*.json
 .env

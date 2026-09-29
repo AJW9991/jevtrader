@@ -69,6 +69,7 @@ jev-paper-loop/
   loop/dash.py           make dash: the health page, report §1-§3 only, data/dash.html
   loop/status.py         make status: the morning check in one screen, report §1 only
   loop/exclusions.py     data/exclusions.tsv read (stop rule 3's list; inference applies it, status shows it)
+  loop/exclusions_v2.py  data/exclusions-v2.tsv read, {(N, product)}, beside the rule recomputed from the log, which governs (PREREG-v2 §9.3)
   loop/inference.py      PREREG §4-§5 once, at day 28 (make results); refuses the sample before then
   nightly/digest.py      what the slow model may read
   nightly/policy_table.py  81 synthetic states per candidate
@@ -81,7 +82,7 @@ jev-paper-loop/
   prompts/v1.json        frozen (written)   prompts/v2.json (promoted 2026-09-26)   prompts/CURRENT  → "v2" (one line)
   fixtures/              one recorded Coinbase snapshot set, committed
   tests/                 unittest, stdlib; tests/fixture_prompts.py pins a v1-only prompts root and tests/fixture_prereg.py a PREREG.md (dash.PREREG_PATH) (no test depends on what the live prompts/CURRENT names; one checks it builds, whatever it names)
-  data/   logs/   proposals/   (gitignored except proposals/*.md and data/exclusions.tsv, versioned when it exists)
+  data/   logs/   proposals/   (gitignored except proposals/*.md, data/exclusions.tsv and data/exclusions-v2.tsv, versioned when they exist)
 ```
 
 ## 2. Data types (plain dicts; keys exactly as written)
