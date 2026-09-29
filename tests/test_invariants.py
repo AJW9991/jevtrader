@@ -13,14 +13,15 @@ an erratum in HANDOFF.md (two below: PREREG §3's "forced holds contribute 0.0" 
 "exactly 0.0" sentence, each against the fold SPEC §10 itself prescribes).
 Offline; temp files only; nothing is sent; the live prompts/, data/ and HALT are never read.
 """
-import bisect, calendar, contextlib, datetime, io, math, os, re, subprocess, sys, tempfile, unittest
+import bisect, calendar, contextlib, datetime, io, math, os, random, re, subprocess, sys, tempfile, unittest
+from fractions import Fraction
 from unittest import mock
 
 import synth
 from fixture_prereg import pin_prereg
 from fixture_products import add_products
 from fixture_prompts import pin_v1
-from loop import book, config, cycle, dash, inference, outcomes, report, rules, state, status
+from loop import book, config, cycle, dash, inference, inference_v2, outcomes, report, rules, state, status
 from test_dash import runtime_health_only
 
 SEEDS = tuple(range(1, 13))                       # every cheap property runs on all twelve
@@ -791,6 +792,102 @@ class Inference(unittest.TestCase):
         self.assertGreater(len(units), 50)
         self.assertAlmostEqual(h2s["r"], r, places=9)
         self.assertIn(f"; r {r:.4f}; lower bound", self.text)
+
+
+# ---- (g) PREREG-v2 §5-§6: the draw and the bound, transcribed from PREREG-v2.md's words, not from loop/ ------------------
+# §5: "circular block bootstrap of the pooled block series in block order, block length L = 4 units of the cell's own
+# cadence ..., R = 10,000 resamples, seed 20261023, each resample the same length as the series: ... ⌈n/4⌉ starts per
+# resample, each rng.randrange(n), four consecutive wrapped units from each, concatenated in draw order, truncated to n
+# ... with this cell's seed ... and the mean ...; one random.Random(seed) per cell. The bound is sorted[⌈α·R⌉ − 1] of the
+# R sorted resampled means ...: sorted[249] at α = 1/40 (H1), sorted[62] at α = 1/160 (every family-F cell ...). Reject
+# H0 iff the bound is > 0." §6: family F "each at α = 1/160 ... with seed 20261023 + i, in this order": i = 1 B - C at
+# 3,600 s, 2 B - C at 14,400 s, 3 A - C at 900 s, 4 B - A at 900 s.
+V2_R = 10000
+V2_CELLS = (("H1", "b", "c", 900, 20261023, 249), ("F1", "b", "c", 3600, 20261024, 62), ("F2", "b", "c", 14400, 20261025, 62),
+            ("F3", "a", "c", 900, 20261026, 62), ("F4", "b", "a", 900, 20261027, 62))
+# a fixed series (26 values: not a multiple of 4, so the last resample block is cut) on which, at every cell's seed, the
+# bound's neighbours differ from it (sorted[248] < sorted[249] < sorted[250] at H1's, sorted[61] < sorted[62] < sorted[63]
+# at F's), so reading sorted[250], sorted[61] or sorted[63] cannot pass; H1 rejects on it and no F cell does
+V2_GOLDEN = [4.965, 5.448, 1.299, -1.194, -2.177, 1.194, -1.966, -3.21, 1.698, 1.5, 2.739, -1.642, 1.115, 0.906, -3.417,
+             2.714, 2.062, 8.267, 1.709, 0.666, 4.798, 1.696, 3.827, 0.003, 1.755, 4.173]
+# each cell's bound on V2_GOLDEN at R = 10,000: computed once and pasted, and held to the transcription below as well
+V2_BOUNDS = {"H1": 0.2524615384615384, "F1": -0.04073076923076925, "F2": -0.07249999999999998, "F3": -0.0879230769230769,
+             "F4": -0.14953846153846154}
+
+
+def v2_sorted(series, seed, R=V2_R):
+    """§5's R resampled means, sorted ascending, as the text reads (see above)."""
+    n = len(series)
+    rng = random.Random(seed)
+    means = []
+    for _ in range(R):
+        take = []
+        for _ in range(math.ceil(n / 4)):
+            s = rng.randrange(n)
+            take += [series[(s + j) % n] for j in range(4)]
+        take = take[:n]
+        means.append(sum(take) / n)
+    return sorted(means)
+
+
+class V2Draw(unittest.TestCase):
+    def same(self, got, want, what):
+        if got != want:                                   # without difflib's quadratic diff of 10,000 lines
+            i = next((i for i, (g, w) in enumerate(zip(got, want)) if g != w), min(len(got), len(want)))
+            self.fail(f"{what}: lengths {len(got)} vs {len(want)}, first difference at [{i}]")
+
+    def test_the_constants_are_the_texts_and_alpha_is_an_exact_fraction(self):
+        self.assertEqual((inference_v2.SEED_H1, inference_v2.RESAMPLES, inference_v2.BLOCK_LEN), (20261023, 10000, 4))
+        for a, want in ((inference_v2.ALPHA_H1, Fraction(1, 40)), (inference_v2.ALPHA_F, Fraction(1, 160))):
+            self.assertIs(type(a), Fraction)
+            self.assertEqual(a, want)
+        self.assertEqual(inference_v2.alpha_rank(inference_v2.ALPHA_H1, V2_R), 249)
+        self.assertEqual(inference_v2.alpha_rank(inference_v2.ALPHA_F, V2_R), 62)
+        # ceil, exactly, at other R: alpha R an integer reads the value at alpha R (0-based alpha R - 1); a hair above it, the next
+        for alpha, R, want in ((Fraction(1, 160), 160, 0), (Fraction(1, 160), 161, 1), (Fraction(1, 160), 320, 1),
+                               (Fraction(1, 40), 40, 0), (Fraction(1, 40), 1000, 24), (Fraction(1, 40), 1001, 25), (Fraction(1, 160), 1, 0)):
+            self.assertEqual(inference_v2.alpha_rank(alpha, R), want, (alpha, R))
+        # a float is refused, not rounded: round(0.00625 x 10,000) and int() both give 62, i.e. sorted[61]
+        for bad in (0.025, 0.00625, 1 / 160, 1, "1/40"):
+            with self.assertRaises(TypeError, msg=repr(bad)):
+                inference_v2.alpha_rank(bad, V2_R)
+        with self.assertRaises(TypeError):
+            inference_v2.bootstrap(V2_GOLDEN, 20261024, 0.00625, resamples=10)
+        for bad in (Fraction(0), Fraction(1), Fraction(-1, 40)):
+            with self.assertRaises(ValueError):
+                inference_v2.alpha_rank(bad, V2_R)
+        for bad in (0, -1, True, 10.0):
+            with self.assertRaises(ValueError):
+                inference_v2.alpha_rank(Fraction(1, 40), bad)
+
+    def test_each_cells_draw_is_the_transcription_and_its_bound_on_a_fixed_series_is_pinned(self):
+        for name, x, y, c, seed, rank in V2_CELLS:
+            alpha = inference_v2.ALPHA_H1 if name == "H1" else inference_v2.ALPHA_F
+            b = inference_v2.bootstrap(V2_GOLDEN, seed, alpha)             # the defaults: R and L as run at day 28
+            want = v2_sorted(V2_GOLDEN, seed)
+            self.same(b["sorted"], want, name)
+            self.assertEqual((b["n"], b["rank"]), (len(V2_GOLDEN), rank), name)
+            self.assertLess(want[rank - 1], want[rank], name)                # sorted[61] != sorted[62], sorted[248] != sorted[249]
+            self.assertLess(want[rank], want[rank + 1], name)
+            self.assertEqual(b["lower"], want[rank], name)
+            self.assertAlmostEqual(b["lower"], V2_BOUNDS[name], places=9, msg=name)   # sum() is compensated from 3.12: 3.11 may differ in the last bit
+            self.assertEqual(b["reject"], V2_BOUNDS[name] > 0, name)
+        self.assertEqual([n for n, *_ in V2_CELLS if V2_BOUNDS[n] > 0], ["H1"])
+
+    def test_the_draw_cuts_the_last_block_and_each_cell_has_its_own_generator(self):
+        g = random.Random(11)
+        s = [round(g.gauss(0.0, 20.0), 6) for _ in range(2013)]
+        self.same(inference_v2.bootstrap(s, 20261025, inference_v2.ALPHA_F, resamples=40)["sorted"], v2_sorted(s, 20261025, 40), "n 2013")
+        self.same(inference_v2.bootstrap(s[:2012], 20261023, inference_v2.ALPHA_H1, resamples=40)["sorted"],
+                  v2_sorted(s[:2012], 20261023, 40), "n 2012")
+        a = inference_v2.bootstrap(s, 20261026, inference_v2.ALPHA_F, resamples=30)
+        inference_v2.bootstrap(s, 20261027, inference_v2.ALPHA_F, resamples=30)        # another cell in between draws nothing of its
+        self.same(inference_v2.bootstrap(s, 20261026, inference_v2.ALPHA_F, resamples=30)["sorted"], a["sorted"], "F3 again")
+        self.assertEqual(inference_v2.bootstrap([], 20261023, inference_v2.ALPHA_H1)["lower"], None)
+        self.assertFalse(inference_v2.bootstrap([], 20261023, inference_v2.ALPHA_H1)["reject"])
+        # ties stay in: a series of zeros bounds at 0.0 and does not reject (> 0, not >= 0)
+        z = inference_v2.bootstrap([0.0] * 12, 20261023, inference_v2.ALPHA_H1, resamples=50)
+        self.assertEqual((z["lower"], z["reject"], z["n"]), (0.0, False, 12))
 
 
 if __name__ == "__main__":
