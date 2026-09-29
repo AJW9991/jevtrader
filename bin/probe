@@ -1,0 +1,592 @@
+#!/opt/homebrew/bin/python3
+"""bin/probe -- PREREG-v2 §2's product probe: two added products, chosen by its criteria over ONE fixed UTC day.
+
+    bin/probe run --day YYYY-MM-DD --out DIR [--candidates ETH-USD,XRP-USD,...] [--start-second 30] [--every 60] [--max-minutes N]
+    bin/probe volume --out DIR [--candidates ...]
+    bin/probe summarize DIR [--tick-override ETH-USD=0.01,...] [--candidates ...]
+
+run: every --every seconds, at wall second --start-second (with the defaults, at :30 of every
+minute), takes each candidate in order through loop/feed.py::snapshot (the three public GETs the
+loop uses: book, candles, ticker; 10 s timeout; no retry) and loop/state.py::features (the numbers
+only), and appends one JSON line to DIR/<product>.jsonl: tick_id (the minute floor of ts_rx),
+ts_rx, ok, mid, spread_bps, fill1k_bps, fill1k_short, vol5_usd, trades_5m, feed_age_s and
+tick_est, the smallest positive price step between consecutive levels of the book, one for the
+asks and one for the bids. A snapshot or a features() call that raises writes a row with ok false
+and the exception's one-line text (no traceback), and the next candidate goes on. It samples the
+UTC day --day only: before it, it waits; it exits 0 after the day's last slot (23:59:30 with the
+defaults), and refuses a day that is already over. SIGTERM finishes the row being written and exits
+0. One line an hour goes to stderr with the counts so far. DIR/run.json records the day and the
+candidates; a DIR already holding another day's run is refused.
+volume: once, 30 closed ONE_DAY candles per candidate (the venue's candles endpoint, public) ->
+DIR/volume.json: per product sum(volume * close) / 30 in USD a day, the number of daily rows, and
+the raw candles.
+summarize: offline, from DIR alone: per product the rows, the GET-success share, the tick size
+(the mode of the rows' tick_est values, both sides, or --tick-override), the median fill1k_bps,
+the nearest-rank quantiles of h and the atoms, the liq occupancy under the h-rule of
+bin/fill1k-quantiles (imported from it: one rule, one place), the 30-day volume, PASS/FAIL per
+criterion with the failing value, and the first two passing products in candidate order.
+
+Rate: this process never starts two requests less than MIN_GAP_S = 1 s apart. feed.snapshot sends
+its three GETs back to back, so the probe routes each of them through its pacer by wrapping
+feed._get in this process only (the loop's own processes never import this file); run and volume
+are not meant to run at the same time. Six candidates are 18 GETs a minute, ~18 s of the 60.
+Writes only DIR/<product>.jsonl, DIR/run.json and DIR/volume.json. DIR is refused (exit 3, before
+anything is created) when it resolves inside the live checkout LIVE_CHECKOUT, under a forbidden
+prefix of loop/config.py, or under any directory named data. Never imports the loop's send path
+(its jev and cycle modules); nothing here sends to Jev or reads a key. Exit 2 on a usage error.
+"""
+import argparse, collections, contextlib, datetime as dt, importlib.machinery, importlib.util, json, math, os, re
+import signal, statistics, sys, time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(HERE)
+sys.path.insert(0, REPO)
+from loop import config, feed, state                       # noqa: E402
+
+# ---- PREREG-v2 §2 (the criteria as revised 2026-09-29) -----------------------------------------
+DEFAULT_CANDIDATES = ("ETH-USD", "XRP-USD", "DOGE-USD", "AVAX-USD", "LINK-USD", "ADA-USD")   # walked in this order
+CHOOSE = 2                          # the first two that pass all four
+MIN_USD_PER_DAY = 50e6              # 30-day volume on the venue's own daily candles, USD a day
+VOLUME_DAYS = 30
+OCC_LO_PCT, OCC_HI_PCT = 3, 90      # every liq word, under the h-rule, holds 3-90 % of the day's rows
+GETS_MIN_PCT = 95                   # "the three public GETs answer": this share of the day's rows at least
+STABLECOINS = frozenset({"USDT", "USDC", "DAI", "PYUSD", "EURC", "GUSD", "USDP", "PAX", "TUSD", "FDUSD",
+                         "USDS", "RLUSD", "BUSD", "LUSD", "FRAX", "USDE"})   # a base here fails "no stablecoin"
+# ---- the probe's own ---------------------------------------------------------------------------
+MIN_GAP_S = 1.0                     # never two requests less than this apart, whatever the endpoint
+LIVE_CHECKOUT = "/Users/alexanderward/Projects/jev-paper-loop"
+FORBIDDEN = (LIVE_CHECKOUT,) + tuple(config.FORBIDDEN_PREFIXES)
+PRODUCT_RE = re.compile(r"^[A-Z0-9]{2,12}-[A-Z]{3,5}$")
+DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _load_rule():
+    """bin/fill1k-quantiles as a module (no bytecode written next to it)."""
+    path = os.path.join(HERE, "fill1k-quantiles")
+    loader = importlib.machinery.SourceFileLoader("fill1k_quantiles", path)
+    mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("fill1k_quantiles", loader))
+    before, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+    try:
+        loader.exec_module(mod)
+    finally:
+        sys.dont_write_bytecode = before
+    return mod
+
+
+RULE = _load_rule()
+
+
+# ---- the path guard ----------------------------------------------------------------------------
+def refused(path, prefixes=None):
+    """Why DIR may not be written, or None. As loop/cycle.py::forbidden: the path as typed (made
+    absolute) and its realpath are both tried, each prefix and its realpath matched on a '/'
+    boundary, then each existing ancestor of the realpath compared with each existing prefix by
+    (st_dev, st_ino), so a symlink, a '..', or a case-only second name on APFS cannot hide the
+    tree. Any path component named data (any case), typed or resolved, is refused too.
+    prefixes defaults to FORBIDDEN."""
+    prefixes = FORBIDDEN if prefixes is None else prefixes
+    typed, real = os.path.abspath(path), os.path.realpath(path)
+    for p in (typed, real):
+        if any(part.casefold() == "data" for part in p.split(os.sep)):
+            return f"{p} has a directory named data in it"
+    for pre in prefixes:
+        for q in {pre.rstrip(os.sep), os.path.realpath(pre).rstrip(os.sep)}:
+            for p in (typed, real):
+                if p == q or p.startswith(q + os.sep):
+                    return f"{p} is inside {pre}"
+    ids = []
+    for pre in prefixes:
+        try:
+            st = os.stat(pre)
+        except (OSError, ValueError):
+            continue
+        ids.append(((st.st_dev, st.st_ino), pre))
+    a = real
+    while ids:
+        try:
+            st = os.stat(a)
+        except (OSError, ValueError):
+            pass
+        else:
+            for key, pre in ids:
+                if key == (st.st_dev, st.st_ino):
+                    return f"{real} is inside {pre} (the same directory by another name)"
+        up = os.path.dirname(a)
+        if up == a:
+            break
+        a = up
+    return None
+
+
+def prepare_out(path, err):
+    """The resolved DIR, created, or None after a refusal line (the caller exits 3)."""
+    why = refused(path)
+    if why is None:
+        real = os.path.realpath(path)
+        try:
+            os.makedirs(real, exist_ok=True)
+        except OSError as e:
+            err.write(f"probe: cannot create {real}: {e.strerror or e}\n")
+            return None
+        why = refused(real)                                 # what was created is what was checked
+        if why is None:
+            return real
+    err.write(f"probe: refusing --out {path}: {why}\n")
+    return None
+
+
+# ---- pacing --------------------------------------------------------------------------------------
+class Pacer:
+    """At least `gap` seconds between the starts of any two requests of this process."""
+    def __init__(self, gap=MIN_GAP_S, clock=time.monotonic, sleep=time.sleep):
+        self.gap, self.clock, self.sleep, self.last = gap, clock, sleep, None
+
+    def ready(self):
+        """Sleep until a request may start."""
+        while self.last is not None:
+            d = self.last + self.gap - self.clock()
+            if d <= 0:
+                return
+            self.sleep(d)
+
+    def mark(self):
+        """Wait if needed, then count a request as started now."""
+        self.ready()
+        self.last = self.clock()
+
+
+@contextlib.contextmanager
+def paced_feed(pacer):
+    """Every feed._get in this process waits for the pacer first; restored on the way out."""
+    real = feed._get
+
+    def get(url):
+        pacer.mark()
+        return real(url)
+    feed._get = get
+    try:
+        yield
+    finally:
+        feed._get = real
+
+
+# ---- one row -------------------------------------------------------------------------------------
+def tick_id(now):
+    return time.strftime("%Y%m%dT%H%M00Z", time.gmtime(now))
+
+
+def iso(now):
+    d = dt.datetime.fromtimestamp(now, dt.timezone.utc)
+    return d.strftime("%Y-%m-%dT%H:%M:%S.") + f"{d.microsecond // 1000:03d}Z"
+
+
+def one_line(e):
+    return f"{type(e).__name__}: {e}".replace("\n", " ").replace("\r", " ")[:300]
+
+
+def min_step(levels):
+    """The smallest positive price difference between consecutive levels, or None."""
+    d = [abs(b[0] - a[0]) for a, b in zip(levels, levels[1:])]
+    d = [x for x in d if x > 0]
+    return round(min(d), 10) if d else None
+
+
+def probe_one(product, wall, pacer):
+    """One candidate: the snapshot and its features -> the row (never raises on a feed failure)."""
+    pacer.ready()
+    now = wall()
+    row = {"tick_id": tick_id(now), "ts_rx": iso(now), "product": product}
+    try:
+        snap = feed.snapshot(product, now=now)
+        f = state.features(snap)
+        row.update(ok=True, mid=f["mid"], spread_bps=f["spread_bps"], fill1k_bps=f["fill1k_bps"],
+                   fill1k_short=f["fill1k_short"], vol5_usd=f["vol5_usd"], trades_5m=snap["trades_5m"],
+                   feed_age_s=snap["feed_age_s"], tick_est={"ask": min_step(snap["asks"]), "bid": min_step(snap["bids"])})
+    except Exception as e:                                   # a FeedError, a short window: the row says which
+        row.update(ok=False, error=one_line(e))
+    return row
+
+
+def append(out, product, row):
+    try:
+        line = json.dumps(row, sort_keys=True, allow_nan=False)
+    except ValueError as e:                                  # a non-finite number: the row says so instead
+        row = {k: row[k] for k in ("tick_id", "ts_rx", "product")}
+        row.update(ok=False, error=one_line(e))
+        line = json.dumps(row, sort_keys=True)
+    with open(os.path.join(out, f"{product}.jsonl"), "a", encoding="utf-8") as fh:
+        fh.write(line + "\n")
+    return row
+
+
+def _write_json(path, obj):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(obj, fh, indent=1, sort_keys=True)
+        fh.write("\n")
+    os.replace(tmp, path)
+
+
+# ---- run -----------------------------------------------------------------------------------------
+def next_slot(t, start_second, every):
+    """The first time >= t at start_second modulo every (whole seconds of the epoch)."""
+    return start_second + every * math.ceil((t - start_second) / every)
+
+
+def _counts(counts):
+    return "; ".join(f"{p} ok {c['ok']} error {c['error']}" for p, c in counts.items())
+
+
+def run(args, wall, mono, sleep, err):
+    day0 = dt.datetime.strptime(args.day, "%Y-%m-%d").replace(tzinfo=dt.timezone.utc).timestamp()
+    day1 = day0 + 86400
+    if next_slot(max(wall(), day0), args.start_second, args.every) >= day1:
+        err.write(f"probe: the UTC day {args.day} has no slot left; refusing\n")
+        return 2
+    out = prepare_out(args.out, err)
+    if out is None:
+        return 3
+    manifest = {"day": args.day, "candidates": list(args.candidates), "every": args.every,
+                "start_second": args.start_second}
+    mpath = os.path.join(out, "run.json")
+    if os.path.exists(mpath):
+        try:
+            with open(mpath, encoding="utf-8") as fh:
+                old = json.load(fh)
+        except (OSError, ValueError) as e:
+            err.write(f"probe: {mpath} cannot be read ({one_line(e)}); refusing\n")
+            return 2
+        if not isinstance(old, dict) or old.get("day") != args.day or old.get("candidates") != list(args.candidates):
+            err.write(f"probe: {out} holds a run of another day or candidate list; use a fresh --out\n")
+            return 2
+    else:
+        _write_json(mpath, manifest)
+    stop = []
+
+    def on_term(signum, frame):
+        stop.append(signum)
+    previous = signal.signal(signal.SIGTERM, on_term)
+    counts = {p: {"ok": 0, "error": 0} for p in args.candidates}
+    pacer, cycles, log_hour, last, why = Pacer(MIN_GAP_S, mono, sleep), 0, None, day0 - 1, "the day is over"
+    err.write(f"{iso(wall())} probe: run {args.day} into {out}, {len(args.candidates)} candidates,"
+              f" every {args.every} s at second {args.start_second}\n")
+    try:
+        with paced_feed(pacer):
+            while not stop:
+                slot = next_slot(max(wall(), day0, last + 1), args.start_second, args.every)   # never one slot twice
+                if slot >= day1:
+                    break
+                last = slot
+                while not stop:
+                    d = slot - wall()
+                    if d <= 0:
+                        break
+                    sleep(min(d, 1.0))                        # short naps: a SIGTERM is seen within a second
+                if stop:
+                    break
+                hour = int(slot // 3600)
+                if log_hour is not None and hour != log_hour:
+                    err.write(f"{iso(slot)} probe: {cycles} cycles; {_counts(counts)}\n")
+                log_hour = hour
+                for p in args.candidates:
+                    if stop:
+                        break
+                    row = append(out, p, probe_one(p, wall, pacer))
+                    counts[p]["ok" if row["ok"] else "error"] += 1
+                if stop:
+                    break                                     # a cycle cut short is not counted as one
+                cycles += 1
+                if args.max_minutes and cycles >= args.max_minutes:
+                    why = f"--max-minutes {args.max_minutes}"
+                    break
+    finally:
+        signal.signal(signal.SIGTERM, signal.SIG_DFL if previous is None else previous)
+    if stop:
+        why = "SIGTERM"
+    err.write(f"{iso(wall())} probe: done ({why}), {cycles} cycles; {_counts(counts)}\n")
+    return 0
+
+
+# ---- volume --------------------------------------------------------------------------------------
+def daily_rows(j, start, end):
+    """Closed daily candles with start in [start, end), oldest first, as (start, volume, close)."""
+    raw = j.get("candles") if isinstance(j, dict) else None
+    if not isinstance(raw, list):
+        raise feed.FeedError("parse daily candles: no list")
+    seen = {}
+    for c in raw:
+        try:
+            s, v, px = int(c["start"]), float(c["volume"]), float(c["close"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            raise feed.FeedError("parse daily candles: a row without start, volume or close") from None
+        if not (math.isfinite(v) and v >= 0 and math.isfinite(px) and px > 0):
+            raise feed.FeedError(f"daily candle {s}: volume {v} close {px}")
+        if start <= s < end:
+            seen[s] = (s, v, px)
+    return [seen[s] for s in sorted(seen)]
+
+
+def volume(args, wall, mono, sleep, err):
+    out = prepare_out(args.out, err)
+    if out is None:
+        return 3
+    now = wall()
+    end = int(now // 86400) * 86400                          # today 00:00Z: the open day is never counted
+    start = end - VOLUME_DAYS * 86400
+    pacer, products = Pacer(MIN_GAP_S, mono, sleep), {}
+    with paced_feed(pacer):
+        for p in args.candidates:
+            url = f"{feed.BASE}/products/{p}/candles?start={start}&end={end}&granularity=ONE_DAY"
+            try:
+                j = feed._get(url)
+                rows = daily_rows(j, start, end)
+                products[p] = {"usd_per_day": sum(v * px for _, v, px in rows) / VOLUME_DAYS, "rows": len(rows),
+                               "candles": j["candles"]}
+            except Exception as e:
+                products[p] = {"error": one_line(e)}
+            err.write(f"probe: volume {p}: " + (f"${products[p]['usd_per_day']:,.0f}/day over {products[p]['rows']} rows"
+                                                  if "error" not in products[p] else products[p]["error"]) + "\n")
+    _write_json(os.path.join(out, "volume.json"), {"generated": iso(now), "start": iso(start), "end": iso(end),
+                                                    "days": VOLUME_DAYS, "products": products})
+    return 0
+
+
+# ---- summarize -----------------------------------------------------------------------------------
+def read_rows(path, day):
+    """The rows of one product's file whose tick_id falls on `day` (every row when day is None),
+    with the counts of lines that did not parse and rows outside the day."""
+    rows, bad, outside = [], 0, 0
+    if not os.path.exists(path):
+        return rows, bad, outside
+    prefix = day.replace("-", "") + "T" if day else None
+    with open(path, "rb") as fh:
+        for raw in fh:
+            if not raw.strip():
+                continue
+            try:
+                r = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError, RecursionError):
+                bad += 1
+                continue
+            if not isinstance(r, dict) or not isinstance(r.get("tick_id"), str):
+                bad += 1
+                continue
+            if prefix and not r["tick_id"].startswith(prefix):
+                outside += 1
+                continue
+            rows.append(r)
+    return rows, bad, outside
+
+
+def _num(x):
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+
+
+def tick_mode(rows):
+    """The most frequent tick_est value over both sides of the ok rows (ties: the smaller), with
+    its count and the number of values seen; (None, 0, 0) when no row recorded one."""
+    seen = collections.Counter()
+    for r in rows:
+        te = r.get("tick_est") if r.get("ok") is True else None
+        for side in ("ask", "bid"):
+            v = te.get(side) if isinstance(te, dict) else None
+            if _num(v) and v > 0:
+                seen[v] += 1
+    if not seen:
+        return None, 0, 0
+    best = min(seen, key=lambda v: (-seen[v], v))
+    return best, seen[best], sum(seen.values())
+
+
+def _pct(k, n):
+    return f"{k}/{n} {100.0 * k / n:.2f}%" if n else f"{k}/{n}"
+
+
+def summarize_product(p, rows, bad, outside, tick_override, vol):
+    """(lines, passed) for one candidate."""
+    ok = [r for r in rows if r.get("ok") is True]
+    gets = [r for r in ok if isinstance(r.get("trades_5m"), int) and not isinstance(r.get("trades_5m"), bool)
+            and r["trades_5m"] >= 0]
+    lines = [f"== {p}", f"rows: {len(rows)} (ok {len(ok)}, error {len(rows) - len(ok)};"
+                        f" unparsable lines {bad}, rows outside the day {outside})",
+             f"get_success: {_pct(len(gets), len(rows))}"]
+    if tick_override is not None:
+        tick = tick_override
+        lines.append(f"tick: {tick!r} (--tick-override)")
+    else:
+        tick, agree, seen = tick_mode(rows)
+        lines.append(f"tick: {tick!r} (mode of {seen} per-side minimum steps, {agree} at the mode)" if tick
+                     else "tick: none (no row recorded a step)")
+    fills = [(r["fill1k_bps"], r["mid"]) for r in ok if r.get("fill1k_short") is not True
+             and _num(r.get("fill1k_bps")) and r["fill1k_bps"] >= 0 and _num(r.get("mid")) and r["mid"] > 0]
+    n_short = sum(1 for r in ok if r.get("fill1k_short") is True)
+    crit = {}
+    crit["gets"] = (None if rows and len(gets) * 100 >= GETS_MIN_PCT * len(rows)
+                    else f"{_pct(len(gets), len(rows))} < {GETS_MIN_PCT}%")
+    if fills:
+        lines.append(f"fill1k_bps_median: {statistics.median(f for f, _ in fills):.4f}")
+    if fills and tick:
+        hs = [RULE.half_ticks(f, m, tick) for f, m in fills]
+        q = RULE.summary(hs)
+        occ = RULE.occupancy(hs, n_short, OCC_LO_PCT, OCC_HI_PCT)
+        lines += [f"h_{k}: {q[k]:.4f}" for k in ("p10", "p50", "p90", "p99", "max")]
+        lines += [f"a10: {occ['a10']}", f"a90: {occ['a90']}",
+                  f"rule: deep iff h < {occ['deep_below']:.1f}; thin iff h > {occ['thin_above']:.1f} or fill1k_short;"
+                  " normal otherwise",
+                  "thin_fallback: " + (f"yes (thin held {_pct(occ['thin_before'], occ['n'])} under h > {occ['a90'] + 0.5:.1f})"
+                                       if occ["fallback"] else "no")]
+        lines += [f"{w}: {_pct(occ['counts'][w], occ['n'])}" for w in ("deep", "normal", "thin")]
+        off = [f"{w} {100.0 * occ['counts'][w] / occ['n']:.2f}%" for w in ("deep", "normal", "thin")
+               if not OCC_LO_PCT * occ["n"] <= occ["counts"][w] * 100 <= OCC_HI_PCT * occ["n"]]
+        crit["occupancy"] = None if occ["within"] else ", ".join(off) + f" outside [{OCC_LO_PCT}%, {OCC_HI_PCT}%]"
+    else:
+        crit["occupancy"] = "no usable fill1k_bps row" if not fills else "no tick size"
+    v = (vol or {}).get(p) if isinstance(vol, dict) else None
+    if vol is None:
+        crit["volume"] = "no volume.json"
+    elif not isinstance(v, dict):
+        crit["volume"] = "not in volume.json"
+    elif "error" in v:
+        crit["volume"] = f"volume.json: {v['error']}"
+    elif not _num(v.get("usd_per_day")):
+        crit["volume"] = "volume.json: no usd_per_day"
+    else:
+        lines.append(f"volume_usd_per_day: {v['usd_per_day']:.0f} ({v.get('rows')} daily rows / {VOLUME_DAYS})")
+        crit["volume"] = None if v["usd_per_day"] >= MIN_USD_PER_DAY else f"{v['usd_per_day']:.0f} < {MIN_USD_PER_DAY:.0f}"
+    base = p.split("-")[0]
+    crit["stablecoin"] = f"{base} is a stablecoin" if base in STABLECOINS else None
+    for k in ("gets", "volume", "occupancy", "stablecoin"):
+        lines.append(f"criterion_{k}: " + ("PASS" if crit[k] is None else f"FAIL {crit[k]}"))
+    passed = all(c is None for c in crit.values())
+    lines.append(f"result: {'PASS' if passed else 'FAIL'}")
+    return lines, passed
+
+
+def summarize(args, out, err):
+    d = args.dir
+    if not os.path.isdir(d):
+        err.write(f"probe: no directory {d}\n")
+        return 2
+    day, candidates = None, list(args.candidates)
+    mpath = os.path.join(d, "run.json")
+    if os.path.exists(mpath):
+        try:
+            with open(mpath, encoding="utf-8") as fh:
+                m = json.load(fh)
+            day, candidates = m["day"], list(m["candidates"])
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            err.write(f"probe: {mpath} cannot be read ({one_line(e)})\n")
+            return 2
+    vol = None
+    vpath = os.path.join(d, "volume.json")
+    if os.path.exists(vpath):
+        try:
+            with open(vpath, encoding="utf-8") as fh:
+                vol = json.load(fh).get("products")
+        except (OSError, ValueError, AttributeError) as e:
+            err.write(f"probe: {vpath} cannot be read ({one_line(e)})\n")
+            return 2
+    lines = [f"dir: {d}",
+             f"day: {day}" if day else "day: not recorded (no run.json): every row is read",
+             f"candidates: {' '.join(candidates)}",
+             f"criteria: get_success >= {GETS_MIN_PCT}% of the day's rows; volume >= {MIN_USD_PER_DAY:.0f} USD/day"
+             f" over {VOLUME_DAYS} days; each liq word in [{OCC_LO_PCT}%, {OCC_HI_PCT}%] under the h-rule;"
+             " not a stablecoin"]
+    passing = []
+    for p in candidates:
+        rows, bad, outside = read_rows(os.path.join(d, f"{p}.jsonl"), day)
+        plines, ok = summarize_product(p, rows, bad, outside, args.tick_override.get(p), vol)
+        lines += plines
+        if ok:
+            passing.append(p)
+    chosen = passing[:CHOOSE]
+    tail = "" if len(chosen) == CHOOSE else f" (only {len(chosen)} of {len(candidates)} passed; v2 runs on what passed)"
+    lines.append(f"chosen: {' '.join(chosen) if chosen else 'none'}{tail}")
+    out.write("\n".join(lines) + "\n")
+    return 0
+
+
+# ---- the command line ----------------------------------------------------------------------------
+def _candidates(s):
+    ps = [p.strip() for p in s.split(",") if p.strip()]
+    if not ps or any(not PRODUCT_RE.match(p) for p in ps) or len(set(ps)) != len(ps):
+        raise argparse.ArgumentTypeError("a comma-separated list of distinct products like ETH-USD")
+    return tuple(ps)
+
+
+def _day(s):
+    try:
+        if DAY_RE.match(s):
+            dt.date.fromisoformat(s)
+            return s
+    except ValueError:
+        pass
+    raise argparse.ArgumentTypeError("a UTC date like 2026-10-01")
+
+
+def _overrides(s):
+    out = {}
+    for part in (x.strip() for x in s.split(",") if x.strip()):
+        p, _, v = part.partition("=")
+        try:
+            t = float(v)
+        except ValueError:
+            t = math.nan
+        if not PRODUCT_RE.match(p) or not (math.isfinite(t) and t > 0):
+            raise argparse.ArgumentTypeError("P=TICK pairs like ETH-USD=0.01")
+        out[p] = t
+    return out
+
+
+def _positive(s):
+    try:
+        n = int(s)
+    except ValueError:
+        n = 0
+    if n < 1:
+        raise argparse.ArgumentTypeError("a whole number >= 1")
+    return n
+
+
+def _second(s):
+    try:
+        n = int(s)
+    except ValueError:
+        n = -1
+    if not 0 <= n <= 59:
+        raise argparse.ArgumentTypeError("a whole second 0-59")
+    return n
+
+
+def main(argv=None, wall=time.time, mono=time.monotonic, sleep=time.sleep, out=None, err=None):
+    out, err = out or sys.stdout, err or sys.stderr
+    ap = argparse.ArgumentParser(prog="bin/probe", description="PREREG-v2 section 2's product probe: two added"
+                                 " products chosen by its criteria over one fixed UTC day, from public GETs only."
+                                 " The docstring at the top of bin/probe says what each subcommand does.")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    r = sub.add_parser("run", help="sample the candidates once a slot over one UTC day")
+    r.add_argument("--day", required=True, type=_day)
+    r.add_argument("--out", required=True)
+    r.add_argument("--candidates", type=_candidates, default=DEFAULT_CANDIDATES)
+    r.add_argument("--start-second", type=_second, default=30)
+    r.add_argument("--every", type=_positive, default=60)
+    r.add_argument("--max-minutes", type=_positive, default=None,
+                   help="stop after N cycles (one pass over the candidates; one a minute at the default --every); for tests")
+    v = sub.add_parser("volume", help="30 daily candles per candidate -> DIR/volume.json")
+    v.add_argument("--out", required=True)
+    v.add_argument("--candidates", type=_candidates, default=DEFAULT_CANDIDATES)
+    s = sub.add_parser("summarize", help="offline: the criteria per candidate and the two chosen")
+    s.add_argument("dir")
+    s.add_argument("--tick-override", type=_overrides, default={})
+    s.add_argument("--candidates", type=_candidates, default=DEFAULT_CANDIDATES,
+                   help="the order when DIR has no run.json")
+    args = ap.parse_args(argv)
+    if args.cmd == "run":
+        return run(args, wall, mono, sleep, err)
+    if args.cmd == "volume":
+        return volume(args, wall, mono, sleep, err)
+    return summarize(args, out, err)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
