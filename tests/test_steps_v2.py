@@ -42,6 +42,19 @@ def git(*args):
     return r.returncode, r.stdout.decode("utf-8", "replace")
 
 
+class ProductsCommit(unittest.TestCase):
+    """10.1: the probe's volume and the products' commit."""
+
+    def test_main_is_merged_into_the_build_before_prereg_v2_is_edited_there(self):
+        # PREREG-v2 §13 (0): "Before any further edit of PREREG-v2.md on the build branch, main is merged into
+        # prereg-v2". 10.1 is the build's first edit of it (a void D's §14 entry, §2's products and their §14 entry), and
+        # it had no merge (the S5 refuter's defect 9)
+        text = subsection("10.1")
+        first = bash_blocks(text)[0]
+        self.assertEqual(first.strip(), "cd ~/Projects/jev-paper-loop-v2 && git merge --no-edit main && make test")
+        self.assertIn("§13 (0)", text[:text.index(first)])
+
+
 class DraftTag(unittest.TestCase):
     """10.4: what main takes before the draft tag."""
 

@@ -379,7 +379,15 @@ installs or tags is yours.
 ### 10.1 The probe's volume (2026-10-01 UTC, once) and the products' commit
 
 The probe's run over D = 2026-09-30 (`bin/probe run --day 2026-09-30 --out probe/2026-09-30`, under `caffeinate -i`,
-started by hand before D) ends by itself after D's last slot. On 2026-10-01 (UTC), once (PREREG-v2 §2):
+started by hand before D) ends by itself after D's last slot. First, `main` into the build: PREREG-v2 §13 (0) merges
+it "before any further edit of PREREG-v2.md on the build branch", and this step makes the first (a void D's §14 entry,
+§2's products and their §14 entry); once is enough, and every later edit before the draft tag is a §14 entry:
+
+```bash
+cd ~/Projects/jev-paper-loop-v2 && git merge --no-edit main && make test
+```
+
+Then, on 2026-10-01 (UTC), once (PREREG-v2 §2):
 
 ```bash
 cd ~/Projects/jev-paper-loop-v2 && bin/probe volume --day 2026-09-30 --out probe/2026-09-30 && make probe-summarize DIR=probe/2026-09-30
