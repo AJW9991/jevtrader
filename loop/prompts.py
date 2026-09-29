@@ -18,10 +18,14 @@ which builds before it writes, refuses it too.
 
 Activation (PREREG-v2 §8). A version bin/promote writes during v2 carries `activation_tick`
 (a minute tick_id, T0_v2 + 86,400 (E - 1)) and `replaces` (the version active when it ran).
-current(tick_id) answers for one tick: CURRENT's version from its activation_tick on, the
-version it replaces before that. At most one version is pending for any tick: a replaced
-version that is itself pending at the tick asked (or activates no earlier than its successor)
-is refused. v1.json and v2.json carry neither key and are active whenever CURRENT names them.
+current(tick_id) answers for one tick: starting at the version CURRENT names, it follows
+`replaces` while the tick is before that version's activation_tick, so a tick before two
+promotions reads the version active then (a digest re-run for an early day asks exactly that).
+A version that carries neither key (v1.json, v2.json) is active whenever the walk reaches it.
+bin/promote writes as `replaces` the version active when it ran, so along the walk each
+activation is earlier than the one before it; a version that activates no earlier than its
+successor (a loop of `replaces` among them) was not written by it and is refused. Refusing a
+second pending version is bin/promote's (PREREG-v2 §8, §10): pending(now) names the one it would stack on.
 
 Tables (PREREG-v2 §1 arm D, §8). prompts/<version>.table.<product>.json holds that wording's
 answer on each of the 81 synthetic states rendered for the product:
@@ -153,21 +157,21 @@ def activation(doc, name):
 
 
 def current(tick_id=None, root=None):
-    """The version arm B asks at `tick_id` (a row's tick_id; None: this minute), PREREG-v2 §8:
-    the one CURRENT names from its activation_tick on (or always, when it carries none), the one it
-    replaces before that. A replaced version still pending at that tick, or one that activates no
-    earlier than its successor, is a second pending version and is refused: bin/promote allows one."""
+    """The version arm B asks at `tick_id` (a row's tick_id; None: this minute), PREREG-v2 §8: from the one
+    CURRENT names, `replaces` is followed while tick_id < that version's activation_tick; a version without
+    one (v1, v2) is active whenever reached. A replaced version that activates no earlier than its successor
+    is refused (bin/promote never writes one; a loop of `replaces` is one), so the walk ends."""
     tick = _tick(tick_id)
     name = named(root)
     act = activation(load(name, root), name)
-    if act is None or tick >= act[0]:
-        return name
-    prev = act[1]
-    before = activation(load(prev, root), prev)
-    if before is not None and (tick < before[0] or before[0] >= act[0]):
-        raise PromptError(f"{name} (activation {act[0]}) replaces {prev} (activation {before[0]}), pending at {tick}"
-                          f" too: a second pending version")
-    return prev
+    while act is not None and tick < act[0]:
+        prev = act[1]
+        before = activation(load(prev, root), prev)
+        if before is not None and before[0] >= act[0]:
+            raise PromptError(f"{name} (activation {act[0]}) replaces {prev}, whose activation {before[0]} is no earlier:"
+                              f" bin/promote writes the version active when it ran")
+        name, act = prev, before
+    return name
 
 
 def pending(tick_id=None, root=None):
@@ -178,7 +182,7 @@ def pending(tick_id=None, root=None):
     act = activation(load(name, root), name)
     if act is None or tick >= act[0]:
         return None
-    current(tick, root)                              # the replaced version must itself be active: else refused
+    current(tick, root)                              # the walk behind it must hold: else refused
     return name
 
 

@@ -328,20 +328,37 @@ class Activation(unittest.TestCase):
             self.assertEqual(prompts.current(root=self.root), "v3")
             self.assertIsNone(prompts.pending(root=self.root))
 
-    def test_a_second_pending_version_is_refused(self):
+    def test_replaces_is_followed_while_the_tick_is_before_each_activation(self):
+        # two promotions made (days 8 and 15, say): a tick before both reads the version active then, v2 --
+        # a digest re-run for an early day asks exactly that. "follows replaces while tick_id < activation_tick"
         self._save("v4", _v3(version="v4", activation_tick=self.ACT4, replaces="v3"))
         self._current("v4")
-        self.assertEqual(prompts.current("20261105T000000Z", self.root), "v3")     # v3 active, v4 pending: one
-        self.assertEqual(prompts.pending("20261105T000000Z", self.root), "v4")
-        self.assertEqual(prompts.current(self.ACT4, self.root), "v4")
-        for t in ("20261031T000000Z", "20261101T213900Z"):                          # before v3 too: two pending
+        want = {"20261030T000000Z": "v2", "20261101T213900Z": "v2", self.ACT3: "v3", "20261105T000000Z": "v3",
+                "20261108T213900Z": "v3", self.ACT4: "v4", "20261201T000000Z": "v4"}
+        self.assertEqual({t: prompts.current(t, self.root) for t in want}, want)
+        for t in ("20261030T000000Z", "20261105T000000Z"):
+            self.assertEqual(prompts.pending(t, self.root), "v4")                   # CURRENT's version, not yet active
+        self.assertIsNone(prompts.pending(self.ACT4, self.root))
+        self._save("v5", _v3(version="v5", activation_tick="20261115T214000Z", replaces="v4"))   # three: the same walk
+        self._current("v5")
+        self.assertEqual([prompts.current(t, self.root) for t in ("20261030T000000Z", "20261105T000000Z",
+                          "20261110T000000Z", "20261115T214000Z")], ["v2", "v3", "v4", "v5"])
+
+    def test_a_replaced_version_activating_no_earlier_than_its_successor_is_refused(self):
+        # bin/promote writes as `replaces` the version active when it ran, before the new activation; a chain
+        # that goes back in activation was not written by it, and a loop of `replaces` is one such chain
+        self._save("v4", _v3(version="v4", activation_tick=self.ACT3, replaces="v3"))  # the same tick as v3's
+        self._current("v4")
+        self.assertEqual(prompts.current(self.ACT3, self.root), "v4")               # from v4's activation: no walk
+        for t in ("20261101T213900Z", "20261030T000000Z"):
             with self.assertRaises(prompts.PromptError, msg=t):
                 prompts.current(t, self.root)
             with self.assertRaises(prompts.PromptError, msg=t):
                 prompts.pending(t, self.root)
-        self._save("v4", _v3(version="v4", activation_tick="20261101T214000Z", replaces="v3"))   # no later than v3's
+        self._save("v3", _v3(activation_tick=self.ACT3, replaces="v4"))                # v3 <-> v4
+        self._save("v4", _v3(version="v4", activation_tick=self.ACT4, replaces="v3"))
         with self.assertRaises(prompts.PromptError):
-            prompts.current("20261101T213900Z", self.root)
+            prompts.current("20261030T000000Z", self.root)
 
     def test_a_malformed_activation_is_refused(self):
         for extra in ({"activation_tick": self.ACT3}, {"replaces": "v2"},
