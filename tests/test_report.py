@@ -921,13 +921,29 @@ class Withheld(unittest.TestCase):
 
     def test_unblind_prints_them_and_says_so(self):
         day10 = self.T0 + 10 * 86400
-        code, out, err = self._run(["--log", self.log, "--unblind"], day10)
-        self.assertEqual(code, 0)
-        self.assertNotIn("WITHHELD", out)
-        for t in report.TITLES:
-            self.assertIn(t, out)
-        self.assertIn("H1 cell by arm B's prompt version", out)                  # the per-version lines sit in §4.5
-        self.assertIn("report: --unblind: sections 4-7 printed on sample rows before 2026-10-23T21:40Z; this is a look (PREREG §8.4)", err)
+        data = os.path.join(self.tmp, "unblind-data")                           # never the live data/looks.tsv
+        os.makedirs(data, exist_ok=True)
+        with mock.patch.object(config, "DATA", data):
+            code, out, err = self._run(["--log", self.log, "--unblind"], day10)
+            self.assertEqual(code, 0)
+            self.assertNotIn("WITHHELD", out)
+            for t in report.TITLES:
+                self.assertIn(t, out)
+            self.assertIn("H1 cell by arm B's prompt version", out)              # the per-version lines sit in §4.5
+            self.assertIn("report: --unblind: sections 4-7 printed on sample rows before 2026-10-23T21:40Z; this is a look (PREREG §8.4)", err)
+            # PREREG-v2 §9.5: the look is appended to data/looks.tsv, (UTC, argv, HEAD), before anything is printed
+            with open(os.path.join(data, "looks.tsv"), encoding="utf-8") as fh:
+                got = fh.read().split("\n")
+            self.assertEqual(got[0], "utc\targv\thead")
+            utc, cmd, head = got[1].split("\t")
+            self.assertEqual(utc, "2026-10-05T21:40:00Z")
+            self.assertEqual(cmd, f"python3 -m loop.report --log {self.log} --unblind")
+            self.assertIn(f"report: --unblind: recorded in {os.path.join(data, 'looks.tsv')}: {got[1]}", err)
+        # no data/ to record it in: the look is refused, nothing withheld is printed
+        with mock.patch.object(config, "DATA", os.path.join(self.tmp, "no-such-data")):
+            code, out, err = self._run(["--log", self.log, "--unblind"], day10)
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("the look cannot be recorded", err)
 
     def test_after_the_sample_and_before_t0_print_in_full(self):
         code, out, err = self._run(["--log", self.log], self.END)

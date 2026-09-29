@@ -38,14 +38,18 @@ dry:
 run:
 	$(PY) -m loop.cycle --forever
 
-# `make report` on rows of the sealed sample prints sections 1-3 only until 2026-10-23 21:40Z:
-# nobody reads §4-§7 before day 28 (CLAUDE.md); `python3 -m loop.report --unblind` is a look.
+# `make report` reads every product's store (PREREG-v2's report: per product and pooled, at each
+# cadence). On rows of a sealed sample it prints sections 1-3 only: v1's until 2026-10-23 21:40Z,
+# PREREG-v2's until T0_v2 + 28 d (T0_v2 from PREREG-v2.md §12; while that is blank, every row
+# carrying the v2 spec_sha), whatever the flags say; `python3 -m loop.report --unblind` is a look,
+# appended to data/looks.tsv. v1's report on its one log: `python3 -m loop.report --log data/decisions.jsonl`.
 report:
 	$(PY) -m loop.report
 
-# PREREG §8.4's health look, T0 from PREREG.md §11: `python3 -m loop.report --health --sample`
-# (the same as `--health --t0 20260925T214000Z`; `make report --health` never worked: make
-# takes the flag as its own).
+# The day-14 health look: `python3 -m loop.report --health --sample`, sections 1-3 per product and
+# pooled, T0_v2 read from PREREG-v2.md §12 (PREREG-v2 §9.5; `make report --health` never worked:
+# make takes the flag as its own). v1's look, T0 from PREREG.md §11:
+# `python3 -m loop.report --log data/decisions.jsonl --health --sample`.
 health:
 	$(PY) -m loop.report --health --sample
 

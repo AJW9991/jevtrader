@@ -11,6 +11,16 @@ a WITHHELD line until T0 + 28 d; that T0 is read from the repo's own PREREG.md �
 (dash.read_t0) whatever --prereg says; --sample takes --t0 from PREREG §11; --unblind prints
 §4-§7 and says so on stderr. Besides the log, main reads PREREG.md §11 and looks for data/HALT.
 
+PREREG-v2 (the section before main): with --log the report is v1's on that one log, as above; without it,
+render_v2 reads every product's store (config.store) and prints §1-§3 per product and pooled, §4 A's and
+D's agreement, §5 the paired book at the minute cadence and at each config.CADENCES through book.at_cadence,
+per product and pooled over the time block, with the rule-recomputed exclusions (loop.exclusions_v2), §6-§7
+per product. Either way PREREG-v2's withholding (withheld_v2: T0_v2 from PREREG-v2.md §12, whatever the
+flags; blank, every row carrying the v2 spec_sha) is applied beside v1's, and --unblind is recorded in
+data/looks.tsv (loop.looks) before anything withheld is printed. The v2 report is ~4 s per product-day of
+minute rows (one replay per product, arm, column, fee and cadence: ~150 per product and cadence), so ~2 min
+at day 28 on three products.
+
 Every section is one function returning its numbers and its rendered lines from a single
 computation, so a test asserts the number and the text together. The pair table (§4.5) is
 3 pairs x 11 columns, plus PREREG-v2's D - B and D - C at argmax alone (pair_columns), x
@@ -145,10 +155,12 @@ def answered(rows):
 
 
 # ---- §4.1 health ---------------------------------------------------------------------------
-def health(rows, outs, bad=(), t0=None, last=None, now=None, since=None):
+def health(rows, outs, bad=(), t0=None, last=None, now=None, since=None, v2=False):
     """`last`: the epoch of the whole log's last tick when `rows` were cut to a sample (--t0), so
     the sample's last day can close; None reads it from `rows`; with `now`, the last one reached
-    (last_reached over the whole log). `now`, `since` (epoch): see days_table."""
+    (last_reached over the whole log). `now`, `since` (epoch): see days_table. v2: one product's
+    health inside PREREG-v2's report, which prints HALT once for every product (so no HALT line
+    here) and reads the per-day table by PREREG-v2 §9.3 (days_table's v2)."""
     live = [r for r in rows if r.get("mode") == "live" and r.get("absence") is None]
     dry = [r for r in rows if r.get("mode") == "dry"]
     absence = collections.Counter(r["absence"] for r in rows if r.get("absence") is not None)
@@ -179,7 +191,7 @@ def health(rows, outs, bad=(), t0=None, last=None, now=None, since=None):
     drift = sum(1 for r in rows if r.get("drift") is True)
     versions = collections.Counter(str(r.get("prompt_b")) for r in rows)
     span = f"{ticks[0]}..{ticks[-1]}" if ticks else "-"
-    per_day = days_table(rows, outs, t0, last, now, since)
+    per_day = days_table(rows, outs, t0, last, now, since, v2=v2)
     keys = collections.Counter(_jev(r, "key_path") for r in rows if isinstance(_jev(r, "key_path"), str))
     shared = sum(v for k, v in keys.items() if "loop" not in k.lower())      # PROTOCOL §3.6: the loop's own key, or it says so
     hz = realised_horizon(rows)
@@ -204,9 +216,7 @@ def health(rows, outs, bad=(), t0=None, last=None, now=None, since=None):
         f"  realised horizon, ts_rx to ts_rx of the row the join picked: mean {_f(hz['mean'], 1)} s, |offset from {config.HORIZON_S}| p95 {_f(hz['p95'], 0)} s,"
         f" max {_f(hz['max'], 0)} s (n {hz['n']}); isolated skipped minutes {hz['skips']}"
         + (" (a missed :00 fire; until 2026-09-27 05:18Z launchd's 60 s StartInterval ran a ~61 s grid, ~28 a day; each costs the row 15 min earlier its outcome)" if hz["skips"] else ""),
-        ("  HALT: PRESENT since " + _halt_when() + " (the reason is the file's text; nothing is sent; the feed, arm C, the join and this"
-         " report go on; clearing it is a person's act, STEPS §5)") if halt else "  HALT: absent",
-    ] + per_day["lines"]
+    ] + ([] if v2 else [halt_line(halt)]) + per_day["lines"]
     return {"lines": lines, "rows": len(rows), "ticks": len(ticks), "live": len(live), "dry": len(dry),
             "days": per_day["days"], "bad_days": per_day["bad"], "empty_days": per_day["empty"], "keys": dict(keys), "shared_key_rows": shared,
             "horizon": hz, "halt": halt,
@@ -215,6 +225,11 @@ def health(rows, outs, bad=(), t0=None, last=None, now=None, since=None):
             "error_rate": _rate(sum(errors.values()), len(attempted)), "latency_mean": _mean(lat),
             "latency_p95": _p95(lat), "tokens": tokens, "usd": usd, "models": dict(models), "drift": drift,
             "versions": dict(versions), "skipped": len(bad)}
+
+
+def halt_line(halt):
+    return ("  HALT: PRESENT since " + _halt_when() + " (the reason is the file's text; nothing is sent; the feed, arm C, the join and this"
+            " report go on; clearing it is a person's act, STEPS §5)") if halt else "  HALT: absent"
 
 
 def _halt_when():
@@ -314,7 +329,7 @@ def last_reached(rows, now=None):
     return out
 
 
-def days_table(rows, outs, t0=None, last=None, now=None, since=None):
+def days_table(rows, outs, t0=None, last=None, now=None, since=None, v2=False):
     """Per day (day_of: T0-anchored 'dNN' with T0, else the UTC calendar day): distinct ticks,
     coverage of a full day, live rows, the share of them with a non-gap outcome, the Jev error
     share over rows that reached the ask, and the BAD flag of PREREG §8 stop rule 3. `outs` is the
@@ -337,7 +352,9 @@ def days_table(rows, outs, t0=None, last=None, now=None, since=None):
     flagged NO LIVE ROWS (so is a closed day of absences or dry rows only), counted in `empty`, and
     never marked BAD here: the exclusion is Alex's call.
     Descriptive: the exclusion itself is a line a person appends to data/exclusions.tsv; nothing
-    here removes a day from any section."""
+    here removes a day from any section. v2: the same table for one product, worded by PREREG-v2 §9.3:
+    the rule recomputed from it governs (loop.exclusions_v2.recompute), and a NO LIVE ROWS day is
+    excluded whole (Alex, 2026-09-29)."""
     per = {}
     rows_last = last_reached(rows, now)
     if now is not None and last is not None and last > now:
@@ -399,8 +416,12 @@ def days_table(rows, outs, t0=None, last=None, now=None, since=None):
             empty.append(d)
     what = (f"per day from T0 (dNN = [T0 + 86400(N-1), T0 + 86400 N), 96 blocks; d00 is before T0)" if t0 is not None
             else "per UTC calendar day (no --t0; the sample's days are counted from T0)")
-    lines = [f"  {what} (stop rule 3: BAD when fill < {100 * BAD_FILL:.0f}% of live rows or jev errors"
-             f" > {100 * BAD_JEV_ERR:.0f}% of attempted; {BAD_DAYS_PAUSE} BAD days pause the run, PREREG §8.3):",
+    rule = (f"stop rule 3, PREREG-v2 §9.3: BAD when fill < {100 * BAD_FILL:.0f}% of live rows or jev errors"
+            f" > {100 * BAD_JEV_ERR:.0f}% of attempted; a closed day with no live row is excluded whole; {BAD_DAYS_PAUSE} BAD"
+            " days pause the product by hand (data/PAUSE.<PRODUCT>)" if v2 else
+            f"stop rule 3: BAD when fill < {100 * BAD_FILL:.0f}% of live rows or jev errors"
+            f" > {100 * BAD_JEV_ERR:.0f}% of attempted; {BAD_DAYS_PAUSE} BAD days pause the run, PREREG §8.3")
+    lines = [f"  {what} ({rule}):",
              f"    {'day':<9}{'ticks':>6}{'cov':>7}{'live':>6}{'fill':>7}{'pend':>6}{'skip':>6}{'jev-err':>9}" + ("  from..to" if t0 is not None else "")]
     for x in days:
         lines.append(f"    {x['day']:<9}{x['ticks']:>6}{_pc(x['cov']):>7}{x['live']:>6}{_pc(x['fill']):>7}{x['pending']:>6}{x['skips']:>6}{_pc(x['jev_err']):>9}"
@@ -410,9 +431,13 @@ def days_table(rows, outs, t0=None, last=None, now=None, since=None):
     if not days:
         lines.append("    no rows")
     lines.append(f"  BAD days {len(bad)}" + (": " + ", ".join(bad) if bad else "")
-                 + "; the exclusion is a line in data/exclusions.tsv, written by hand, never here."
-                 " fill counts live rows whose t + h the log has reached (pend = not yet); skip = isolated missing minutes; an open day is not judged")
-    if empty:
+                 + ("; the rule recomputed from the log governs (the stop-rule-3 lines below); data/exclusions-v2.tsv is Alex's log of it."
+                    if v2 else "; the exclusion is a line in data/exclusions.tsv, written by hand, never here.")
+                 + " fill counts live rows whose t + h the log has reached (pend = not yet); skip = isolated missing minutes; an open day is not judged")
+    if empty and v2:
+        lines.append(f"  NO LIVE ROWS on {len(empty)} closed day{'s' if len(empty) != 1 else ''}: {', '.join(empty)}: excluded whole"
+                     " (PREREG-v2 §9.3; Alex, 2026-09-29)")
+    elif empty:
         lines.append(f"  NO LIVE ROWS on {len(empty)} closed day{'s' if len(empty) != 1 else ''}: {', '.join(empty)}: fill is 0/0, which PREREG"
                      " §8.3 does not define, so the day is not marked BAD here; whether it is excluded is Alex's call, before day 28")
     return {"lines": lines, "days": days, "bad": bad, "empty": empty}
@@ -423,7 +448,9 @@ def _pc(x):
 
 
 # ---- §4.2 occupancy ------------------------------------------------------------------------
-def occupancy(rows):
+def occupancy(rows, pooled=False):
+    """pooled: rows of several products, whose state strings differ by their base; distinct states are then
+    counted by their four words (81 at most), as the products share one alphabet."""
     adjs = [r["adj"] for r in rows if isinstance(r.get("adj"), dict)]
     share, flags, lines = {}, [], []
     for d in state.DIMS:
@@ -440,7 +467,7 @@ def occupancy(rows):
         if other:
             parts.append(f"OUTSIDE-ALPHABET {other}")                # a word the SPEC does not have: loud, never folded
         lines.append(f"  {d:<5} " + "  ".join(parts))
-    states = collections.Counter(r.get("state") for r in rows if isinstance(r.get("state"), str))
+    states = collections.Counter((r["state"].split(": ", 1)[-1] if pooled else r["state"]) for r in rows if isinstance(r.get("state"), str))
     lines.append(f"  distinct states {len(states)} of {3 ** len(state.DIMS)} over {len(adjs)} rows with adjectives")
     for d, w, p in flags:
         lines.append(f"  FLAG {d} is {w} on {100.0 * p:.1f}% > {100 * OCCUPANCY_FLAG:.0f}%: a constant; arms cannot disagree on it")
@@ -1029,20 +1056,385 @@ def in_sample(rows, t0):
     return [r for r in rows if t0 <= tick_epoch(r["tick_id"]) < end]
 
 
+# ---- PREREG-v2: every product's store, pooled over products, at each cadence ------------------------------
+# `python3 -m loop.report` without --log reads every product's decision log (config.store(p).decisions for p in
+# config.PRODUCTS) and prints PREREG-v2's report: §1-§3 per product and pooled (HEALTH_N stays 3), §4 A's
+# agreement with C and arm D's agreement with B, §5 the paired book at the minute cadence (B - C only, v1's
+# design on v2's arms) and at each of config.CADENCES through book.at_cadence, per product and pooled over the
+# TIME block (PREREG-v2 §4: S-bar_k = the mean over the non-void products whose day holding block k is kept of
+# S_k,p; a block with no such product is dropped), §6 the direction probabilities and §7 A's confidence, per
+# product. With --t0 (or --sample: T0_v2 from PREREG-v2 §12) the rows are cut to [T0, T0 + 28 d), each product
+# is replayed from flat at T0 over every row of the window, excluded days included, and an excluded product-day's
+# blocks are dropped afterwards; the excluded set is the rule recomputed from the log (loop.exclusions_v2, §9.3),
+# which governs, printed beside data/exclusions-v2.tsv. Descriptive: no bootstrap, no bound, no claim (that is
+# loop.inference's, once, at day 28). The withholding (§9.5) reads T0_v2 from PREREG-v2.md §12 whatever the
+# flags say: withheld_v2 below, beside v1's withheld_until.
+TITLES_V2 = ("1. health, per product and pooled", "2. adjective occupancy, per product and pooled",
+             "3. test-retest (a_action vs b_action on the same question), per product and pooled",
+             "4. agreement: A's argmax vs rule_c, and arm D's table vs B's live answer (PREREG-v2 §6)",
+             "5. paired book at each cadence: pair x column x fee, per product and pooled (PREREG-v2 §4, §6)",
+             "6. direction probabilities: lean (up15 - down15) vs the 15-min return, per product (descriptive)",
+             "7. arm A choice confidence vs rule-matching, per product (descriptive)")
+VOID_KEPT_DAYS = 21                                   # PREREG-v2 §9.4: a product with fewer kept days is void
+LOOKUP_AT, DRIFT_BELOW = 0.99, 0.95                   # §6's D readings: every readable cell >= 0.99; any < 0.95
+MODAL_MIN = 10                                        # §6: states seen at least this often, modal answer vs the table's
+GAP_S = 900                                           # §4 gap_blocks: the first priced tick after more than this without one
+F_CELLS = {(3600, "b", "c"): "F1", (14400, "b", "c"): "F2", (900, "a", "c"): "F3", (900, "b", "a"): "F4"}   # §6, in order
+
+
+def withheld_v2(rows, t0_v2, v2_sha, now=None):
+    """PREREG-v2 §9.5, whatever the flags: {"until": epoch, "n": rows in the window} when T0_v2 (§12) is sealed,
+    the sample has not ended on the clock and a row of [T0_v2, T0_v2 + 28 d) is among `rows`; {"until": None,
+    "n": rows carrying it} while §12's T0_v2 is blank and a row carries the v2 spec_sha (dash.v2_spec_sha);
+    None otherwise."""
+    if t0_v2 is None:
+        n = sum(1 for r in rows if v2_sha is not None and r.get("spec_sha") == v2_sha)
+        return {"until": None, "n": n, "sha": v2_sha} if n else None
+    end = t0_v2 + SAMPLE_DAYS * 86400
+    now = datetime.datetime.now(datetime.timezone.utc).timestamp() if now is None else now
+    if now >= end:
+        return None
+    n = sum(1 for r in rows if t0_v2 <= tick_epoch(r["tick_id"]) < end)
+    return {"until": end, "n": n, "t0": t0_v2} if n else None
+
+
+def withheld_v2_line(w):
+    if w["until"] is None:
+        return (f"sections {HEALTH_N + 1}-{len(TITLES)} WITHHELD: PREREG-v2.md §12's T0_v2 is blank and {w['n']} of these rows carry"
+                f" the v2 spec_sha ({str(w['sha'])[:12]}...), so every such row is withheld (PREREG-v2 §9.5); --unblind prints them,"
+                " says so and appends the look to data/looks.tsv")
+    return (f"sections {HEALTH_N + 1}-{len(TITLES)} WITHHELD until {_iso_minute(w['until'])}: {w['n']} of these rows are in PREREG-v2's"
+            f" sample [T0_v2 {_iso_minute(w['t0'])}, T0_v2 + {SAMPLE_DAYS} d) (T0_v2 from PREREG-v2.md §12, whatever --t0, --since or"
+            " --log say, §9.5); --unblind prints them, says so and appends the look to data/looks.tsv")
+
+
+def pooled_health(hs, rows):
+    """§1 pooled over products: the per-product health dicts summed (rows, live, dry, absences, outcome fill of priced
+    ticks, jev errors of attempted sends, input tokens and dollars, drift, model and version counts), latency over
+    every product's rows. Ticks are per product: a minute counts once per product that logged it."""
+    absence, errors, models, versions = collections.Counter(), collections.Counter(), collections.Counter(), collections.Counter()
+    for h in hs:
+        absence.update(h["absence"]), errors.update(h["errors"]), models.update(h["models"]), versions.update(h["versions"])
+    tot = {k: sum(h[k] for h in hs) for k in ("rows", "ticks", "live", "dry", "priced", "attempted", "drift", "skipped")}
+    filled = sum(h["filled"] or 0 for h in hs)
+    usd = sum(h["usd"] for h in hs)
+    lat = [_jev(r, "latency_ms") for r in rows if _num(_jev(r, "latency_ms"))]
+    lines = [f"  pooled over {len(hs)} product{'s' if len(hs) != 1 else ''}: rows {tot['rows']} ({tot['ticks']} product-ticks);"
+             f" skipped lines {tot['skipped']}",
+             f"  live answered {tot['live']}; dry {tot['dry']}; absence: " + (", ".join(f"{k} {v}" for k, v in sorted(absence.items())) or "none"),
+             f"  outcome fill {_pct(filled, tot['priced'])} of priced ticks",
+             f"  jev errors {_pct(sum(errors.values()), tot['attempted'])} of attempted sends"
+             + (": " + ", ".join(f"{k} {v}" for k, v in sorted(errors.items())) if errors else ""),
+             f"  latency ms: mean {_f(_mean(lat), 1)}, p95 {_f(_p95(lat), 0)} (n {len(lat)})",
+             (f"  spend ${usd:.6f} to date over every product's log (the one tripwire, ${config.DAILY_SPEND_HALT_USD:g} a day)"
+              if math.isfinite(usd) else "  spend: a product's token sum is past a float's range, so no dollar figure"),
+             f"  model_answered: " + (", ".join(f"{k} {v}" for k, v in sorted(models.items())) or "none") + f"; drift {tot['drift']}",
+             f"  prompt_b versions: " + (", ".join(f"{k} {v}" for k, v in sorted(versions.items())) or "none")]
+    return {"lines": lines, "fill": _rate(filled, tot["priced"]), "error_rate": _rate(sum(errors.values()), tot["attempted"]),
+            "usd": usd, **tot}
+
+
+def pause_lines(products):
+    """HALT (data/HALT, the one global stop) once, and each product's data/PAUSE.<PRODUCT> (§2): presence and
+    mtime only (this module opens no file; `make status` prints the reason line)."""
+    out = [halt_line(os.path.exists(config.HALT))]
+    for p in products:
+        path = config.pause(p)
+        if os.path.exists(path):
+            try:
+                when = _iso_minute(os.path.getmtime(path))
+            except OSError:
+                when = "?"
+            out.append(f"  PAUSE.{p}: PRESENT since {when}: {p}'s sends are skipped (absence halt); its observation and t + h outcomes"
+                       " go on; the nightly and the spend guard ignore it (PREREG-v2 §2)")
+        else:
+            out.append(f"  PAUSE.{p}: absent")
+    return out
+
+
+def d_agreement(per):
+    """PREREG-v2 §6, arm D: Agreement(p, v) = #(live rows with columns.d non-null and columns.b.argmax == columns.d)
+    / #(live rows with columns.d non-null), per product p and prompt version v (prompt_b, the CURRENT whose table D
+    reads); each cell's denominator and null count (live rows with columns.d null); a nonzero null count marks the
+    cell a table defect that is not read. Readings: LOOKUP when at least one cell is readable and every readable
+    one is >= 0.99; D NOT READ when none is; DRIFT when any readable cell is < 0.95; otherwise per cell. Beside it
+    the within-state live consistency (the share of live rows giving their (p, v, state)'s modal B answer) and the
+    count of states seen >= 10 times whose table answer is not among their modal live answers. A row without a
+    columns.d key (a v1-era row) is not a v2 row and is left out, counted."""
+    cells, states, v1_rows = {}, {}, 0
+    for p, rows in per.items():
+        for r in rows:
+            if not _live(r):
+                continue
+            cols = r.get("columns") if isinstance(r.get("columns"), dict) else {}
+            if "d" not in cols:
+                v1_rows += 1
+                continue
+            v, d, b = str(r.get("prompt_b")), cols.get("d"), _col(r, "b", "argmax")
+            c = cells.setdefault((p, v), {"n": 0, "agree": 0, "null": 0})
+            if d is None:
+                c["null"] += 1
+                continue
+            c["n"] += 1
+            c["agree"] += b == d
+            st = states.setdefault((p, v, r.get("state")), {"live": collections.Counter(), "table": collections.Counter()})
+            st["live"][b] += 1
+            st["table"][d] += 1
+    for c in cells.values():
+        c["share"] = _rate(c["agree"], c["n"])
+        c["readable"] = c["null"] == 0 and c["n"] > 0
+    readable = [c["share"] for c in cells.values() if c["readable"]]
+    if not readable:
+        reading = "D NOT READ: table defect (no readable cell)" if cells else "no live v2 row: nothing to read"
+    elif any(x < DRIFT_BELOW for x in readable):
+        reading = (f"DRIFT: a readable cell is below {DRIFT_BELOW:g}: Jev's live answer depends on something other than the state"
+                   " string; the causes to name, in order: the other questions in the table's request (the candidates and CURRENT,"
+                   " against a_action, b_action and the nouls in the live request), the days between table and tick, drift"
+                   " (model_answered), non-determinism")
+    elif all(x >= LOOKUP_AT for x in readable):
+        reading = f"LOOKUP: every readable cell is >= {LOOKUP_AT:g}: the per-minute call is a lookup of its own table"
+    else:
+        reading = f"between {DRIFT_BELOW:g} and {LOOKUP_AT:g}: read per cell"
+    modal_n = sum(max(s["live"].values()) for s in states.values())
+    total = sum(sum(s["live"].values()) for s in states.values())
+    seen = [s for s in states.values() if sum(s["live"].values()) >= MODAL_MIN]
+    differ = sum(1 for s in seen if s["live"][s["table"].most_common(1)[0][0]] < max(s["live"].values()))
+    lines = [f"  arm D (PREREG-v2 §6): Agreement(p, v) = live rows with columns.d non-null and b.argmax == columns.d, over live rows"
+             " with columns.d non-null; a nonzero null count marks the cell a table defect, not read",
+             f"    {'product':<10}{'version':<9}{'agree':>8}{'denom':>8}{'share':>8}{'nulls':>7}  read"]
+    for (p, v), c in sorted(cells.items()):
+        lines.append(f"    {p:<10}{v:<9}{c['agree']:>8}{c['n']:>8}{_r(c['share']):>8}{c['null']:>7}  {'readable' if c['readable'] else 'TABLE DEFECT'}")
+    if not cells:
+        lines.append("    no live row carries columns.d")
+    lines += [f"  reading: {reading}",
+              f"  within-state live consistency: {_pct(modal_n, total)} of live rows give their (product, version, state)'s modal B answer",
+              f"  states seen >= {MODAL_MIN} times whose table answer is not a modal live answer: {differ} of {len(seen)}"]
+    if v1_rows:
+        lines.append(f"  live rows without columns.d (v1-era rows, not v2's) left out: {v1_rows}")
+    return {"lines": lines, "cells": cells, "reading": reading, "consistency": _rate(modal_n, total), "differ": differ,
+            "seen": len(seen), "v1_rows": v1_rows}
+
+
+def gap_blocks(rows, anchor, c, kept_k):
+    """PREREG-v2 §4: the kept blocks of cadence c (kept_k(k) true) holding the first priced tick after more than
+    GAP_S seconds without a priced row, whatever the cause. Priced is the book's test (bid, ask and mid pass
+    book._px), where replay's marks land. Sorted block numbers."""
+    ticks = sorted({tick_epoch(r["tick_id"]) for r in rows if all(book._px(r.get(k)) for k in ("bid", "ask", "mid"))})
+    return sorted({int((b - anchor) // c) for a, b in zip(ticks, ticks[1:]) if b - a > GAP_S and kept_k(int((b - anchor) // c))})
+
+
+def _fee_list():
+    fees = tuple(config.FEE_BPS_COLUMNS)
+    if PRIMARY[3] not in fees:
+        fees = (PRIMARY[3],) + fees
+    if VENUE_FEE not in fees:
+        fees = fees + (VENUE_FEE,)
+    return fees
+
+
+def cadence_table(per, anchor, n_of, kept, pool, sampled):
+    """§5 of the v2 report. per: {product: its rows, cut to the sample when `sampled`}; anchor: T0 (or, without
+    one, the earliest tick over the products); n_of(c): the number of c-blocks (to the logs' last tick, capped at
+    the sample's); kept(p, k, c): whether product p's block k at cadence c is kept (its day not excluded, p not
+    void); pool: the products pooled (the non-void ones). Per cadence: the transform (book.at_cadence) once per
+    product, one replay per (product, arm, column, fee), S_k,p = the sum of d_t over the block's ticks, the per-
+    product mean over its kept blocks, and the pooled series S-bar_k over the blocks with a kept pooled product.
+    The minute cadence is v1's design on v2's arms (decided every minute, 900 s blocks), B - C only."""
+    fees = _fee_list()
+    plans = [("minute", BLOCK_S, False, (("b", "c"),))] + [(c, c, True, PAIRS) for c in config.CADENCES]
+    lines, cells, gaps, tpd = [], {}, {}, {}
+    prods = list(per)
+    for label, c, transform, pairs in plans:
+        n = n_of(c)
+        rows_c = {p: (book.at_cadence(per[p], c, anchor) if transform else per[p]) for p in prods}
+        kof = {p: {t: int((tick_epoch(t) - anchor) // c) for t in {r["tick_id"] for r in per[p]}} for p in prods}
+        cache, dcache = {}, {}
+
+        def rep(p, arm, col, fee):
+            key = (p, arm, None if arm == "c" else col, fee)
+            if key not in cache:
+                cache[key] = book.replay(rows_c[p], None, arm, col, fee)
+            return cache[key]
+
+        def dis_of(p, x, y, col):                   # the sides do not depend on the fee (SPEC §10: it enters the fills only)
+            if (p, x, y, col) not in dcache:
+                dcache[(p, x, y, col)] = _disagreement(rep(p, x, col, PRIMARY[3]), rep(p, y, col, PRIMARY[3]))
+            return dcache[(p, x, y, col)]
+        gaps[label] = {p: gap_blocks(per[p], anchor, c, lambda k, p=p: 0 <= k < n and kept(p, k, c)) for p in prods}
+        n_ticks = {p: len({r["tick_id"] for r in per[p]}) for p in prods}
+        tpd[label] = {p: {a: _rate(len(rep(p, a, "argmax", PRIMARY[3])["trades"]) * TICKS_PER_DAY, n_ticks[p]) for a in ARMS}
+                      for p in prods}
+        name = "minute (decided every minute, 900 s blocks: v1's design on v2's arms, descriptive)" if label == "minute" else \
+            f"{c} s ({c // 60} min), book.at_cadence"
+        lines += ["", f"  cadence {name}: {n} blocks from the anchor; pooled over {', '.join(pool) or 'no product'}",
+                  "    gap_blocks (kept blocks holding the first priced tick after > 900 s without one): "
+                  + ", ".join(f"{p} {len(gaps[label][p])}" for p in prods),
+                  "    trades/day at argmax, 0 bps: " + " | ".join(
+                      f"{p} " + " ".join(f"{a.upper()} {_f(tpd[label][p][a], 1)}" for a in ARMS) for p in prods)]
+        head = (f"    {'':1} {'column':<9}{'n':>6}{'dis':>6}{'dis%':>7}{'pdis':>6}{'mean_S':>10}{'mean_S|dis':>12}  |"
+                + "".join(f"  {p}: {'n':>5}{'mean_S':>9}{'dis':>5}" for p in prods))
+        for x, y in pairs:
+            for fee in fees:
+                mark = ""
+                if label == 900 and (x, y, fee) == (PRIMARY[0], PRIMARY[1], PRIMARY[3]):
+                    mark = "  [* H1 cell, PREREG-v2 §5]"
+                elif (label, x, y) in F_CELLS and fee == PRIMARY[3]:
+                    mark = f"  [{F_CELLS[(label, x, y)]}, PREREG-v2 §6]"
+                lines += ["", f"    pair {x.upper()}-{y.upper()}  fee {fee:g} bps" + mark + ("  [venue fee]" if fee == VENUE_FEE else ""), head]
+                for col in pair_columns(x, y):
+                    S, hot, per_p = {}, {}, {}
+                    for p in prods:
+                        px, py = rep(p, x, col, fee), rep(p, y, col, fee)
+                        dis = dis_of(p, x, y, col)
+                        s, h = collections.defaultdict(float), set()
+                        for t, _ in px["equity"]:
+                            k = kof[p][t]
+                            s[k] += px["pnl_bps_per_tick"][t] - py["pnl_bps_per_tick"][t]
+                            if t in dis:
+                                h.add(k)
+                        S[p], hot[p] = s, h
+                        ks = [k for k in range(n) if kept(p, k, c)]
+                        per_p[p] = {"n": len(ks), "mean": _mean([s.get(k, 0.0) for k in ks]), "dis": sum(1 for k in ks if k in h)}
+                    pooled, pdis, hot_k = [], 0, []
+                    for k in range(n):
+                        ps = [p for p in pool if kept(p, k, c)]
+                        if not ps:
+                            continue
+                        v = sum(S[p].get(k, 0.0) for p in ps) / len(ps)
+                        pooled.append((k, v))
+                        nd = sum(1 for p in ps if k in hot[p])
+                        pdis += nd
+                        if nd:
+                            hot_k.append(v)
+                    cell = {"n": len(pooled), "mean": _mean([v for _, v in pooled]), "dis": len(hot_k), "pdis": pdis,
+                            "share": _rate(len(hot_k), len(pooled)), "mean_dis": _mean(hot_k), "S": pooled, "per": per_p,
+                            "S_p": {p: dict(S[p]) for p in prods}}
+                    cells[(label, x, y, col, fee)] = cell
+                    star = "*" if mark.startswith("  [*") and col == "argmax" else " "
+                    lines.append(f"    {star} {col:<9}{cell['n']:>6}{cell['dis']:>6}{_r(cell['share']):>7}{pdis:>6}{_f(cell['mean']):>10}"
+                                 f"{_f(cell['mean_dis']):>12}  |"
+                                 + "".join(f"  {p}: {per_p[p]['n']:>5}{_f(per_p[p]['mean']):>9}{per_p[p]['dis']:>5}" for p in prods))
+    return {"lines": lines, "cells": cells, "gap_blocks": gaps, "trades_per_day": tpd, "fees": fees}
+
+
+def render_v2(stores, t0=None, since=None, health_only=False, withheld=(), now=None, listed=None):
+    """PREREG-v2's report over every product's store. stores: [{"product", "log", "missing", "rows" (cut to
+    --since and the sample), "bad", "outs" (the join over the product's WHOLE log), "last" (its last tick reached
+    on the clock, over the whole log)}]; withheld: the WITHHELD lines (v1's and v2's), non-empty only with
+    health_only; listed: {"set", "lines", "path", "error"} from data/exclusions-v2.tsv. Pure: it reads no file
+    but data/HALT's and each PAUSE's presence and mtime, as §1's v1 health reads HALT's."""
+    from . import exclusions_v2                        # here, not at the top: exclusions imports report
+    prods = [s["product"] for s in stores]
+    since_ep = tick_epoch(_since(since) + "T000000Z") if since else None
+    last = max((s["last"] for s in stores if s["last"] is not None), default=None)
+    hs = {s["product"]: health(s["rows"], s["outs"], s["bad"], t0, last if s["last"] is None else s["last"], now, since_ep, v2=True)
+          for s in stores}
+    per = {s["product"]: s["rows"] for s in stores}
+    rows_all = [r for s in stores for r in s["rows"]]
+    lines = [f"jev-paper-loop report (PREREG-v2): {config.VENUE} {', '.join(prods)}; cadence {config.CADENCE_S} s, horizon"
+             f" {config.HORIZON_S} s, replay cadences {'/'.join(str(c) for c in config.CADENCES)} s"
+             + (f", since {since}" if since else "")
+             + (f", T0 {_iso_minute(t0)} (sample [T0, T0 + {SAMPLE_DAYS} d), each product replayed from flat at T0)" if t0 is not None
+                else ", no --t0: blocks anchored at the products' first tick, descriptive only")]
+    if health_only:
+        lines.append(f"health only: sections 1-{HEALTH_N}; sections {HEALTH_N + 1}-{len(TITLES_V2)} are neither computed nor printed")
+    lines += list(withheld)
+    for s in stores:
+        lines.append(f"  {s['product']}: " + (f"no log at {s['log']}" if s["missing"] else
+                                              f"{s['log']}, {len(s['rows'])} rows, {len(answered(s['rows']))} answered"))
+    # -- §1: HALT and each PAUSE once, pooled, then each product; stop rule 3 recomputed; void
+    sec1 = pause_lines(prods) + pooled_health(list(hs.values()), rows_all)["lines"]
+    for p in prods:
+        sec1 += [f"  -- {p}"] + hs[p]["lines"]
+    recomputed, void, judged = set(), set(), False
+    if t0 is not None:
+        recomputed = exclusions_v2.recompute({p: hs[p]["days"] for p in prods})
+        if listed and listed.get("error"):
+            sec1.append(f"  exclusions-v2: REFUSED, fix before day 28: {listed['error']} (the recomputed rule governs regardless)")
+        sec1 += exclusions_v2.lines(listed["set"] if listed else set(), recomputed, listed["lines"] if listed else [],
+                                    listed["path"] if listed else config.EXCLUSIONS_V2)
+        judged = all(any(x["day"] == f"d{SAMPLE_DAYS:02d}" and not x["open"] for x in hs[p]["days"]) for p in prods)
+        kept_days = {p: SAMPLE_DAYS - sum(1 for n, q in recomputed if q == p) for p in prods}
+        if judged:
+            void = {p for p in prods if kept_days[p] < VOID_KEPT_DAYS}
+        sec1.append(f"  void (PREREG-v2 §9.4, fewer than {VOID_KEPT_DAYS} kept days): "
+                    + (", ".join(f"{p} {kept_days[p]} kept{' VOID' if p in void else ''}" for p in prods) if judged else
+                       "not judged until every product's d28 has closed; every product is pooled meanwhile"))
+    secs = [{"lines": sec1}]
+    occ_lines = ["  pooled:"] + occupancy(rows_all, pooled=True)["lines"]
+    rt_lines = ["  pooled:"] + retest(rows_all)["lines"]
+    for p in prods:
+        occ_lines += [f"  -- {p}"] + occupancy(per[p])["lines"]
+        rt_lines += [f"  -- {p}"] + retest(per[p])["lines"]
+    secs += [{"lines": occ_lines}, {"lines": rt_lines}]
+    out = {"health": hs, "recomputed": recomputed, "void": void}
+    if not health_only:
+        ag = ["  A's argmax vs rule_c, pooled:"] + agreement(rows_all)["lines"]
+        for p in prods:
+            ag += [f"  -- {p}"] + agreement(per[p])["lines"]
+        da = d_agreement(per)
+        secs.append({"lines": ag + da["lines"]})
+        firsts = [min(r["tick_id"] for r in per[p]) for p in prods if per[p]]
+        anchor = t0 if t0 is not None else (tick_epoch(min(firsts)) if firsts else None)
+        if anchor is None or not any(answered(per[p]) for p in prods):
+            secs.append({"lines": ["  no answered rows: every arm replays as forced holds, so the pair tables are omitted"]})
+        else:
+            cap = SAMPLE_DAYS * 86400 if t0 is not None else None
+
+            def n_of(c):
+                if last is None:
+                    return 0
+                n = int((last - anchor) // c) + 1
+                return max(0, min(n, cap // c) if cap else n)
+
+            def kept(p, k, c):
+                if p in void:
+                    return False
+                return t0 is None or (int(c * k // 86400) + 1, p) not in recomputed
+            ct = cadence_table(per, anchor, n_of, kept, [p for p in prods if p not in void], t0 is not None)
+            head = [f"  d_t = pnl_x - pnl_y in bps of NOTIONAL per tick; S_k,p = the sum of d_t over block k's ticks for product p;"
+                    " pooled: n = pooled blocks (those with a kept, non-void product), mean_S = the mean of S-bar_k, dis = pooled blocks"
+                    " with a kept product's disagreement tick (the SIDES differ into or out of the tick), pdis = disagreement"
+                    " product-blocks; per product: n kept blocks, mean S_k,p, dis blocks",
+                    "  replayed from flat at the anchor over every row, excluded days included; an excluded product-day's blocks are"
+                    " dropped afterwards" + (" (the recomputed set above)" if t0 is not None else " (none without --t0)")
+                    + "; D - B and D - C at argmax only; descriptive: the H1 and family-F bounds are loop.inference's, at day 28"]
+            secs.append({"lines": head + ct["lines"]})
+            out["cadence"] = ct
+        out["d_agreement"] = da
+        h2l, cal = [], []
+        for p in prods:
+            h2l += [f"  -- {p}"] + h2(per[p], stores[prods.index(p)]["outs"], t0)["lines"]
+            cal += [f"  -- {p}"] + calibration(per[p], stores[prods.index(p)]["outs"])["lines"]
+        secs += [{"lines": h2l}, {"lines": cal}]
+    for title, sec in zip(TITLES_V2, secs):
+        lines += ["", title] + sec["lines"]
+    out["text"] = "\n".join(lines) + "\n"
+    return out
+
+
 def main(argv=None, now=None):
-    """`now` (epoch) pins the clock for tests of the withholding; the live run uses the clock."""
+    """`now` (epoch) pins the clock for tests of the withholding; the live run uses the clock. With --log, v1's
+    report on that one log, as before; without it, PREREG-v2's over every product's store (render_v2). Either way
+    PREREG-v2's withholding (§9.5, T0_v2 from PREREG-v2.md §12) applies beside v1's, and --unblind is recorded in
+    data/looks.tsv before anything withheld is printed (a look that cannot be recorded is refused, exit 2)."""
     ap = argparse.ArgumentParser(prog="python3 -m loop.report", description="CONTRACT §4 report, plain text, no p-values.")
     ap.add_argument("--since", metavar="YYYY-MM-DD", help="rows whose tick_id date is on or after this day")
     ap.add_argument("--t0", metavar="YYYY-MM-DDTHH:MM",
-                    help=f"PREREG T0 (UTC minute, or its tick_id): only [T0, T0 + {SAMPLE_DAYS} d), replayed from flat at T0")
-    ap.add_argument("--log", default=config.DECISIONS, help=f"decision log (default {config.DECISIONS})")
+                    help=f"T0 (UTC minute, or its tick_id): only [T0, T0 + {SAMPLE_DAYS} d), replayed from flat at T0")
+    ap.add_argument("--log", default=None,
+                    help="one decision log, v1's report on it (default: PREREG-v2's report over every product's store,"
+                         f" {config.DECISIONS} for {config.PRODUCT} and data/<PRODUCT>/decisions.jsonl for the others)")
     ap.add_argument("--health", action="store_true",
-                    help=f"sections 1-{HEALTH_N} only (PREREG §8.4's day-14 look): no H1, H2 or confidence number")
-    ap.add_argument("--sample", action="store_true", help="--t0 read from PREREG.md §11 (the sealed T0)")
+                    help=f"sections 1-{HEALTH_N} only (the day-14 look): no H1, H2 or confidence number")
+    ap.add_argument("--sample", action="store_true",
+                    help="--t0 read from the sealed text: PREREG.md §11 with --log, PREREG-v2.md §12's T0_v2 without it")
     ap.add_argument("--prereg", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--unblind", action="store_true",
-                    help=f"print sections {HEALTH_N + 1}-{len(TITLES)} on sample rows before the sample has ended (a look; it is printed as one)")
-    args = ap.parse_args(argv)
+                    help=f"print sections {HEALTH_N + 1}-{len(TITLES)} on sample rows before the sample has ended (a look: it is"
+                         " printed as one and appended to data/looks.tsv)")
+    raw = list(sys.argv[1:] if argv is None else argv)
+    args = ap.parse_args(raw)
     try:
         since = _since(args.since)
     except ValueError:
@@ -1052,37 +1444,91 @@ def main(argv=None, now=None):
     except ValueError:
         ap.error(f"--t0 wants YYYY-MM-DDTHH:MM (UTC) or a tick_id, got {args.t0!r}")
     from . import dash                                               # here, not at the top: dash imports report
-    sealed = dash.read_t0(args.prereg)                               # PREREG §11's T0, None before sealing
     sealed_repo = dash.read_t0(dash.PREREG_PATH)                     # the withholding reads the REPO's PREREG whatever
                                                                      # --prereg says: a pointer at another file is not a look
+    v2_bad = None
+    try:
+        t0_v2 = dash.read_t0_v2()                                    # PREREG-v2 §12, the repository's, whatever the flags
+    except ValueError as e:                                          # a malformed seal: withheld as if blank, and said
+        t0_v2, v2_bad = None, str(e)
+    v2_sha = dash.v2_spec_sha()
     if args.sample:
         if args.t0:
-            ap.error("--sample reads T0 from PREREG.md; do not pass --t0 with it")
-        if sealed is None:
-            ap.error("--sample: PREREG.md §11 is not sealed (no T0 line)")
-        t0 = sealed
-    rows, bad = [], []
-    missing = not os.path.exists(args.log)                           # load() raises on a missing file: day zero is not an error
-    if not missing:
-        rows = outcomes.load(args.log, bad)
-    outs = outcomes.join(rows)                                       # over the whole log: forward only, t+h may follow the cut
-    last = max((tick_epoch(r["tick_id"]) for r in rows), default=None)   # likewise: the sample's last day closes on rows after the cut
+            ap.error("--sample reads T0 from the sealed text; do not pass --t0 with it")
+        if args.log is not None:
+            sealed = dash.read_t0(args.prereg)                       # PREREG §11's T0, None before sealing
+            if sealed is None:
+                ap.error("--sample: PREREG.md §11 is not sealed (no T0 line)")
+            t0 = sealed
+        else:
+            if t0_v2 is None:
+                ap.error("--sample: PREREG-v2.md §12's T0_v2 is " + (v2_bad or "blank (not sealed)"))
+            t0 = t0_v2
     clock = datetime.datetime.now(datetime.timezone.utc).timestamp() if now is None else now
-    reached = last_reached(rows, clock)                              # §1's days close on the last row stamped at or before the clock
-    if since:
-        rows = [r for r in rows if r["tick_id"][:8] >= since]         # tick_id is YYYYMMDDTHHMM00Z; the first 8 chars are the day
-    if t0 is not None:
-        rows = in_sample(rows, t0)                                   # cut BEFORE any replay: every arm starts flat at T0
-    withheld, health_only = None, args.health
+    stores = []
+    for product, log in ([(None, args.log)] if args.log is not None else [(p, config.store(p).decisions) for p in config.PRODUCTS]):
+        rows, bad = [], []
+        missing = not os.path.exists(log)                            # load() raises on a missing file: day zero is not an error
+        if not missing:
+            rows = outcomes.load(log, bad)
+        outs = outcomes.join(rows)                                   # over the whole log: forward only, t+h may follow the cut
+        last = max((tick_epoch(r["tick_id"]) for r in rows), default=None)   # the sample's last day closes on rows after the cut
+        reached = last_reached(rows, clock)                          # §1's days close on the last row stamped at or before the clock
+        if since:
+            rows = [r for r in rows if r["tick_id"][:8] >= since]     # tick_id is YYYYMMDDTHHMM00Z; the first 8 chars are the day
+        if t0 is not None:
+            rows = in_sample(rows, t0)                               # cut BEFORE any replay: every arm starts flat at T0
+        stores.append({"product": product, "log": log, "missing": missing, "rows": rows, "bad": bad, "outs": outs,
+                       "last": last, "reached": reached})
+    every = [r for s in stores for r in s["rows"]]
+    health_only = args.health
+    w1 = w2 = None
     if not health_only:
-        withheld = withheld_until(rows, sealed_repo, now)
-        if withheld is not None and args.unblind:
-            sys.stderr.write(f"report: --unblind: sections {HEALTH_N + 1}-{len(TITLES)} printed on sample rows before"
-                             f" {_iso_minute(withheld)}; this is a look (PREREG §8.4)\n")
-            withheld = None
-        elif withheld is not None:
+        w1 = withheld_until(every, sealed_repo, now)
+        w2 = withheld_v2(every, t0_v2, v2_sha, now)
+        if (w1 is not None or w2 is not None) and args.unblind:
+            from . import looks                                      # a look is recorded before it is printed
+            try:
+                line = looks.record(raw, clock)
+            except OSError as e:
+                sys.stderr.write(f"report: --unblind: the look cannot be recorded in {config.LOOKS} ({e.strerror or e});"
+                                 " nothing is unblinded\n")
+                return 2
+            if w1 is not None:
+                sys.stderr.write(f"report: --unblind: sections {HEALTH_N + 1}-{len(TITLES)} printed on sample rows before"
+                                 f" {_iso_minute(w1)}; this is a look (PREREG §8.4)\n")
+            if w2 is not None:
+                sys.stderr.write(f"report: --unblind: sections {HEALTH_N + 1}-{len(TITLES)} printed on PREREG-v2's withheld rows;"
+                                 " this is a look (PREREG-v2 §9.5)\n")
+            sys.stderr.write(f"report: --unblind: recorded in {config.LOOKS}: {line}")
+            w1 = w2 = None
+        elif w1 is not None or w2 is not None:
             health_only = True
-    sys.stdout.write(render(rows, bad, args.log, args.since, missing, t0, outs, health_only, last, withheld, clock, reached))
+    if v2_bad:
+        sys.stderr.write(f"report: {v2_bad}; withheld as if blank\n")
+    if args.log is not None:
+        s = stores[0]
+        text = render(s["rows"], s["bad"], args.log, args.since, s["missing"], t0, s["outs"], health_only, s["last"], w1, clock, s["reached"])
+        if w2 is not None:
+            head, _, rest = text.partition("\n")
+            text = head + "\n" + withheld_v2_line(w2) + "\n" + rest
+        sys.stdout.write(text)
+        return 0
+    from . import exclusions_v2                                      # here, not at the top: exclusions imports report
+    listed = {"set": set(), "lines": [], "path": config.EXCLUSIONS_V2, "error": None}
+    try:
+        listed["set"], listed["lines"] = exclusions_v2.read()
+    except (ValueError, OSError) as e:
+        listed["error"] = str(e)
+    withheld = []
+    if w1 is not None:
+        withheld.append(f"sections {HEALTH_N + 1}-{len(TITLES)} WITHHELD until {_iso_minute(w1)}: these rows are in v1's sealed sample"
+                        " and nobody reads H1, H2, the pairs or the calibration before day 28 (CLAUDE.md, PREREG §8.4)")
+    if w2 is not None:
+        withheld.append(withheld_v2_line(w2))
+    for s in stores:
+        s["last"] = s["reached"] if s["reached"] is not None else s["last"]
+    sys.stdout.write(render_v2(stores, t0, args.since, health_only, withheld, clock, listed)["text"])
     return 0
 
 

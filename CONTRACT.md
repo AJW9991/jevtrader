@@ -65,7 +65,8 @@ jev-paper-loop/
   loop/book.py           paper execution, pure, replayed from the log
   loop/outcomes.py       the t+h join
   loop/cycle.py          one tick; --once / --forever / --dry
-  loop/report.py         make report (sections 4-7 withheld on sample rows until day 28; --health, --sample, --unblind)
+  loop/report.py         make report (sections 4-7 withheld on sample rows until day 28; --health, --sample, --unblind); without --log PREREG-v2's report over every product's store, per product and pooled, at each cadence; T0_v2 from PREREG-v2 §12
+  loop/looks.py          data/looks.tsv: every report --unblind appended as (UTC, argv, HEAD) (PREREG-v2 §9.5)
   loop/dash.py           make dash: the health page, report §1-§3 only, data/dash.html
   loop/status.py         make status: the morning check in one screen, report §1 only
   loop/exclusions.py     data/exclusions.tsv read (stop rule 3's list; inference applies it, status shows it)
@@ -82,7 +83,7 @@ jev-paper-loop/
   prompts/v1.json        frozen (written)   prompts/v2.json (promoted 2026-09-26)   prompts/CURRENT  → "v2" (one line)
   fixtures/              one recorded Coinbase snapshot set, committed
   tests/                 unittest, stdlib; tests/fixture_prompts.py pins a v1-only prompts root and tests/fixture_prereg.py a PREREG.md (dash.PREREG_PATH) (no test depends on what the live prompts/CURRENT names; one checks it builds, whatever it names)
-  data/   logs/   proposals/   (gitignored except proposals/*.md, data/exclusions.tsv and data/exclusions-v2.tsv, versioned when they exist)
+  data/   logs/   proposals/   (gitignored except proposals/*.md, data/exclusions.tsv, data/exclusions-v2.tsv and data/looks.tsv, versioned when they exist)
 ```
 
 ## 2. Data types (plain dicts; keys exactly as written)

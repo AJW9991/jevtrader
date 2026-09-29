@@ -37,8 +37,9 @@ def text_v2(t0=None):
 def pin_prereg_v2(tc, t0=None, spec_sha="spec-v2-fixture"):
     """The v2 twin of pin_prereg: a temp PREREG-v2.md whose §12 carries `t0` (a tick_id, or None: blank), patched
     in as dash.PREREG_V2_PATH, and dash.v2_spec_sha patched to return `spec_sha`, so no test depends on the
-    repository's §12 (filled at sealing) or on whether this tree's SPEC.md is v1's or v2's. Returns the path."""
-    enter = tc.enterClassContext if isinstance(tc, type) else tc.enterContext
+    repository's §12 (filled at sealing) or on whether this tree's SPEC.md is v1's or v2's. `tc` may also be a
+    contextlib.ExitStack, for one run. Returns the path."""
+    enter = getattr(tc, "enter_context", None) or (tc.enterClassContext if isinstance(tc, type) else tc.enterContext)
     path = os.path.join(enter(tempfile.TemporaryDirectory()), "PREREG-v2.md")
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(text_v2(t0))
