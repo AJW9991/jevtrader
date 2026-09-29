@@ -3,7 +3,7 @@ NO PROMOTION, void), RESULTS-v2 §0, the fee arithmetic on a hand-built book, an
 the bound and the pooled statistic are held to transcriptions of the text in tests/test_invariants.py; this module holds
 the behaviour. Offline: hand-built rows every 900 s (so each row's t + h is the next row) in memory or in temp
 directories; the live data/, HALT and looks.tsv are never touched."""
-import contextlib, datetime, hashlib, io, json, os, subprocess, sys, tempfile, unittest
+import contextlib, datetime, hashlib, io, json, os, re, subprocess, sys, tempfile, unittest
 from unittest import mock
 
 from fixture_prereg import pin_prereg_v2
@@ -69,6 +69,12 @@ def _rising(n):
 
 def _b_buys(n):
     return {"b": "buy" if n == 0 else "hold", "promoted": True}
+
+
+def _power_line(text, name):
+    """§5's one line for cell `name` (power_lines)."""
+    (line,) = [l for l in text.splitlines() if re.match(rf"  {name} [A-D] - [A-D] at \d+ s: ", l)]
+    return line
 
 
 class ExcludedDayBetweenKeptDays(unittest.TestCase):
@@ -148,6 +154,11 @@ class NoPromotion(unittest.TestCase):
         self.assertIn("never as the rewrite", text)
         self.assertNotIn("F4 rejected", text)
         self.assertIn("    F4's B - A is test-retest, descriptive only: before any promotion A and B ask the same wording", text)
+        # §5: a withdrawn cell is not tested, so it has no power figure (§7: cell 4 gets no all-block figure either way)
+        f4 = _power_line(text, "F4")
+        self.assertIn("F4 B - A at 900 s: withdrawn (NO PROMOTION, §9.2): not tested, no z and no MDE; n 2688;", f4)
+        self.assertNotIn("MDE ", f4.replace("no MDE", ""))
+        self.assertIn(" bps/day", _power_line(text, "F3"))                                # F3, a tested cell, keeps its figures
 
     def test_the_withdrawn_cell_draws_nothing(self):
         seeds = []
@@ -190,6 +201,11 @@ class NoPromotion(unittest.TestCase):
         self.assertIn("a promotion took effect: F4 is read", out["text"])
         self.assertIn("-> does not fire (> 0)", out["text"])
         self.assertNotIn("F4's B - A is test-retest", out["text"])
+        # §7: "Cell 4 (B - A) gets no all-block figure"; its MDE on the disagreement blocks alone is printed
+        f4 = _power_line(out["text"], "F4")
+        self.assertIn("no all-block MDE (§7: cell 4 gets none; before the first promotion B - A is test-retest)", f4)
+        self.assertNotIn("bps/day", f4)
+        self.assertIn("MDE on the disagreement blocks ", f4)
 
 
 class StopRules(unittest.TestCase):

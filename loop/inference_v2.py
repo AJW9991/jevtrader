@@ -288,7 +288,8 @@ def power_lines(cells, pool, excluded, gaps):
              " (a kept product's SIDES differ into or out of a tick in them) and their share f, n_eff = f n, the sd of S-bar_k"
              " over all blocks and over the disagreement blocks, and the MDE at the cell's one-sided alpha and power 0.80"
              " (z sd / sqrt(n) on all blocks, per block and per day; z sd_dis / sqrt(n_eff) on the disagreement blocks alone);"
-             " §7's figures before the data took sd 33 bps per 900 s block per product"]
+             " §7's figures before the data took sd 33 bps per 900 s block per product. F4 (B - A) gets no all-block figure (§7),"
+             " and a withdrawn cell, not tested, no MDE at all"]
     for name, x in cells.items():
         cell = x["cell"]
         z = nd.inv_cdf(float(1 - cell.alpha)) + nd.inv_cdf(POWER)
@@ -298,10 +299,17 @@ def power_lines(cells, pool, excluded, gaps):
         sdd = statistics.stdev(dv) if len(dv) > 1 else None
         mde = z * sd / math.sqrt(len(vals)) if sd is not None else None
         mdd = z * sdd / math.sqrt(len(dv)) if sdd is not None else None
-        lines.append(f"  {name} {cell.x.upper()} - {cell.y.upper()} at {cell.c} s: n {x['n']}; disagreement blocks {x['dis']}"
-                     f" (f {report._r(x['share'])}, n_eff {x['dis']}; product-blocks {x['pdis']}); sd {_f(sd, 3)}, sd_dis {_f(sdd, 3)} bps;"
-                     f" z {z:.4f}; MDE {_f(mde, 3)} bps/block = {_f(None if mde is None else mde * 86400 / cell.c, 1)} bps/day;"
-                     f" MDE on the disagreement blocks {_f(mdd, 3)} bps/block")
+        head = f"  {name} {cell.x.upper()} - {cell.y.upper()} at {cell.c} s: "
+        counts = (f"n {x['n']}; disagreement blocks {x['dis']} (f {report._r(x['share'])}, n_eff {x['dis']}; product-blocks {x['pdis']});"
+                  f" sd {_f(sd, 3)}, sd_dis {_f(sdd, 3)} bps")
+        if x["withdrawn"]:                                     # §9.2's NO PROMOTION: F4 is not tested, so it has no power
+            lines.append(head + "withdrawn (NO PROMOTION, §9.2): not tested, no z and no MDE; " + counts)
+            continue
+        if name == "F4":                                       # §7: "Cell 4 (B - A) gets no all-block figure"
+            allb = "no all-block MDE (§7: cell 4 gets none; before the first promotion B - A is test-retest)"
+        else:
+            allb = f"MDE {_f(mde, 3)} bps/block = {_f(None if mde is None else mde * 86400 / cell.c, 1)} bps/day"
+        lines.append(head + counts + f"; z {z:.4f}; {allb}; MDE on the disagreement blocks {_f(mdd, 3)} bps/block")
     lines.append("  rho between the pooled products' S_k,p (over the blocks both keep; §7: the pooled mean's variance is"
                  " sigma^2 (1 + 2 rho) / 3 at three products, equal sigma):")
     for name, x in cells.items():
