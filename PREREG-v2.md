@@ -40,9 +40,9 @@ that restates the rule. Four things are known before any v1 result is read:
 
 1. **Arm A is arm C.** `v1`'s action criteria restate `rule_c` (PREREG-v1 §5: 181/181 on the
    shakedown), so A − C is zero by construction and the frozen-prompt arm measures nothing.
-2. **One adjective is dead.** `liq` read `thin` on 0 of 3,908 rows carrying adjectives (report
-   §2, a health quantity) of the v1 sample through 2026-09-29 04:30Z, and 48 of 81 states had
-   occurred. The cuts (`deep` < 1.0 bps, `thin` > 5.0 bps of fill cost) sit outside where the
+2. **One adjective is dead.** `liq` read `thin` on 0 of 3,467 rows carrying adjectives, and 48 of 81 states had
+   occurred (report §2 by `make health`, 2026-09-28 21:34Z, a health quantity); the quantiles tool
+   counts 3,877 live rows through 2026-09-29 04:30Z (§3). The cuts (`deep` < 1.0 bps, `thin` > 5.0 bps of fill cost) sit outside where the
    fill cost lives (§3).
 3. **Jev does not call direction.** `up15`/`down15` sat in 0.26–0.63 on the shakedown and lean
    tracked the `trend` word at r 0.99 (PREREG-v1 §5). A co-primary on them tests the word.
@@ -124,9 +124,9 @@ and D is that wording's table (B vs D is §6's D-agreement).
   (3) `liq` occupancy under §3's rule over D's ok rows gives every word ≥ 3 % and ≤ 90 %; (4) not
   a stablecoin. `TICK_p` = the mode, over D's ok rows and both sides, of each side's smallest
   positive level-price step (ties: the smaller). A candidate that fails is named with the failing
-  value. If the probe wrote rows in fewer than 95 % of D's 1,440 minutes, or transport failures
-  exceed 5 % of D's minutes summed over candidates, D becomes the next UTC day, once, named in
-  §14 before that day starts. Fewer than two passing → v2 runs on `SOL-USD` and what passed, and
+  value. If the probe wrote rows in fewer than 95 % of D's 1,440 minutes, or more than 5 % of D's
+  candidate-minutes (1,440 × the number of candidates; 432 of 8,640 with six) end in a transport
+  failure, D becomes the next UTC day, once, named in §14 before that day starts. Fewer than two passing → v2 runs on `SOL-USD` and what passed, and
   every count written for three products scales with the number of products
   (`DAILY_SPEND_HALT_USD` = 0.25 × products; one table per product; §7's pooling at the actual
   count). Alex approved running the probe from the worktree during v1's sample on 2026-09-29 (~07:00Z; Claude starts it).
@@ -185,15 +185,31 @@ moves with the price. v2 counts spread ticks instead:
   `features.fill1k_short` and `features.mid` (its source is scanned for the words it must not
   contain), excludes short rows from the quantiles while counting them, and prints N, the
   p10/p50/p90/p99/max of `fill1k_bps` and of h, the atoms and each word's occupancy. Its output
-  on 2026-09-29 06:30Z, verbatim (the tool's live-row N is 3,877 beside report §2's 3,908 rows
-  carrying adjectives: the 31 are `absence: "jev"` rows, which carry words but are not live rows):
+  on 2026-09-29 06:30Z, its selection and quantile lines verbatim (one fact per line; the
+  header lines naming the log, window, base, tick and the parsed/not-live/outside-window counts are
+  left out here and are in the tool's output):
   ```
-  live_rows: 3877   short_rows_excluded: 0   quantile_rows: 3877
-  fill1k_bps_p10: 0.4170  p50: 0.8427  p90: 1.6541  p99: 2.4526  max: 3.7485
-  h_p10: 1.0000  h_p50: 2.0000  h_p90: 3.9915  h_p99: 5.9600  h_max: 8.9706
-  a10: 1   a90: 4
-  rule: deep iff h < 1.5; thin iff h > 4.5 or fill1k_short; normal otherwise   thin_fallback: no
-  deep: 641/3877 16.53%   normal: 2990/3877 77.12%   thin: 246/3877 6.35%   every_word_within_3_90: yes
+  live_rows: 3877
+  short_rows_excluded: 0
+  quantile_rows: 3877
+  fill1k_bps_p10: 0.4170
+  fill1k_bps_p50: 0.8427
+  fill1k_bps_p90: 1.6541
+  fill1k_bps_p99: 2.4526
+  fill1k_bps_max: 3.7485
+  h_p10: 1.0000
+  h_p50: 2.0000
+  h_p90: 3.9915
+  h_p99: 5.9600
+  h_max: 8.9706
+  a10: 1
+  a90: 4
+  rule: deep iff h < 1.5; thin iff h > 4.5 or fill1k_short; normal otherwise
+  thin_fallback: no
+  deep: 641/3877 16.53%
+  normal: 2990/3877 77.12%
+  thin: 246/3877 6.35%
+  every_word_within_3_90: yes
   ```
   **So for `SOL-USD`: `deep` ⇔ h < 1.5 (a one-tick spread), `thin` ⇔ h > 4.5 (wider than four
   ticks).** For an added product: `bin/probe summarize probe/2026-09-30`, which applies the
@@ -730,3 +746,8 @@ Each entry: date, author, what changed, and what the author had read (digest inc
 - 2026-09-29 ~07:05Z, Claude (Fable 5.1): header — Alex's disclosure line filled ("No, neither"); §2 — the probe
   approval date filled. Nothing else changed. The author had read nothing new since `prereg-v2-doc` (no digest, no
   transcript, no proposal rationale).
+- 2026-09-29 ~08:00Z, Claude (Fable 5.1): §2 — the transport-failure share is defined over candidate-minutes
+  (the reading `bin/probe summarize` implements); §0.2 — the 0-thin count is attributed to `make health` of
+  2026-09-28 21:34Z (3,467 rows with adjectives), the earlier 3,908 was an ad-hoc count and its explanation
+  was wrong; §3 — the tool's output quoted line for line as it prints it. Read since the doc tag: the tool
+  build's reports (code and tests), nothing of the live log beyond the features-only tool's output.
