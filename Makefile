@@ -72,7 +72,8 @@ inference-smoke:
 # tick at or after T0_v2 + 28 d + h + 30 s (~16 min after the end; loop/inference_v2.py refuses, exit 3, before, and
 # before the end itself, both before opening a log). It checks the seal first, also before opening a log (§10, §13): the
 # annotated tag prereg-v2-seal is an ancestor of HEAD and `bin/seal-check --since prereg-v2-seal` exits 0, or it refuses
-# (exit 3) unless NO_SEAL=1 (`make results NO_SEAL=1`, passed as --no-seal), which RESULTS-v2.md records. The one run
+# (exit 3) unless NO_SEAL=1 (`make results NO_SEAL=1`, passed as --no-seal), which RESULTS-v2.md records; the same
+# override is the only way past a sample whose rows carry more than one spec_sha (§13: exactly one). The one run
 # of PREREG-v2 §4-§7 and §9 over every product's store, written to RESULTS-v2.md and committed; by hand, once; the stop
 # rules (§9) are read from its output. `--accept-pending` is for logs that really stopped.
 # v1's run (2026-10-23, from main before the switch; reproduced from the results-v1 tag after it):

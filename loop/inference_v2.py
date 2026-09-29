@@ -45,7 +45,9 @@ What it computes (PREREG-v2 §2, §4-§7, §9; SPEC §10), in this order:
   agreement and A's agreement with C; the direction probabilities per product (PREREG-v1 §5's beside-numbers).
 RESULTS-v2 §0 (§8, §9.5, §13): the seal check as main made it (the tag, its commit and HEAD, bin/seal-check's exit and
 output verbatim, `git diff -U0 prereg-v2-seal HEAD` verbatim, and NO_SEAL=1 when given), data/looks.tsv verbatim,
-the set of spec_sha over the sample's rows, which must hold exactly one value (printed, never a refusal), and each
+the set of spec_sha over the sample's rows, which must hold exactly one value (main refuses, exit 3 after reading, on two
+or more unless NO_SEAL=1, §13's one override, which the header and §0 then record; no sample row at all is a void block,
+reported as void, not a refusal), and each
 product-day's prompt_b set, naming every product-day with two or more values (§8: a promotion takes effect at a day's
 first tick, so a product-day carries one; a row stopped before the prompts step has a null prompt_b and carries none).
 
@@ -369,7 +371,8 @@ def section0(looks, shas, tree_sha, pb=None, sealed=None, no_seal=False):
                                                          f"; it is NOT this tree's SPEC.md sha {tree_sha}"))
     else:
         lines.append(f"  NOT ONE VALUE: {len(shas)} values over the sample's rows; §13 requires exactly one (a sample row whose"
-                     " sha is not SPEC v2's does not mean what SPEC v2 says)")
+                     " sha is not SPEC v2's does not mean what SPEC v2 says)"
+                     + ("; this run was made under NO_SEAL=1, recorded here" if no_seal else ""))
     if pb is not None:
         lines += prompt_b_lines(pb)
     return lines
@@ -653,6 +656,8 @@ def run(stores, t0, now, resamples=RESAMPLES, accept=False, listed=None, tiers=N
                     " without --accept-pending)")
     if no_seal and not (sealed and sealed["ok"]):
         head.append(f"  NO_SEAL=1 (§13): the seal check FAILED and this run was made anyway: {sealed['why'] if sealed else 'not checked'}")
+    if no_seal and len(shas) > 1:
+        head.append(f"  NO_SEAL=1 (§13): the sample's spec_sha set is NOT ONE VALUE ({len(shas)} values) and this run was made anyway")
     if void:
         head.append(f"  VOID (§9.4): no product has {MIN_KEPT_DAYS} kept days; every verdict is prefixed VOID and stop rules 1 and 2"
                     " are not read")
@@ -698,7 +703,8 @@ def main(argv=None, now=None, resamples=RESAMPLES):
                     help="logs that really stopped: judge every sample day closed and count a t + h never reached as a gap (printed)")
     ap.add_argument("--no-seal", action="store_true",
                     help="NO_SEAL=1 (make results NO_SEAL=1): run although the prereg-v2-seal check or bin/seal-check --since"
-                         " fails; RESULTS-v2 §0 and its header record it (PREREG-v2 §13)")
+                         " fails, or the sample's spec_sha set is not one value; RESULTS-v2 §0 and its header record it"
+                         " (PREREG-v2 §13)")
     args = ap.parse_args(argv)
     clock = datetime.datetime.now(UTC).timestamp() if now is None else now
 
@@ -725,6 +731,12 @@ def main(argv=None, now=None, resamples=RESAMPLES):
     stores = load(config.PRODUCTS)
     if all(s["missing"] for s in stores):
         return refuse("no log at any product's store: " + ", ".join(s["log"] for s in stores), 2)
+    shas = collections.Counter(r.get("spec_sha") for s in stores for r in report.in_sample(s["rows"], t0))
+    if len(shas) > 1 and not args.no_seal:                     # §13: "which must hold exactly one value"
+        return refuse(f"the sample's rows carry {len(shas)} spec_sha values ("
+                      + ", ".join(f"{sha} {n} rows" for sha, n in sorted(shas.items(), key=lambda kv: str(kv[0])))
+                      + "); PREREG-v2 §13 requires exactly one (a row whose sha is not SPEC v2's does not mean what SPEC v2 says);"
+                        " NO_SEAL=1 (make results NO_SEAL=1, --no-seal) runs anyway and RESULTS-v2 records it")
     last = last_reached(stores, clock)
     if (last is None or last < closes_at(t0)) and not args.accept_pending:
         need = math.ceil(closes_at(t0) / 60) * 60

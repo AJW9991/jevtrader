@@ -394,7 +394,9 @@ printed) and runs once, at day 28. It refuses (exit 3) while PREREG-v2.md §12's
 T0_v2 + 28 d, and while the seal check fails (`inference_v2.seal`: the annotated tag `prereg-v2-seal` is an ancestor of
 HEAD and `bin/seal-check --since prereg-v2-seal` exits 0; PREREG-v2 §10, §13) unless `--no-seal` (`make results
 NO_SEAL=1`), which the header and §0 record, all before any log is opened; and while d28 is open (no log has reached T0_v2 + 28 d + h + 30 s, where
-`report.days_table` closes the day) unless `--accept-pending` says the logs stopped; `--out` never overwrites. The
+`report.days_table` closes the day) unless `--accept-pending` says the logs stopped; after reading, it also refuses
+(exit 3) when the sample's rows carry more than one `spec_sha` (PREREG-v2 §13: exactly one), unless `--no-seal`,
+recorded likewise; no sample row at all is a void block, not a refusal; `--out` never overwrites. The
 clock and R are `main`'s arguments for the tests, not flags, and T0_v2 is §12's and nothing else. It prints
 RESULTS-v2: §0 (the seal check with bin/seal-check's output and `git diff -U0 prereg-v2-seal HEAD` verbatim,
 `data/looks.tsv` verbatim, the set of `spec_sha` over

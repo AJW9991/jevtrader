@@ -811,6 +811,25 @@ class Main(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("  NO_SEAL=1 given (make results NO_SEAL=1, --no-seal): the seal check passed; nothing was overridden\n", text)
 
+    def test_a_sample_with_two_spec_shas_is_refused_unless_no_seal(self):
+        # §13: "the set of spec_sha over sample rows, which must hold exactly one value"; NO_SEAL=1 is §13's one override
+        d = self.enterContext(tempfile.TemporaryDirectory())
+        rows = _log(mid=_rising, row=_b_buys, post=2)
+        rows[700] = dict(rows[700], spec_sha="old")
+        rows[-1] = dict(rows[-1], spec_sha="after")                                      # after the sample: not a sample row
+        _write(os.path.join(d, "decisions.jsonl"), rows)
+        with mock.patch.object(config, "DATA", d), mock.patch.object(config, "DECISIONS", os.path.join(d, "decisions.jsonl")):
+            code, out, err = self._main(self.ARGV)
+            self.assertEqual((code, out), (3, ""))
+            self.assertIn("refusing: the sample's rows carry 2 spec_sha values (old 1 rows, spec-v2-fixture 2687 rows); PREREG-v2"
+                          " §13 requires exactly one (a row whose sha is not SPEC v2's does not mean what SPEC v2 says); NO_SEAL=1"
+                          " (make results NO_SEAL=1, --no-seal) runs anyway and RESULTS-v2 records it", err)
+            code, out, err = self._main(self.ARGV + ["--no-seal"])
+        self.assertEqual(code, 0, err)
+        self.assertIn("\n  NO_SEAL=1 (§13): the sample's spec_sha set is NOT ONE VALUE (2 values) and this run was made anyway\n", out)
+        self.assertIn("  NOT ONE VALUE: 2 values over the sample's rows; §13 requires exactly one (a sample row whose sha is not"
+                      " SPEC v2's does not mean what SPEC v2 says); this run was made under NO_SEAL=1, recorded here\n", out)
+
     def test_a_fresh_interpreter_under_another_hash_seed_prints_the_same_bytes(self):
         boot = ("import sys; sys.path[:0] = [sys.argv[1], sys.argv[2]]\n"
                 "from unittest import mock\n"
