@@ -9,15 +9,15 @@ module reads PREREG-v2.md and nothing of PREREG.md's inference. It takes from v1
 It REFUSES (exit 3, before any log is opened) while PREREG-v2.md §12's T0_v2 is blank or malformed, before
 T0_v2 + 28 d on the clock, and while the seal check fails (§10's inference bullet, §13: the annotated tag prereg-v2-seal
 exists and is an ancestor of HEAD, and `bin/seal-check --since prereg-v2-seal` exits 0) unless --no-seal, which `make
-results NO_SEAL=1` passes and RESULTS-v2 §0 and the header record; and (exit 3, after reading) while the sample's last day is open: d28 closes, and stop rule 3
-can judge its last live rows, once some product's log has reached a tick at or after T0_v2 + 28 d + h + 30 s
-(report.days_table's closure, ~16 min after the sample ends). --accept-pending is for logs that really stopped: every
-sample day is then closed and a live row whose t + h never came counts as a gap, and the header says so. It is refused
-(exit 3, before any log is opened) until a minute after the minute d28's closing tick falls in: before then no running
-loop could have written that tick, so no log can be said to have stopped short of it, and the flag would only turn the
-last rows' pending outcomes into gaps (PREREG-v2 says nothing of the flag; v1's inference.py is its precedent). Neither the
-clock nor the resample count is a flag: main(argv, now=, resamples=) takes them for the tests, and a run at R != 10,000
-says it is not the pre-registered one. T0_v2 is §12's, read through dash.read_t0_v2, and nothing else.
+results NO_SEAL=1` passes and RESULTS-v2 §0 and the header record; and (exit 3, after reading) while the sample's last
+day is open: d28 closes, and stop rule 3 can judge its last live rows, once some product's log has reached a tick at or
+after T0_v2 + 28 d + h + 30 s (report.days_table's closure, ~16 min after the sample ends). --accept-pending is for logs
+that really stopped: every sample day is then closed and a live row whose t + h never came counts as a gap, and the
+header says so. It is refused (exit 3, before any log is opened) until a minute after the minute d28's closing tick
+falls in: before then no running loop could have written that tick, so no log can be said to have stopped short of it,
+and the flag would only turn the last rows' pending outcomes into gaps (PREREG-v2 says nothing of the flag; v1's
+inference.py is its precedent). Neither the clock nor the resample count is a flag: main(argv, now=, resamples=) takes
+them for the tests, and a run at R != 10,000 says it is not the pre-registered one. T0_v2 is §12's, read through dash.read_t0_v2, and nothing else.
 
 What it computes (PREREG-v2 §2, §4-§7, §9; SPEC §10), in this order:
 - Stores: config.store(p).decisions for p in config.PRODUCTS, each read once (inference.read_log: the sha and the byte
@@ -50,9 +50,9 @@ RESULTS-v2 §0 (§8, §9.5, §13): the seal check as main made it (the tag, its 
 output verbatim, `git diff -U0 prereg-v2-seal HEAD` verbatim, and NO_SEAL=1 when given), data/looks.tsv verbatim,
 the set of spec_sha over the sample's rows, which must hold exactly one value (main refuses, exit 3 after reading, on two
 or more unless NO_SEAL=1, §13's one override, which the header and §0 then record; no sample row at all is a void block,
-reported as void, not a refusal), and each
-product-day's prompt_b set, naming every product-day with two or more values (§8: a promotion takes effect at a day's
-first tick, so a product-day carries one; a row stopped before the prompts step has a null prompt_b and carries none).
+reported as void, not a refusal), and each product-day's prompt_b set, naming every product-day with two or more values
+(§8: a promotion takes effect at a day's first tick, so a product-day carries one; a row stopped before the prompts step
+has a null prompt_b and carries none).
 
 The draw and the bound (PREREG-v2 §5, §6): a circular block bootstrap of a cell's pooled block series in block order,
 L = 4 units of the cell's own cadence, R = 10,000 resamples each the length of the series, one random.Random(seed)
