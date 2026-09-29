@@ -389,12 +389,15 @@ argv, HEAD) to `data/looks.tsv` before anything is printed, and a look it cannot
 each PAUSE, and the pending prompt version on its own line; still health only.
 
 **PREREG-v2's inference (`loop/inference_v2.py`, `make results`).** `python3 -m loop.inference_v2 --sample
-[--out RESULTS-v2.md] [--accept-pending]` reads every product's store once (each log's sha and byte length printed)
-and runs once, at day 28. It refuses (exit 3) while PREREG-v2.md §12's T0_v2 is blank or malformed and before
-T0_v2 + 28 d, both before any log is opened, and while d28 is open (no log has reached T0_v2 + 28 d + h + 30 s, where
+[--out RESULTS-v2.md] [--accept-pending] [--no-seal]` reads every product's store once (each log's sha and byte length
+printed) and runs once, at day 28. It refuses (exit 3) while PREREG-v2.md §12's T0_v2 is blank or malformed, before
+T0_v2 + 28 d, and while the seal check fails (`inference_v2.seal`: the annotated tag `prereg-v2-seal` is an ancestor of
+HEAD and `bin/seal-check --since prereg-v2-seal` exits 0; PREREG-v2 §10, §13) unless `--no-seal` (`make results
+NO_SEAL=1`), which the header and §0 record, all before any log is opened; and while d28 is open (no log has reached T0_v2 + 28 d + h + 30 s, where
 `report.days_table` closes the day) unless `--accept-pending` says the logs stopped; `--out` never overwrites. The
 clock and R are `main`'s arguments for the tests, not flags, and T0_v2 is §12's and nothing else. It prints
-RESULTS-v2: §0 (a placeholder for `bin/seal-check`'s section, `data/looks.tsv` verbatim, the set of `spec_sha` over
+RESULTS-v2: §0 (the seal check with bin/seal-check's output and `git diff -U0 prereg-v2-seal HEAD` verbatim,
+`data/looks.tsv` verbatim, the set of `spec_sha` over
 the sample's rows, each product-day's `prompt_b` set with every product-day holding two or more values named, PREREG-v2
 §8); stop rule 3 recomputed per product, which governs, beside `data/exclusions-v2.tsv`, and void; H1
 and family F on PREREG-v2 §4's pooled series (`pooled`: the same sums, in the same order, as

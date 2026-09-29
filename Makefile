@@ -70,14 +70,15 @@ inference-smoke:
 
 # PREREG-v2's day 28 (T0_v2 + 28 d, T0_v2 from PREREG-v2.md §12), once d28 has closed: some product's log must hold a
 # tick at or after T0_v2 + 28 d + h + 30 s (~16 min after the end; loop/inference_v2.py refuses, exit 3, before, and
-# before the end itself, both before opening a log). The one run of PREREG-v2 §4-§7 and §9 over every product's store,
-# written to RESULTS-v2.md and committed; by hand, once; the stop rules (§9) are read from its output. `--accept-pending`
-# is for logs that really stopped. The prereg-v2-seal check and `bin/seal-check --since prereg-v2-seal` (§10, §13) join
-# this target when bin/seal-check is built; until then RESULTS-v2 §0 prints a placeholder for them.
+# before the end itself, both before opening a log). It checks the seal first, also before opening a log (§10, §13): the
+# annotated tag prereg-v2-seal is an ancestor of HEAD and `bin/seal-check --since prereg-v2-seal` exits 0, or it refuses
+# (exit 3) unless NO_SEAL=1 (`make results NO_SEAL=1`, passed as --no-seal), which RESULTS-v2.md records. The one run
+# of PREREG-v2 §4-§7 and §9 over every product's store, written to RESULTS-v2.md and committed; by hand, once; the stop
+# rules (§9) are read from its output. `--accept-pending` is for logs that really stopped.
 # v1's run (2026-10-23, from main before the switch; reproduced from the results-v1 tag after it):
 # `python3 -m loop.inference --sample --out RESULTS.md`.
 results:
-	$(PY) -m loop.inference_v2 --sample --out RESULTS-v2.md
+	$(PY) -m loop.inference_v2 --sample --out RESULTS-v2.md$(if $(filter 1,$(NO_SEAL)), --no-seal)
 
 backup:
 	bash bin/backup-data

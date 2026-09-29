@@ -1,13 +1,15 @@
 """loop/inference_v2.py -- PREREG-v2's day-28 inference over every product's store, run once (make results).
 
-    python3 -m loop.inference_v2 --sample [--out RESULTS-v2.md] [--accept-pending]
+    python3 -m loop.inference_v2 --sample [--out RESULTS-v2.md] [--accept-pending] [--no-seal]
 
 v1's loop/inference.py stays byte for byte as it is (v1's readers, its golden test and `results-v1` read it); this
 module reads PREREG-v2.md and nothing of PREREG.md's inference. It takes from v1 only the draw itself
 (inference.resample_indices, PREREG-v1 §5 step 2, which PREREG-v2 §5 names) and the one-read log reader.
 
-It REFUSES (exit 3, before any log is opened) while PREREG-v2.md §12's T0_v2 is blank or malformed and before
-T0_v2 + 28 d on the clock, and (exit 3, after reading) while the sample's last day is open: d28 closes, and stop rule 3
+It REFUSES (exit 3, before any log is opened) while PREREG-v2.md §12's T0_v2 is blank or malformed, before
+T0_v2 + 28 d on the clock, and while the seal check fails (§10's inference bullet, §13: the annotated tag prereg-v2-seal
+exists and is an ancestor of HEAD, and `bin/seal-check --since prereg-v2-seal` exits 0) unless --no-seal, which `make
+results NO_SEAL=1` passes and RESULTS-v2 §0 and the header record; and (exit 3, after reading) while the sample's last day is open: d28 closes, and stop rule 3
 can judge its last live rows, once some product's log has reached a tick at or after T0_v2 + 28 d + h + 30 s
 (report.days_table's closure, ~16 min after the sample ends). --accept-pending is for logs that really stopped: every
 sample day is then closed and a live row whose t + h never came counts as a gap, and the header says so. Neither the
@@ -41,7 +43,8 @@ What it computes (PREREG-v2 §2, §4-§7, §9; SPEC §10), in this order:
   replay cadence §6's fee arithmetic: E_X,p at 0 and 90 bps over kept days, pooled sums, f*_X for A, B, C, D and
   buy-and-hold, the 30-day account-level volume, the tiers of §12's table, each pair's Delta and f*_XY); arm D's
   agreement and A's agreement with C; the direction probabilities per product (PREREG-v1 §5's beside-numbers).
-RESULTS-v2 §0 (§8, §9.5, §13): the seal section (a placeholder until bin/seal-check is built), data/looks.tsv verbatim,
+RESULTS-v2 §0 (§8, §9.5, §13): the seal check as main made it (the tag, its commit and HEAD, bin/seal-check's exit and
+output verbatim, `git diff -U0 prereg-v2-seal HEAD` verbatim, and NO_SEAL=1 when given), data/looks.tsv verbatim,
 the set of spec_sha over the sample's rows, which must hold exactly one value (printed, never a refusal), and each
 product-day's prompt_b set, naming every product-day with two or more values (§8: a promotion takes effect at a day's
 first tick, so a product-day carries one; a row stopped before the prompts step has a null prompt_b and carries none).
@@ -57,7 +60,7 @@ arithmetic can land a hair either side of an integer. F never reuses v1's infere
 alone. Ties (a block whose S-bar_k is 0.0) stay in. At day 28 a cell of 2,688 blocks takes ~12 s (R x ceil(n/4)
 draws), the five ~1 min; report.cadence_table ~2 min on three products of minute rows.
 Standard library only. --out writes a NEW file and never overwrites one."""
-import argparse, collections, datetime, math, os, random, statistics, sys
+import argparse, collections, datetime, math, os, random, statistics, subprocess, sys
 from fractions import Fraction
 
 from . import book, config, dash, exclusions_v2, inference, outcomes, report
@@ -75,6 +78,8 @@ POWER = 0.8                            # §7: the MDE's power (z = 1.960 + 0.842
 # venue's retail maker and taker, read in-account 2026-09-27. config.FEE_BPS_COLUMNS becomes the same at the SPEC/config
 # stage; until then it is v1's (..., 60, 120) and the report prints those.
 FEE_COLUMNS = (0.0, 2.0, 10.0, 25.0, 50.0, 90.0)
+SEAL_TAG = "prereg-v2-seal"            # §13: v2's make results checks it and runs bin/seal-check --since it
+SEAL_CHECK_TIMEOUT_S = 3600            # bin/seal-check may run `make test` (§13 (e)); a hung tool is a failed check
 Cell = collections.namedtuple("Cell", "name x y c seed alpha says")
 CELLS = (Cell("H1", "b", "c", 900, SEED_H1, ALPHA_H1, "the nightly's arm beats the rule, pooled, decided once per 15-minute block"),
          Cell("F1", "b", "c", 3600, SEED_H1 + 1, ALPHA_F, "B's decisions, acted on once an hour, beat C's"),
@@ -227,6 +232,71 @@ def closes_at(t0):
     return t0 + N_DAYS * 86400 + config.HORIZON_S + outcomes.JOIN_TOL_S
 
 
+def _git(repo, *args):
+    return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                          timeout=120)
+
+
+def seal(repo=None):
+    """§10's inference bullet and §13: {"ok", "why" (the first failure, None when ok), "lines" (§0's seal lines)}. ok when
+    the annotated tag prereg-v2-seal exists (`git rev-parse -q --verify refs/tags/prereg-v2-seal^{tag}`), is an ancestor
+    of HEAD (`git merge-base --is-ancestor`), and `bin/seal-check --since prereg-v2-seal` (run in `repo`, its output
+    printed verbatim) exits 0; §0 also prints `git diff -U0 prereg-v2-seal HEAD` verbatim (§13). bin/seal-check is
+    another stage's tool: absent or not executable, the check fails. Reads no log."""
+    repo = config.REPO if repo is None else repo
+    lines, why = [], None
+    try:
+        t = _git(repo, "rev-parse", "-q", "--verify", f"refs/tags/{SEAL_TAG}^{{tag}}")
+        if t.returncode != 0:
+            why = f"no annotated tag {SEAL_TAG}"
+            return {"ok": False, "why": why, "lines": [f"  seal: {why} in {repo}: nothing else checked"]}
+        commit = _git(repo, "rev-parse", "-q", "--verify", f"{SEAL_TAG}^{{commit}}").stdout.strip()
+        head = _git(repo, "rev-parse", "-q", "--verify", "HEAD").stdout.strip()
+        if _git(repo, "merge-base", "--is-ancestor", SEAL_TAG, "HEAD").returncode != 0:
+            why = f"{SEAL_TAG} is not an ancestor of HEAD"
+            lines.append(f"  seal: annotated tag {SEAL_TAG} {t.stdout.strip()} (commit {commit}): NOT an ancestor of HEAD {head}")
+        else:
+            lines.append(f"  seal: annotated tag {SEAL_TAG} {t.stdout.strip()} (commit {commit}), an ancestor of HEAD {head}")
+        tool = os.path.join(repo, "bin", "seal-check")
+        if not (os.path.isfile(tool) and os.access(tool, os.X_OK)):
+            why = why or "bin/seal-check is not in this tree (PREREG-v2 §10 builds it in the draft tree)"
+            lines.append(f"  bin/seal-check --since {SEAL_TAG}: NOT RUN: {tool} is absent or not executable")
+        else:
+            r = subprocess.run([tool, "--since", SEAL_TAG], cwd=repo, capture_output=True, text=True, encoding="utf-8",
+                               errors="replace", timeout=SEAL_CHECK_TIMEOUT_S)
+            if r.returncode != 0:
+                why = why or f"bin/seal-check --since {SEAL_TAG} exited {r.returncode}"
+            lines.append(f"  bin/seal-check --since {SEAL_TAG}: exit {r.returncode}, its output verbatim:")
+            lines += [f"    | {l}" for l in (r.stdout + r.stderr).splitlines()]
+        d = _git(repo, "diff", "-U0", SEAL_TAG, "HEAD")
+        lines.append(f"  git diff -U0 {SEAL_TAG} HEAD (PREREG-v2 §13), verbatim:" if d.returncode == 0 else
+                     f"  git diff -U0 {SEAL_TAG} HEAD: FAILED (exit {d.returncode}): {d.stderr.strip()}")
+        lines += [f"    | {l}" for l in d.stdout.splitlines()] if d.returncode == 0 else []
+        if d.returncode == 0 and not d.stdout.strip():
+            lines.append("    (empty: HEAD is the sealed tree)")
+    except (OSError, subprocess.SubprocessError) as e:
+        why = f"git could not be run: {e}" if why is None else why
+        lines.append(f"  seal: the check could not complete: {type(e).__name__}: {e}")
+        return {"ok": False, "why": why, "lines": lines}
+    return {"ok": why is None, "why": why, "lines": lines}
+
+
+def seal_lines(sealed, no_seal):
+    """§0's seal lines: main's check (seal()), NO_SEAL=1 when given (§13: the override is recorded), and what §0 does not
+    print yet."""
+    if sealed is None:
+        lines = ["  seal: NOT CHECKED: run() was called without main's seal check (a test, never the result)"]
+    else:
+        lines = list(sealed["lines"])
+    if no_seal:
+        lines.append("  NO_SEAL=1 given (make results NO_SEAL=1, --no-seal): " +
+                     ("the seal check passed; nothing was overridden" if sealed is not None and sealed["ok"] else
+                      f"the seal check FAILED and was overridden: {sealed['why'] if sealed else 'not checked'}"))
+    lines.append("  not printed here yet (§13): the draft tag's -U0 diff to the seal with the --stat of its excluded paths, and"
+                 " the T0_v2 re-derivations")
+    return lines
+
+
 def read_looks(path=None):
     """data/looks.tsv as {"path", "lines" (None when absent), "error"}: RESULTS-v2 §0 reproduces it verbatim (§9.5)."""
     path = config.LOOKS if path is None else path
@@ -276,13 +346,10 @@ def prompt_b_lines(pb):
     return lines
 
 
-def section0(looks, shas, tree_sha, pb=None):
-    """RESULTS-v2 §0: the seal (a placeholder), the looks verbatim, the sample's spec_sha set (§9.5, §13) and, with `pb`
-    (prompt_b_days per product), each product-day's prompt_b set (§8)."""
-    lines = ["§0. The seal, the looks, the sample's spec_sha and prompt_b (PREREG-v2 §8, §9.5, §13)",
-             "  seal: PLACEHOLDER. bin/seal-check is not built in this tree yet; once it is, this section prints its verdict on"
-             " `--since prereg-v2-seal`, `git diff -U0 prereg-v2-seal HEAD`, the --stat of the excluded paths and every T0_v2"
-             " re-derivation (§13). This run checked no tag and no diff."]
+def section0(looks, shas, tree_sha, pb=None, sealed=None, no_seal=False):
+    """RESULTS-v2 §0: the seal check (seal_lines), the looks verbatim, the sample's spec_sha set (§9.5, §13) and, with
+    `pb` (prompt_b_days per product), each product-day's prompt_b set (§8)."""
+    lines = ["§0. The seal, the looks, the sample's spec_sha and prompt_b (PREREG-v2 §8, §9.5, §13)"] + seal_lines(sealed, no_seal)
     if looks["error"]:
         lines.append(f"  {looks['path']}: cannot be read: {looks['error']}")
     elif looks["lines"] is None:
@@ -514,12 +581,14 @@ def direction_lines(rows, outs, t0):
             + inference.side_lines(h))
 
 
-def run(stores, t0, now, resamples=RESAMPLES, accept=False, listed=None, tiers=None, looks=None, tree_sha=None, descriptive=True):
+def run(stores, t0, now, resamples=RESAMPLES, accept=False, listed=None, tiers=None, looks=None, tree_sha=None, descriptive=True,
+        sealed=None, no_seal=False):
     """The whole computation and its text. stores: load()'s, in config.PRODUCTS order (rows: each product's WHOLE log);
     t0: T0_v2 (epoch); now: the clock (epoch); accept: --accept-pending; listed: {"set", "lines", "path", "error"} from
     data/exclusions-v2.tsv; tiers: dash.read_fee_tiers()'s (None, {"error"} or the table); looks: read_looks()'s;
     tree_sha: dash.v2_spec_sha(); descriptive: False skips report.cadence_table, §7's agreements and the direction
-    probabilities (tests of the tested cells). Returns {"text", "cells", "rules", "excluded", "kept_days", "void_products",
+    probabilities (tests of the tested cells); sealed: seal()'s, main's check (None: not checked, said in §0); no_seal:
+    --no-seal (NO_SEAL=1), recorded in the header and §0. Returns {"text", "cells", "rules", "excluded", "kept_days", "void_products",
     "pool", "void", "promoted", "pending", "shas", "prompt_b", "ct"}. Reads no file."""
     listed = listed or {"set": set(), "lines": [], "path": config.EXCLUSIONS_V2, "error": None}
     looks = looks or {"path": config.LOOKS, "lines": None, "error": None}
@@ -582,10 +651,12 @@ def run(stores, t0, now, resamples=RESAMPLES, accept=False, listed=None, tiers=N
     elif pending:
         head.append("  d28 OPEN: the logs have not reached its closing tick, so the open days are not judged (main refuses this run"
                     " without --accept-pending)")
+    if no_seal and not (sealed and sealed["ok"]):
+        head.append(f"  NO_SEAL=1 (§13): the seal check FAILED and this run was made anyway: {sealed['why'] if sealed else 'not checked'}")
     if void:
         head.append(f"  VOID (§9.4): no product has {MIN_KEPT_DAYS} kept days; every verdict is prefixed VOID and stop rules 1 and 2"
                     " are not read")
-    lines = head + [""] + section0(looks, shas, tree_sha, pb) + [""] + rule3_lines(stores, days, excluded, kept_days, void_p, listed)
+    lines = head + [""] + section0(looks, shas, tree_sha, pb, sealed, no_seal) + [""] + rule3_lines(stores, days, excluded, kept_days, void_p, listed)
     lines.append(f"  pooled products (not void): {', '.join(pool) or 'none'}")
     lines.append(f"  §9.2's row set, live rows on the kept product-days of the pooled products: {len(live_kept)}; with prompt_b_sha !="
                  f" prompt_a_sha: {promoted} -> " + ("not read: the block is void" if void else
@@ -625,6 +696,9 @@ def main(argv=None, now=None, resamples=RESAMPLES):
     ap.add_argument("--out", help="also write the text to this NEW file (an existing file is never overwritten)")
     ap.add_argument("--accept-pending", action="store_true",
                     help="logs that really stopped: judge every sample day closed and count a t + h never reached as a gap (printed)")
+    ap.add_argument("--no-seal", action="store_true",
+                    help="NO_SEAL=1 (make results NO_SEAL=1): run although the prereg-v2-seal check or bin/seal-check --since"
+                         " fails; RESULTS-v2 §0 and its header record it (PREREG-v2 §13)")
     args = ap.parse_args(argv)
     clock = datetime.datetime.now(UTC).timestamp() if now is None else now
 
@@ -643,6 +717,11 @@ def main(argv=None, now=None, resamples=RESAMPLES):
                       " bootstrap runs before day 28 (PREREG-v2 §9.5-§9.6)")
     if args.out and os.path.exists(args.out):
         return refuse(f"--out {args.out} exists; the result is written once: name a new file", 2)
+    sealed = seal()                                             # before any log is opened
+    if not sealed["ok"] and not args.no_seal:
+        return refuse(f"the seal check failed: {sealed['why']}. PREREG-v2 §10, §13: make results checks {SEAL_TAG} and runs"
+                      f" bin/seal-check --since {SEAL_TAG}, and refuses unless NO_SEAL=1 (make results NO_SEAL=1, --no-seal),"
+                      " which RESULTS-v2 §0 records")
     stores = load(config.PRODUCTS)
     if all(s["missing"] for s in stores):
         return refuse("no log at any product's store: " + ", ".join(s["log"] for s in stores), 2)
@@ -662,7 +741,8 @@ def main(argv=None, now=None, resamples=RESAMPLES):
         tiers = dash.read_fee_tiers()
     except ValueError as e:
         tiers = {"error": str(e)}
-    text = run(stores, t0, clock, resamples, args.accept_pending, listed, tiers, read_looks(), dash.v2_spec_sha())["text"]
+    text = run(stores, t0, clock, resamples, args.accept_pending, listed, tiers, read_looks(), dash.v2_spec_sha(),
+               sealed=sealed, no_seal=args.no_seal)["text"]
     sys.stdout.write(text)
     if args.out:
         try:

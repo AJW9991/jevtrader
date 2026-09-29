@@ -3,7 +3,7 @@ NO PROMOTION, void), RESULTS-v2 §0, the fee arithmetic on a hand-built book, an
 the bound and the pooled statistic are held to transcriptions of the text in tests/test_invariants.py; this module holds
 the behaviour. Offline: hand-built rows every 900 s (so each row's t + h is the next row) in memory or in temp
 directories; the live data/, HALT and looks.tsv are never touched."""
-import contextlib, datetime, hashlib, io, json, math, os, random, re, subprocess, sys, tempfile, unittest
+import contextlib, datetime, hashlib, io, json, math, os, random, re, shutil, subprocess, sys, tempfile, unittest
 from unittest import mock
 
 from fixture_prereg import pin_prereg_v2
@@ -336,7 +336,7 @@ class AcceptPending(unittest.TestCase):
 
 
 class Section0(unittest.TestCase):
-    """RESULTS-v2 §0 (§9.5, §13): the seal placeholder, data/looks.tsv verbatim, the spec_sha set of the sample's rows."""
+    """RESULTS-v2 §0 (§9.5, §13): run() without main's seal check says so, data/looks.tsv verbatim, the spec_sha set of the sample's rows."""
 
     def test_looks_and_the_spec_sha_set(self):
         rows = _log(mid=_rising, row=_b_buys)
@@ -344,7 +344,7 @@ class Section0(unittest.TestCase):
                  "error": None}
         text = _run(_store("SOL-USD", rows), looks=looks, tree_sha=SHA)["text"]
         self.assertIn("§0. The seal, the looks, the sample's spec_sha and prompt_b (PREREG-v2 §8, §9.5, §13)", text)
-        self.assertIn("seal: PLACEHOLDER. bin/seal-check is not built in this tree yet", text)
+        self.assertIn("seal: NOT CHECKED: run() was called without main's seal check (a test, never the result)", text)
         self.assertIn("<looks.tsv>: 1 look(s), each `report --unblind` as (UTC, argv, HEAD) (§9.5), verbatim:", text)
         self.assertIn("    | 2026-11-01T09:00:00Z\tpython3 -m loop.report --unblind\tabc", text)
         self.assertIn(f"    {SHA} {96 * 28} rows\n  one value, as §13 requires\n", text)    # the post rows are not the sample's
@@ -609,12 +609,98 @@ class PowerAsMeasured(unittest.TestCase):
 
 class MakeResults(unittest.TestCase):
     def test_make_results_is_the_v2_run(self):
-        # PREREG-v2 §10: "v2's own `results` target, in the build"; v1's run is made from main before the switch
-        env = {k: v for k, v in os.environ.items() if not k.startswith("MAKE")}          # not the outer `make test`'s flags
-        r = subprocess.run(["make", "-n", "-s", "-C", REPO, "results", f"PY={sys.executable}"], capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", env=env, timeout=60)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(r.stdout.strip(), f"{sys.executable} -m loop.inference_v2 --sample --out RESULTS-v2.md")
+        # PREREG-v2 §10: "v2's own `results` target, in the build"; v1's run is made from main before the switch; §13:
+        # NO_SEAL=1 is the one override of the seal check, passed as --no-seal, which RESULTS-v2 §0 records
+        env = {k: v for k, v in os.environ.items() if not k.startswith("MAKE") and k != "NO_SEAL"}   # not the outer make's
+        for extra, tail in (([], ""), (["NO_SEAL=1"], " --no-seal"), (["NO_SEAL=0"], ""), (["NO_SEAL=yes"], "")):
+            with self.subTest(extra=extra):
+                r = subprocess.run(["make", "-n", "-s", "-C", REPO, "results", f"PY={sys.executable}"] + extra, capture_output=True,
+                                   text=True, encoding="utf-8", errors="replace", env=env, timeout=60)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertEqual(r.stdout.strip(), f"{sys.executable} -m loop.inference_v2 --sample --out RESULTS-v2.md{tail}")
+
+
+class SealCheck(unittest.TestCase):
+    """PREREG-v2 §10 (the inference bullet) and §13: v2's make results "checks prereg-v2-seal and runs bin/seal-check
+    --since prereg-v2-seal", refusing on any other hunk unless NO_SEAL=1, which it records; RESULTS-v2 §0 prints
+    `git diff -U0 prereg-v2-seal HEAD`. inference_v2.seal on a real temporary repository: the annotated tag, its ancestry
+    to HEAD, bin/seal-check's exit and output, the diff."""
+
+    def setUp(self):
+        if not shutil.which("git"):
+            self.skipTest("git not on PATH")
+        self.repo = self.enterContext(tempfile.TemporaryDirectory())
+        self.enterContext(mock.patch.dict(os.environ, {                      # no user or system git config leaks in
+            "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid"}))
+        self.git("init", "-q")
+        self.commit("a.txt", "one\n")
+
+    def git(self, *args):
+        return subprocess.run(["git", *args], cwd=self.repo, check=True, capture_output=True, text=True).stdout.strip()
+
+    def commit(self, name, text):
+        with open(os.path.join(self.repo, name), "w", encoding="utf-8") as fh:
+            fh.write(text)
+        self.git("add", name)
+        self.git("commit", "-q", "-m", name)
+
+    def tool(self, code, say="seal-check: since prereg-v2-seal: every hunk is on the allowlist"):
+        os.makedirs(os.path.join(self.repo, "bin"), exist_ok=True)
+        path = os.path.join(self.repo, "bin", "seal-check")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(f"#!/bin/sh\necho \"$0 $*\" > \"$(dirname \"$0\")/../argv.txt\"\necho '{say}'\nexit {code}\n")
+        os.chmod(path, 0o755)
+
+    def test_no_annotated_tag_fails(self):
+        x = inference_v2.seal(self.repo)
+        self.assertEqual((x["ok"], x["why"]), (False, "no annotated tag prereg-v2-seal"))
+        self.git("tag", "prereg-v2-seal")                                                # a lightweight tag is not the seal
+        self.assertEqual(inference_v2.seal(self.repo)["why"], "no annotated tag prereg-v2-seal")
+
+    def test_a_tag_off_the_branch_fails(self):
+        self.git("checkout", "-q", "-b", "side")
+        self.commit("b.txt", "side\n")
+        self.git("tag", "-a", "prereg-v2-seal", "-m", "sealed")
+        self.git("checkout", "-q", "-")
+        self.tool(0)
+        x = inference_v2.seal(self.repo)
+        self.assertFalse(x["ok"])
+        self.assertEqual(x["why"], "prereg-v2-seal is not an ancestor of HEAD")
+
+    def test_bin_seal_check_absent_or_failing_fails_and_passing_passes(self):
+        self.git("tag", "-a", "prereg-v2-seal", "-m", "sealed")
+        tag, commit = self.git("rev-parse", "prereg-v2-seal"), self.git("rev-parse", "HEAD")
+        self.commit("a.txt", "one\ntwo\n")
+        head = self.git("rev-parse", "HEAD")
+        x = inference_v2.seal(self.repo)
+        self.assertEqual((x["ok"], x["why"]), (False, "bin/seal-check is not in this tree (PREREG-v2 §10 builds it in the draft tree)"))
+        self.commit("stray.txt", "x\n")                                                  # committed so the tool's file is the only new one
+        self.tool(1, "seal-check: 1 hunk outside the allowlist: stray.txt")
+        x = inference_v2.seal(self.repo)
+        self.assertEqual((x["ok"], x["why"]), (False, "bin/seal-check --since prereg-v2-seal exited 1"))
+        self.assertIn("    | seal-check: 1 hunk outside the allowlist: stray.txt", x["lines"])
+        self.tool(0)
+        x = inference_v2.seal(self.repo)
+        self.assertEqual((x["ok"], x["why"]), (True, None))
+        with open(os.path.join(self.repo, "argv.txt"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read().split()[1:], ["--since", "prereg-v2-seal"])
+        text = "\n".join(x["lines"])
+        head2 = self.git("rev-parse", "HEAD")
+        self.assertIn(f"  seal: annotated tag prereg-v2-seal {tag} (commit {commit}), an ancestor of HEAD {head2}", text)
+        self.assertIn("  bin/seal-check --since prereg-v2-seal: exit 0, its output verbatim:\n"
+                      "    | seal-check: since prereg-v2-seal: every hunk is on the allowlist", text)
+        self.assertIn("  git diff -U0 prereg-v2-seal HEAD (PREREG-v2 §13), verbatim:\n", text)
+        self.assertIn("\n    | +two\n", text)
+        self.assertIn("\n    | +++ b/stray.txt\n", text)
+        self.assertNotEqual(head, head2)
+
+    def test_git_missing_fails_and_says_so(self):
+        with mock.patch.object(inference_v2.subprocess, "run", side_effect=FileNotFoundError(2, "No such file", "git")):
+            x = inference_v2.seal(self.repo)
+        self.assertFalse(x["ok"])
+        self.assertTrue(x["why"].startswith("git could not be run: "), x["why"])
 
 
 def _write(path, rows):
@@ -629,9 +715,11 @@ class Main(unittest.TestCase):
     28 d) and after (d28 open without --accept-pending); --out written once; the whole text end to end, and again in a
     fresh interpreter under another hash seed, byte for byte. SOL's log only: d28 open (two rows after the sample)."""
     ARGV = ["--sample", "--accept-pending"]
+    SEAL = {"ok": True, "why": None, "lines": ["  seal: <a passing seal check, the fixture's>"]}
 
     @classmethod
     def setUpClass(cls):
+        cls.seal = cls.enterClassContext(mock.patch.object(inference_v2, "seal", return_value=cls.SEAL))
         cls.data = cls.enterClassContext(tempfile.TemporaryDirectory())
         cls.enterClassContext(mock.patch.object(config, "DATA", cls.data))
         cls.enterClassContext(mock.patch.object(config, "DECISIONS", os.path.join(cls.data, "decisions.jsonl")))
@@ -664,6 +752,8 @@ class Main(unittest.TestCase):
         self.assertIn("--accept-pending given and the sample's last day was open", self.text)
         self.assertIn(f"looks.tsv: absent", self.text)
         self.assertIn("one value, as §13 requires\n", self.text)                         # SHA is also this tree's (pinned)
+        self.assertIn("\n  seal: <a passing seal check, the fixture's>\n", self.text)
+        self.assertNotIn("NO_SEAL", self.text)
         self.assertIn("H1 B - C, argmax, 0 bps, c = 900 s, seed 20261023, one-sided alpha 1/40, bound sorted[4]", self.text)
         self.assertIn("F4 B - A, argmax, 0 bps, c = 900 s, seed 20261027, one-sided alpha 1/160, bound sorted[1]", self.text)
         self.assertIn("fee columns 0, 2, 10, 25, 50, 90 bps (§6)", self.text)                  # PREREG-v2 §6's, whatever config's are
@@ -692,6 +782,13 @@ class Main(unittest.TestCase):
                     code, out, err = self._main(["--sample"])
                 self.assertEqual((code, out), (3, ""), t0)
                 self.assertIn(why, err)
+            failed = {"ok": False, "why": "no annotated tag prereg-v2-seal", "lines": ["  seal: no annotated tag prereg-v2-seal"]}
+            with mock.patch.object(inference_v2, "seal", return_value=failed):
+                code, out, err = self._main(["--sample"])
+            self.assertEqual((code, out), (3, ""))
+            self.assertIn("refusing: the seal check failed: no annotated tag prereg-v2-seal. PREREG-v2 §10, §13: make results"
+                          " checks prereg-v2-seal and runs bin/seal-check --since prereg-v2-seal, and refuses unless NO_SEAL=1"
+                          " (make results NO_SEAL=1, --no-seal), which RESULTS-v2 §0 records", err)
         with self.assertRaises(SystemExit) as cm, contextlib.redirect_stderr(io.StringIO()):
             inference_v2.main([], now=AFTER)                                             # --sample is the one mode
         self.assertEqual(cm.exception.code, 2)
@@ -701,6 +798,19 @@ class Main(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("no log at any product's store", err)
 
+    def test_no_seal_runs_on_a_failed_check_and_records_it(self):
+        failed = {"ok": False, "why": "no annotated tag prereg-v2-seal", "lines": ["  seal: no annotated tag prereg-v2-seal"]}
+        with mock.patch.object(inference_v2, "seal", return_value=failed):
+            code, text, err = self._main(self.ARGV + ["--no-seal"])
+        self.assertEqual(code, 0, err)
+        self.assertIn("  NO_SEAL=1 (§13): the seal check FAILED and this run was made anyway: no annotated tag prereg-v2-seal\n", text)
+        self.assertIn("\n§0. The seal", text)
+        self.assertIn("\n  seal: no annotated tag prereg-v2-seal\n  NO_SEAL=1 given (make results NO_SEAL=1, --no-seal): the seal"
+                      " check FAILED and was overridden: no annotated tag prereg-v2-seal\n", text)
+        code, text, err = self._main(self.ARGV + ["--no-seal"])                          # given, though the check passes
+        self.assertEqual(code, 0, err)
+        self.assertIn("  NO_SEAL=1 given (make results NO_SEAL=1, --no-seal): the seal check passed; nothing was overridden\n", text)
+
     def test_a_fresh_interpreter_under_another_hash_seed_prints_the_same_bytes(self):
         boot = ("import sys; sys.path[:0] = [sys.argv[1], sys.argv[2]]\n"
                 "from unittest import mock\n"
@@ -709,7 +819,8 @@ class Main(unittest.TestCase):
                 "config.DATA, config.DECISIONS, config.HALT = data, data + '/decisions.jsonl', data + '/HALT'\n"
                 "config.PRODUCTS = tuple(sys.argv[5].split(','))\n"
                 "dash.PREREG_V2_PATH, dash.v2_spec_sha = prereg, (lambda spec=None: sys.argv[6])\n"
-                "sys.exit(inference_v2.main(sys.argv[8:], now=float(sys.argv[7]), resamples=%d))\n" % R_MAIN)
+                "inference_v2.seal = lambda repo=None: %r\n"
+                "sys.exit(inference_v2.main(sys.argv[8:], now=float(sys.argv[7]), resamples=%d))\n" % (self.SEAL, R_MAIN))
         p = subprocess.run([sys.executable, "-c", boot, os.path.join(REPO, "tests"), REPO, self.data,
                             dash.PREREG_V2_PATH, ",".join(config.PRODUCTS), SHA, str(AFTER)] + self.ARGV,
                            cwd=REPO, env=dict(os.environ, PYTHONHASHSEED="4242", PYTHONIOENCODING="utf-8"), capture_output=True, timeout=300)
