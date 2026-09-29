@@ -19,8 +19,10 @@
 # read"): propose.sh's exit code, and from the night's log its FAIL line (if any), the `claude exit` line, the
 # `claude model` line and the "user memory not loaded" line. Then PASS or FAIL: PASS needs exit 0, `claude exit 0`
 # (the OAuth token answered), a `claude model` line naming exactly one id, the memory line, and every product of §2 in
-# the digest (the "digest products" line). Whether --settings still
-# applies under the fresh config dir is not read from the log: §8 asks it of the trial, and a person checks it.
+# the digest (the "digest products" line). §8 also asks the trial to show whether --settings still applies under the
+# fresh config dir; it cannot from what §8 lets it read: the call has no tools (--tools ""), so nightly/settings.json,
+# a deny list, changes nothing the reply, the log or the CLI's transcript records. The script says so on a NOT SHOWN
+# line beside every verdict, so a PASS does not read as §8's whole trial: settling it is the author's, before the tag.
 # Exit 0 on PASS, 1 on FAIL, 2 on usage, 3 when no temp root outside the checkouts can be made.
 set -u
 
@@ -86,6 +88,7 @@ printf '%s\n' "$lines" | grep -q 'user memory not loaded' || ok=0
 model="$(printf '%s\n' "$lines" | sed -n 's/.* propose claude model \([^ ]*\) .*/\1/p')"
 case "$model" in ""|unrecorded|*,*) ok=0 ;; esac
 [ $k -eq $n ] || ok=0
+echo "NOT SHOWN: whether --settings still applies under the fresh config dir (PREREG-v2 section 8 asks it; with no tools the settings file's deny list changes nothing this run records, so the author settles it before the draft tag)"
 if [ $ok -eq 1 ]; then echo "PASS: claude answered, one model ($model), user memory not loaded, a synthetic log of every product"; exit 0; fi
 echo "FAIL: see the lines above (PREREG-v2 section 8: on a config-dir failure the fallback is to pin the user-memory sha)"
 exit 1

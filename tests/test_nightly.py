@@ -1164,6 +1164,15 @@ class LiveBranch(unittest.TestCase):
             self.assertIn(f"FAIL proposals/{DAY.isoformat()}.json exists", fh.read())
 
 
+# §8 asks the trial to show "whether `--settings` still applies under the fresh config dir", and reads only the exit
+# code and two log lines. The call runs with no tools, so nightly/settings.json (a deny list) changes nothing a reply,
+# the log or the CLI's transcript records: the trial cannot show it, and says so beside every verdict (the S4 refuter's
+# defect 4) instead of leaving a PASS to read as §8's whole trial.
+SETTINGS_NOT_SHOWN = ("NOT SHOWN: whether --settings still applies under the fresh config dir (PREREG-v2 section 8 "
+                      "asks it; with no tools the settings file's deny list changes nothing this run records, so the "
+                      "author settles it before the draft tag)")
+
+
 class TrialNight(unittest.TestCase):
     """nightly/trial-night.sh (PREREG-v2 §8's trial night before the draft tag), driven with a stub claude on a copy of
     the tree whose slow model id is set: a temp root outside the checkout with a synthetic log and data/HALT (no Jev
@@ -1233,7 +1242,8 @@ class TrialNight(unittest.TestCase):
         self.assertRegex(out[3], r" propose claude model claude-stub-1 \(read from the CLI's transcript of this call; requested "
                                  + re.escape(f"--model {STUB_MODEL})") + "$")
         self.assertEqual(out[4], "digest products: SOL-USD ETH-USD XRP-USD (3 of the 3 PREREG-v2 section 2 names)")
-        self.assertEqual(out[5:], ["PASS: claude answered, one model (claude-stub-1), user memory not loaded, "
+        self.assertEqual(out[5], SETTINGS_NOT_SHOWN)
+        self.assertEqual(out[6:], ["PASS: claude answered, one model (claude-stub-1), user memory not loaded, "
                                    "a synthetic log of every product"])
         with open(os.path.join(self.saw, "prompt"), encoding="utf-8") as fh:
             prompt = fh.read()
@@ -1267,6 +1277,7 @@ class TrialNight(unittest.TestCase):
         self.assertIn(" propose claude exit 7 after ", r.stdout)
         self.assertIn(" propose FAIL claude exit 7 ", r.stdout)
         self.assertIn("claude model unrecorded", r.stdout)
+        self.assertIn("\n" + SETTINGS_NOT_SHOWN + "\nFAIL: ", r.stdout)       # said on a FAIL too
         self.assertTrue(r.stdout.rstrip().endswith("(PREREG-v2 section 8: on a config-dir failure the fallback is to pin the user-memory sha)"))
         copy = self._tree("")                                                  # the id not yet in §8: no call at all
         r, _ = self._run(copy, self._stub('echo called >"%s/called"\n' % self.saw))
@@ -1293,7 +1304,8 @@ class TrialNight(unittest.TestCase):
         r, _ = self._run(self._tree(products=("SOL-USD", "ETH-USD"), named=("SOL-USD", "ETH-USD", "none")),
                          self._stub(self.ANSWER.replace("SAW", self.saw)))
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("\ndigest products: SOL-USD ETH-USD (2 of the 2 PREREG-v2 section 2 names)\nPASS: ", r.stdout)
+        self.assertIn("\ndigest products: SOL-USD ETH-USD (2 of the 2 PREREG-v2 section 2 names)\n" + SETTINGS_NOT_SHOWN
+                      + "\nPASS: ", r.stdout)
 
     def test_a_digest_without_every_product_is_a_fail(self):
         # propose.sh must hand the digest every product's log: a night whose digest lacks one is not the trial §8 asks
@@ -1308,7 +1320,8 @@ class TrialNight(unittest.TestCase):
                                        "if p != 'XRP-USD']\n" + main))
         r, _ = self._run(copy, self._stub(self.ANSWER.replace("SAW", self.saw)))
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn("\ndigest products: SOL-USD ETH-USD (2 of the 3 PREREG-v2 section 2 names)\nFAIL: ", r.stdout)
+        self.assertIn("\ndigest products: SOL-USD ETH-USD (2 of the 3 PREREG-v2 section 2 names)\n" + SETTINGS_NOT_SHOWN
+                      + "\nFAIL: ", r.stdout)
 
     def test_the_claude_model_line_must_name_exactly_one_id(self):
         # §8: "`claude model` must log exactly one id". Everything else passes here (exit 0, claude exit 0, the memory
