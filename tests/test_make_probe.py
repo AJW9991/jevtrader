@@ -33,6 +33,10 @@ class MakeTargets(unittest.TestCase):
             self.assertEqual(r.stdout.splitlines()[-1],
                              "chosen: none (D is void; PREREG-v2 §2: D becomes the next UTC day, once, named in §14)")
             self.assertEqual(sorted(os.listdir(d)), ["run.json"])          # offline and read-only
+            self.assertNotIn("tick: 0.0002 (--tick-override)", r.stdout.splitlines())
+            r = _make("probe-summarize", f"DIR={d}", "TICK_OVERRIDE=ETH-USD=0.0002")   # builder's open issue 5
+            self.assertIn("tick: 0.0002 (--tick-override)", r.stdout.splitlines(), r.stderr)
+            self.assertEqual(r.returncode, 2, r.stderr)
 
     def test_phony_and_the_default_goal(self):
         with open(os.path.join(REPO, "Makefile"), encoding="utf-8") as fh:

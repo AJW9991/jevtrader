@@ -78,7 +78,8 @@ backup:
 # PREREG-v2's two tools, never part of `test` or of anything the loop runs. `quantiles` and `probe` print their
 # usage only: bin/fill1k-quantiles reads a decision log (features only) and a probe run sends public Coinbase GETs
 # for a whole UTC day, so a person runs either by hand with its arguments. `probe-summarize DIR=...` is offline:
-# it reads a probe directory and prints each criterion per product and the two chosen.
+# it reads a probe directory and prints each criterion per product and the two chosen (exit 1 when the day is
+# void); TICK_OVERRIDE=P=0.01,... passes --tick-override for a product whose book grid the mode misread.
 quantiles:
 	$(PY) bin/fill1k-quantiles --help
 
@@ -86,5 +87,5 @@ probe:
 	$(PY) bin/probe --help
 
 probe-summarize:
-	@test -n "$(DIR)" || { echo "usage: make probe-summarize DIR=<the probe's --out directory>" >&2; exit 2; }
-	$(PY) bin/probe summarize "$(DIR)"
+	@test -n "$(DIR)" || { echo "usage: make probe-summarize DIR=<the probe's --out directory> [TICK_OVERRIDE=P=0.01,...]" >&2; exit 2; }
+	$(PY) bin/probe summarize "$(DIR)"$(if $(TICK_OVERRIDE), --tick-override "$(TICK_OVERRIDE)")
