@@ -3,7 +3,7 @@
 
     bin/probe run --day YYYY-MM-DD --out DIR [--candidates ETH-USD,XRP-USD,...] [--start-second 30] [--every 60] [--max-minutes N]
     bin/probe volume --out DIR [--candidates ...]
-    bin/probe summarize DIR [--tick-override ETH-USD=0.01,...] [--candidates ...]
+    bin/probe summarize DIR [--tick-override ETH-USD=0.01,...]
 
 run: every --every seconds, at wall second --start-second (with the defaults, at :30 of every
 minute), takes each candidate in order through loop/feed.py::snapshot (the three public GETs the
@@ -11,7 +11,8 @@ loop uses: book, candles, ticker; 10 s timeout; no retry) and loop/state.py::fea
 only), and appends one JSON line to DIR/<product>.jsonl: tick_id (the minute floor of ts_rx),
 ts_rx, ok, mid, spread_bps, fill1k_bps, fill1k_short, vol5_usd, trades_5m, feed_age_s and
 tick_est, the smallest positive price step between consecutive levels of the book, one for the
-asks and one for the bids. A snapshot or a features() call that raises writes a row with ok false
+asks and one for the bids, and gets: what each GET did, "ok" or the feed's error text (a transport
+failure; the feed tolerates a failed ticker, so only this record shows one). A snapshot or a features() call that raises writes a row with ok false
 and the exception's one-line text (no traceback), and the next candidate goes on. It samples the
 UTC day --day only: before it, it waits; it exits 0 after the day's last slot (23:59:30 with the
 defaults), and refuses a day that is already over. SIGTERM finishes the row being written and exits
@@ -21,11 +22,17 @@ all four are the same (PREREG-v2 §2: a restart within D continues it), and is r
 volume: once, 30 closed ONE_DAY candles per candidate (the venue's candles endpoint, public) ->
 DIR/volume.json: per product sum(volume * close) / 30 in USD a day, the number of daily rows, and
 the raw candles.
-summarize: offline, from DIR alone: per product the rows, the GET-success share, the tick size
-(the mode of the rows' tick_est values, both sides, or --tick-override), the median fill1k_bps,
-the nearest-rank quantiles of h and the atoms, the liq occupancy under the h-rule of
-bin/fill1k-quantiles (imported from it: one rule, one place), the 30-day volume, PASS/FAIL per
-criterion with the failing value, and the first two passing products in candidate order.
+summarize: offline, from DIR alone (run.json names the day and the candidates; a DIR without it is
+refused): D's minutes with a row for any candidate, the transport failures summed over the
+candidates, and whether D stands (PREREG-v2 §2: void when the probe wrote rows in fewer than 95 %
+of its 1,440 minutes, or transport failures exceed 5 % of its minutes summed over the candidates);
+per product the rows (one a minute: a repeated minute is counted and dropped), the ok rows (the
+three public GETs answered and features computed) as a share of those minutes, the tick size (the
+mode of the ok rows' tick_est values, both sides, ties the smaller, or --tick-override), the median
+fill1k_bps, the nearest-rank quantiles of h and the atoms, the liq occupancy of the ok rows under
+the h-rule of bin/fill1k-quantiles (imported from it: one rule, one place), the 30-day volume,
+PASS/FAIL per criterion with the failing value, and the first two passing products in candidate
+order, or none when D is void (exit 1).
 
 Rate: this process never starts two requests less than MIN_GAP_S = 1 s apart. feed.snapshot sends
 its three GETs back to back, so the probe routes each of them through its pacer by wrapping
@@ -50,13 +57,17 @@ REPO = os.path.dirname(HERE)
 sys.path.insert(0, REPO)
 from loop import config, feed, state                       # noqa: E402
 
-# ---- PREREG-v2 §2 (the criteria as revised 2026-09-29) -----------------------------------------
+# ---- PREREG-v2 §2 (main at 467cda4, "the recheck applied", 2026-09-29) --------------------------
 DEFAULT_CANDIDATES = ("ETH-USD", "XRP-USD", "DOGE-USD", "AVAX-USD", "LINK-USD", "ADA-USD")   # walked in this order
 CHOOSE = 2                          # the first two that pass all four
 MIN_USD_PER_DAY = 50e6              # 30-day volume on the venue's own daily candles, USD a day
 VOLUME_DAYS = 30
 OCC_LO_PCT, OCC_HI_PCT = 3, 90      # every liq word, under the h-rule, holds 3-90 % of the day's rows
-GETS_MIN_PCT = 95                   # "the three public GETs answer": this share of the day's rows at least
+OK_ROWS_MIN_PCT = 99                # (1) a candidate's ok rows (the three public GETs answered, features
+                                    #     computed) >= this share of D's minutes with a row for any candidate
+DAY_MINUTES = 1440
+DAY_ROWS_MIN_PCT = 95               # D is void if the probe wrote rows in fewer than this share of its minutes,
+TRANSPORT_MAX_PCT = 5               # or if transport failures exceed this share of D's minutes x candidates
 STABLECOINS = frozenset({"USDT", "USDC", "DAI", "PYUSD", "EURC", "GUSD", "USDP", "PAX", "TUSD", "FDUSD",
                          "USDS", "RLUSD", "BUSD", "LUSD", "FRAX", "USDE"})   # a base here fails "no stablecoin"
 # ---- the probe's own ---------------------------------------------------------------------------
@@ -67,6 +78,8 @@ FORBIDDEN = (LIVE_CHECKOUT,) + tuple(config.FORBIDDEN_PREFIXES)
 FORBIDDEN_NAMES = ("data", "logs")  # no path component of DIR, typed or resolved, is one of these (any case)
 PRODUCT_RE = re.compile(r"^[A-Z0-9]{2,12}-[A-Z]{3,5}$")
 DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+MINUTE_RE = re.compile(r"^\d{8}T\d{4}00Z$")
+GETS = ("book", "candles", "ticker")    # the feed's three public GETs, in the order it sends them
 
 
 def _load_rule():
@@ -194,14 +207,35 @@ class Pacer:
         self.last = self.clock()
 
 
+def endpoint(url):
+    """Which of the feed's three GETs a URL is ("book", "candles", "ticker"), or its path."""
+    for name, part in (("book", "/product_book?"), ("candles", "/candles?"), ("ticker", "/ticker?")):
+        if part in url:
+            return name
+    return url[len(feed.BASE):].split("?")[0]
+
+
 @contextlib.contextmanager
-def paced_feed(pacer):
-    """Every feed._get in this process waits for the pacer first; restored on the way out."""
+def paced_feed(pacer, gets=None):
+    """Every feed._get in this process waits for the pacer first, and what it did goes into `gets`
+    (the caller's dict, emptied per snapshot): endpoint -> "ok" when it answered, or the FeedError's
+    text when it did not (http-..., net ..., parse ...: a transport failure). feed.snapshot
+    swallows a failed ticker (trades_5m -1), so this record is the only place that failure shows.
+    Restored on the way out."""
     real = feed._get
 
     def get(url):
         pacer.mark()
-        return real(url)
+        name = endpoint(url)
+        try:
+            j = real(url)
+        except feed.FeedError as e:
+            if gets is not None:
+                gets[name] = str(e)
+            raise
+        if gets is not None:
+            gets[name] = "ok"
+        return j
     feed._get = get
     try:
         yield
@@ -242,8 +276,11 @@ def min_step(levels):
     return round(min(d), 10) if d else None
 
 
-def probe_one(product, wall, pacer):
-    """One candidate: the snapshot and its features -> the row (never raises on a feed failure)."""
+def probe_one(product, wall, pacer, gets=None):
+    """One candidate: the snapshot and its features -> the row (never raises on a feed failure). `gets`
+    is the dict paced_feed records each GET's outcome in; the row carries a copy."""
+    gets = {} if gets is None else gets
+    gets.clear()
     pacer.ready()
     now = wall()
     row = {"tick_id": tick_id(now), "ts_rx": iso(now), "product": product}
@@ -255,6 +292,7 @@ def probe_one(product, wall, pacer):
                    feed_age_s=snap["feed_age_s"], tick_est={"ask": min_step(snap["asks"]), "bid": min_step(snap["bids"])})
     except Exception as e:                                   # a FeedError, a short window: the row says which
         row.update(ok=False, error=one_line(e))
+    row["gets"] = dict(gets)
     return row
 
 
@@ -262,7 +300,7 @@ def append(out, product, row):
     try:
         line = json.dumps(row, sort_keys=True, allow_nan=False)
     except ValueError as e:                                  # a non-finite number: the row says so instead
-        row = {k: row[k] for k in ("tick_id", "ts_rx", "product")}
+        row = {k: row[k] for k in ("tick_id", "ts_rx", "product", "gets") if k in row}
         row.update(ok=False, error=one_line(e))
         line = json.dumps(row, sort_keys=True)
     fd = open_plain(os.path.join(out, f"{product}.jsonl"), os.O_WRONLY | os.O_APPEND | os.O_CREAT)
@@ -329,7 +367,8 @@ def run(args, wall, mono, sleep, err):
     err.write(f"{iso(wall())} probe: run {args.day} into {out}, {len(args.candidates)} candidates,"
               f" every {args.every} s at second {args.start_second}\n")
     try:
-        with paced_feed(pacer):
+        gets = {}
+        with paced_feed(pacer, gets):
             while not stop:
                 slot = next_slot(max(wall(), day0, last + 1), args.start_second, args.every)   # never one slot twice
                 if slot >= day1:
@@ -349,7 +388,7 @@ def run(args, wall, mono, sleep, err):
                 for p in args.candidates:
                     if stop:
                         break
-                    row = append(out, p, probe_one(p, wall, pacer))
+                    row = append(out, p, probe_one(p, wall, pacer, gets))
                     counts[p]["ok" if row["ok"] else "error"] += 1
                 if stop:
                     break                                     # a cycle cut short is not counted as one
@@ -411,12 +450,14 @@ def volume(args, wall, mono, sleep, err):
 
 # ---- summarize -----------------------------------------------------------------------------------
 def read_rows(path, day):
-    """The rows of one product's file whose tick_id falls on `day` (every row when day is None),
-    with the counts of lines that did not parse and rows outside the day."""
-    rows, bad, outside = [], 0, 0
+    """One product's rows of `day`, one a minute, and the counts of what was not read: "bad" (a line
+    that does not parse, or is not a probe row: a dict with a minute tick_id, a boolean ok and a gets
+    record), "outside" (a row of another day) and "repeated" (a second row for a minute already read;
+    the first is kept, as the run writes one a minute)."""
+    rows, c, seen = [], {"bad": 0, "outside": 0, "repeated": 0}, set()
     if not os.path.exists(path):
-        return rows, bad, outside
-    prefix = day.replace("-", "") + "T" if day else None
+        return rows, c
+    prefix = day.replace("-", "") + "T"
     with open(path, "rb") as fh:
         for raw in fh:
             if not raw.strip():
@@ -424,28 +465,47 @@ def read_rows(path, day):
             try:
                 r = json.loads(raw.decode("utf-8"))
             except (UnicodeDecodeError, ValueError, RecursionError):
-                bad += 1
+                c["bad"] += 1
                 continue
-            if not isinstance(r, dict) or not isinstance(r.get("tick_id"), str):
-                bad += 1
+            if not (isinstance(r, dict) and isinstance(r.get("tick_id"), str) and MINUTE_RE.match(r["tick_id"])
+                    and isinstance(r.get("ok"), bool) and isinstance(r.get("gets"), dict)):
+                c["bad"] += 1
                 continue
-            if prefix and not r["tick_id"].startswith(prefix):
-                outside += 1
+            if not r["tick_id"].startswith(prefix):
+                c["outside"] += 1
                 continue
+            if r["tick_id"] in seen:
+                c["repeated"] += 1
+                continue
+            seen.add(r["tick_id"])
             rows.append(r)
-    return rows, bad, outside
+    return rows, c
 
 
 def _num(x):
     return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
 
 
+def ok_row(r):
+    """PREREG-v2 §2 (1): the three public GETs answered (each "ok" in the row's record, and the ticker's
+    answer a trades list: trades_5m >= 0) and features computed (ok true)."""
+    t = r.get("trades_5m")
+    return (r["ok"] is True and all(r["gets"].get(k) == "ok" for k in GETS)
+            and isinstance(t, int) and not isinstance(t, bool) and t >= 0)
+
+
+def transport_failed(r):
+    """A GET of this row did not answer (its record holds the feed's error text). A window the feed
+    refused (a quiet minute, a stale candle) is not one: its three GETs answered."""
+    return any(v != "ok" for v in r["gets"].values())
+
+
 def tick_mode(rows):
-    """The most frequent tick_est value over both sides of the ok rows (ties: the smaller), with
-    its count and the number of values seen; (None, 0, 0) when no row recorded one."""
+    """The most frequent tick_est value over both sides of `rows` (ties: the smaller), with its count
+    and the number of values seen; (None, 0, 0) when no row recorded one."""
     seen = collections.Counter()
     for r in rows:
-        te = r.get("tick_est") if r.get("ok") is True else None
+        te = r.get("tick_est")
         for side in ("ask", "bid"):
             v = te.get(side) if isinstance(te, dict) else None
             if _num(v) and v > 0:
@@ -460,27 +520,30 @@ def _pct(k, n):
     return f"{k}/{n} {100.0 * k / n:.2f}%" if n else f"{k}/{n}"
 
 
-def summarize_product(p, rows, bad, outside, tick_override, vol):
-    """(lines, passed) for one candidate."""
-    ok = [r for r in rows if r.get("ok") is True]
-    gets = [r for r in ok if isinstance(r.get("trades_5m"), int) and not isinstance(r.get("trades_5m"), bool)
-            and r["trades_5m"] >= 0]
-    lines = [f"== {p}", f"rows: {len(rows)} (ok {len(ok)}, error {len(rows) - len(ok)};"
-                        f" unparsable lines {bad}, rows outside the day {outside})",
-             f"get_success: {_pct(len(gets), len(rows))}"]
+def summarize_product(p, rows, counts, minutes, tick_override, vol):
+    """(lines, passed) for one candidate; `minutes` is the number of D's minutes in which the probe
+    wrote a row for any candidate, criterion (1)'s denominator."""
+    ok = [r for r in rows if ok_row(r)]
+    computed = sum(1 for r in rows if r["ok"] is True)
+    lines = [f"== {p}",
+             f"rows: {len(rows)} (features computed {computed}, error {len(rows) - computed};"
+             f" unparsable lines {counts['bad']}, rows outside the day {counts['outside']},"
+             f" repeated minutes {counts['repeated']})",
+             f"transport_failures: {sum(1 for r in rows if transport_failed(r))}",
+             f"ok_rows: {_pct(len(ok), minutes)}"]
     if tick_override is not None:
         tick = tick_override
         lines.append(f"tick: {tick!r} (--tick-override)")
     else:
-        tick, agree, seen = tick_mode(rows)
+        tick, agree, seen = tick_mode(ok)
         lines.append(f"tick: {tick!r} (mode of {seen} per-side minimum steps, {agree} at the mode)" if tick
-                     else "tick: none (no row recorded a step)")
+                     else "tick: none (no ok row recorded a step)")
     fills = [(r["fill1k_bps"], r["mid"]) for r in ok if r.get("fill1k_short") is not True
              and _num(r.get("fill1k_bps")) and r["fill1k_bps"] >= 0 and _num(r.get("mid")) and r["mid"] > 0]
     n_short = sum(1 for r in ok if r.get("fill1k_short") is True)
     crit = {}
-    crit["gets"] = (None if rows and len(gets) * 100 >= GETS_MIN_PCT * len(rows)
-                    else f"{_pct(len(gets), len(rows))} < {GETS_MIN_PCT}%")
+    crit["ok_rows"] = (None if minutes and len(ok) * 100 >= OK_ROWS_MIN_PCT * minutes
+                       else f"{_pct(len(ok), minutes)} < {OK_ROWS_MIN_PCT}%")
     if fills:
         lines.append(f"fill1k_bps_median: {statistics.median(f for f, _ in fills):.4f}")
     if fills and tick:
@@ -498,7 +561,7 @@ def summarize_product(p, rows, bad, outside, tick_override, vol):
                if not OCC_LO_PCT * occ["n"] <= occ["counts"][w] * 100 <= OCC_HI_PCT * occ["n"]]
         crit["occupancy"] = None if occ["within"] else ", ".join(off) + f" outside [{OCC_LO_PCT}%, {OCC_HI_PCT}%]"
     else:
-        crit["occupancy"] = "no usable fill1k_bps row" if not fills else "no tick size"
+        crit["occupancy"] = "no usable fill1k_bps in an ok row" if not fills else "no tick size"
     v = (vol or {}).get(p) if isinstance(vol, dict) else None
     if vol is None:
         crit["volume"] = "no volume.json"
@@ -513,11 +576,23 @@ def summarize_product(p, rows, bad, outside, tick_override, vol):
         crit["volume"] = None if v["usd_per_day"] >= MIN_USD_PER_DAY else f"{v['usd_per_day']:.0f} < {MIN_USD_PER_DAY:.0f}"
     base = p.split("-")[0]
     crit["stablecoin"] = f"{base} is a stablecoin" if base in STABLECOINS else None
-    for k in ("gets", "volume", "occupancy", "stablecoin"):
+    for k in ("ok_rows", "volume", "occupancy", "stablecoin"):
         lines.append(f"criterion_{k}: " + ("PASS" if crit[k] is None else f"FAIL {crit[k]}"))
     passed = all(c is None for c in crit.values())
     lines.append(f"result: {'PASS' if passed else 'FAIL'}")
     return lines, passed
+
+
+def day_verdict(minutes, transport, n_candidates):
+    """The reasons D is void (PREREG-v2 §2), empty when it stands: the probe wrote rows in fewer than
+    DAY_ROWS_MIN_PCT of D's 1,440 minutes, or its transport failures exceed TRANSPORT_MAX_PCT of D's
+    minutes summed over the candidates (1,440 x the number of candidates)."""
+    why = []
+    if minutes * 100 < DAY_ROWS_MIN_PCT * DAY_MINUTES:
+        why.append(f"rows in {_pct(minutes, DAY_MINUTES)} of D's minutes < {DAY_ROWS_MIN_PCT}%")
+    if transport * 100 > TRANSPORT_MAX_PCT * DAY_MINUTES * n_candidates:
+        why.append(f"transport failures {_pct(transport, DAY_MINUTES * n_candidates)} > {TRANSPORT_MAX_PCT}%")
+    return why
 
 
 def summarize(args, out, err):
@@ -525,16 +600,17 @@ def summarize(args, out, err):
     if not os.path.isdir(d):
         err.write(f"probe: no directory {d}\n")
         return 2
-    day, candidates = None, list(args.candidates)
     mpath = os.path.join(d, "run.json")
-    if os.path.exists(mpath):
-        try:
-            with open(mpath, encoding="utf-8") as fh:
-                m = json.load(fh)
-            day, candidates = m["day"], list(m["candidates"])
-        except (OSError, ValueError, KeyError, TypeError) as e:
-            err.write(f"probe: {mpath} cannot be read ({one_line(e)})\n")
-            return 2
+    try:
+        with open(mpath, encoding="utf-8") as fh:
+            m = json.load(fh)
+        day, candidates = m["day"], list(m["candidates"])
+    except FileNotFoundError:
+        err.write(f"probe: {d} has no run.json: summarize reads a run's directory (its day is in run.json)\n")
+        return 2
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        err.write(f"probe: {mpath} cannot be read ({one_line(e)})\n")
+        return 2
     vol = None
     vpath = os.path.join(d, "volume.json")
     if os.path.exists(vpath):
@@ -544,24 +620,34 @@ def summarize(args, out, err):
         except (OSError, ValueError, AttributeError) as e:
             err.write(f"probe: {vpath} cannot be read ({one_line(e)})\n")
             return 2
-    lines = [f"dir: {d}",
-             f"day: {day}" if day else "day: not recorded (no run.json): every row is read",
-             f"candidates: {' '.join(candidates)}",
-             f"criteria: get_success >= {GETS_MIN_PCT}% of the day's rows; volume >= {MIN_USD_PER_DAY:.0f} USD/day"
-             f" over {VOLUME_DAYS} days; each liq word in [{OCC_LO_PCT}%, {OCC_HI_PCT}%] under the h-rule;"
-             " not a stablecoin"]
+    read = {p: read_rows(os.path.join(d, f"{p}.jsonl"), day) for p in candidates}
+    minutes = len({r["tick_id"] for rows, _ in read.values() for r in rows})
+    transport = sum(1 for rows, _ in read.values() for r in rows if transport_failed(r))
+    void = day_verdict(minutes, transport, len(candidates))
+    lines = [f"dir: {d}", f"day: {day}", f"candidates: {' '.join(candidates)}",
+             f"criteria: (1) ok rows (the three public GETs answered, features computed) >= {OK_ROWS_MIN_PCT}%"
+             f" of D's minutes with a row for any candidate; (2) volume >= {MIN_USD_PER_DAY:.0f} USD/day over"
+             f" {VOLUME_DAYS} days; (3) each liq word in [{OCC_LO_PCT}%, {OCC_HI_PCT}%] of D's ok rows under the"
+             " h-rule; (4) not a stablecoin",
+             f"minutes_with_rows: {_pct(minutes, DAY_MINUTES)} (D is void below {DAY_ROWS_MIN_PCT}%)",
+             f"transport_failures: {_pct(transport, DAY_MINUTES * len(candidates))} of D's minutes summed over"
+             f" {len(candidates)} candidates (D is void above {TRANSPORT_MAX_PCT}%)",
+             "day_valid: " + ("no (" + "; ".join(void) + ")" if void else "yes")]
     passing = []
     for p in candidates:
-        rows, bad, outside = read_rows(os.path.join(d, f"{p}.jsonl"), day)
-        plines, ok = summarize_product(p, rows, bad, outside, args.tick_override.get(p), vol)
+        rows, counts = read[p]
+        plines, ok = summarize_product(p, rows, counts, minutes, args.tick_override.get(p), vol)
         lines += plines
         if ok:
             passing.append(p)
     chosen = passing[:CHOOSE]
-    tail = "" if len(chosen) == CHOOSE else f" (only {len(chosen)} of {len(candidates)} passed; v2 runs on what passed)"
-    lines.append(f"chosen: {' '.join(chosen) if chosen else 'none'}{tail}")
+    if void:
+        lines.append(f"chosen: none (D is void; PREREG-v2 §2: D becomes the next UTC day, once, named in §14)")
+    else:
+        tail = "" if len(chosen) == CHOOSE else f" (only {len(chosen)} of {len(candidates)} passed; v2 runs on what passed)"
+        lines.append(f"chosen: {' '.join(chosen) if chosen else 'none'}{tail}")
     out.write("\n".join(lines) + "\n")
-    return 0
+    return 1 if void else 0
 
 
 # ---- the command line ----------------------------------------------------------------------------
@@ -636,8 +722,6 @@ def main(argv=None, wall=time.time, mono=time.monotonic, sleep=time.sleep, out=N
     s = sub.add_parser("summarize", help="offline: the criteria per candidate and the two chosen")
     s.add_argument("dir")
     s.add_argument("--tick-override", type=_overrides, default={})
-    s.add_argument("--candidates", type=_candidates, default=DEFAULT_CANDIDATES,
-                   help="the order when DIR has no run.json")
     args = ap.parse_args(argv)
     if args.cmd == "summarize":
         return summarize(args, out, err)

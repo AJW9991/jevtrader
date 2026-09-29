@@ -28,8 +28,10 @@ class MakeTargets(unittest.TestCase):
             with open(os.path.join(d, "run.json"), "w", encoding="utf-8") as fh:
                 json.dump({"day": "2026-09-24", "candidates": ["ETH-USD"]}, fh)
             r = _make("probe-summarize", f"DIR={d}")
-            self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertEqual(r.stdout.splitlines()[-1], "chosen: none (only 0 of 1 passed; v2 runs on what passed)")
+            self.assertEqual(r.returncode, 2, r.stderr)                  # summarize exits 1: a day with no row is void
+            self.assertIn("day_valid: no (rows in 0/1440 0.00% of D's minutes < 95%)", r.stdout.splitlines())
+            self.assertEqual(r.stdout.splitlines()[-1],
+                             "chosen: none (D is void; PREREG-v2 §2: D becomes the next UTC day, once, named in §14)")
             self.assertEqual(sorted(os.listdir(d)), ["run.json"])          # offline and read-only
 
     def test_phony_and_the_default_goal(self):

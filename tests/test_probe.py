@@ -68,6 +68,7 @@ class Offline(unittest.TestCase):
         self.calls = []
         self.refuse = lambda url: None                      # a test sets it to fail some URLs (not self.fail: that is TestCase's)
         self.hook = lambda url: None                        # and this to act mid-request
+        self.candles = CANDLES                              # and this to send other candles
 
     def fixture_get(self, clock):
         def get(url):
@@ -81,7 +82,7 @@ class Offline(unittest.TestCase):
                 j["pricebook"]["product_id"] = _product(url)
                 return j
             if "/candles?" in url:
-                return json.loads(CANDLES)
+                return json.loads(self.candles)
             if "/ticker?" in url:
                 return json.loads(TRADES)
             raise AssertionError(url)
@@ -101,7 +102,7 @@ class Offline(unittest.TestCase):
 
 class Run(Offline):
     KEYS = {"tick_id", "ts_rx", "product", "ok", "mid", "spread_bps", "fill1k_bps", "fill1k_short", "vol5_usd",
-            "trades_5m", "feed_age_s", "tick_est"}
+            "trades_5m", "feed_age_s", "tick_est", "gets"}
 
     def test_one_cycle_one_row_per_candidate_paced(self):
         clock, out = Clock(T_FIX), os.path.join(self.tmp, "out")
@@ -120,6 +121,7 @@ class Run(Offline):
             self.assertAlmostEqual(row["mid"], 114.96)
             self.assertEqual(row["tick_est"], {"ask": 0.01, "bid": 0.01})
             self.assertGreaterEqual(row["trades_5m"], 0)
+            self.assertEqual(row["gets"], {"book": "ok", "candles": "ok", "ticker": "ok"})
         with open(os.path.join(out, "run.json"), encoding="utf-8") as fh:
             self.assertEqual(json.load(fh), {"day": DAY, "candidates": list(probe.DEFAULT_CANDIDATES), "every": 1,
                                              "start_second": 30})
@@ -141,9 +143,10 @@ class Run(Offline):
                                "--candidates", "ETH-USD,XRP-USD,DOGE-USD"], clock)
         self.assertEqual(code, 0, err)
         (bad,) = self.rows(out, "XRP-USD")
-        self.assertEqual(set(bad), {"tick_id", "ts_rx", "product", "ok", "error"})
+        self.assertEqual(set(bad), {"tick_id", "ts_rx", "product", "ok", "error", "gets"})
         self.assertIs(bad["ok"], False)
         self.assertEqual(bad["error"], "FeedError: http-503 /product_book")
+        self.assertEqual(bad["gets"], {"book": "http-503 /product_book"})     # the two after it never ran
         self.assertIs(self.rows(out, "ETH-USD")[0]["ok"], True)
         self.assertIs(self.rows(out, "DOGE-USD")[0]["ok"], True)
         self.assertNotIn("Traceback", err)
@@ -151,6 +154,38 @@ class Run(Offline):
         gaps = [b - a for (a, _), (b, _) in zip(self.calls, self.calls[1:])]
         self.assertEqual(len(self.calls), 7)                 # the failed book stops XRP's snapshot: 3 + 1 + 3
         self.assertTrue(all(g >= 1.0 for g in gaps), gaps)
+
+    def test_a_failed_ticker_shows_in_the_row(self):
+        # the feed tolerates a dead ticker (trades_5m -1, the snapshot assembles): only the record shows it
+        clock, out = Clock(T_FIX), os.path.join(self.tmp, "out")
+        self.refuse = lambda url: "http-503 /products/XRP-USD/ticker" if "XRP-USD/ticker" in url else None
+        code, err = self.main(["run", "--day", DAY, "--out", out, "--max-minutes", "1", "--every", "1",
+                               "--candidates", "ETH-USD,XRP-USD"], clock)
+        self.assertEqual(code, 0, err)
+        (xrp,) = self.rows(out, "XRP-USD")
+        self.assertIs(xrp["ok"], True)
+        self.assertEqual(xrp["trades_5m"], -1)
+        self.assertEqual(xrp["gets"], {"book": "ok", "candles": "ok", "ticker": "http-503 /products/XRP-USD/ticker"})
+        self.assertFalse(probe.ok_row(xrp))
+        self.assertTrue(probe.transport_failed(xrp))
+        self.assertTrue(probe.ok_row(self.rows(out, "ETH-USD")[0]))
+
+    def test_a_quiet_minute_is_an_error_row_but_no_transport_failure(self):
+        # the refuter's gap.py: one closed minute missing inside the window; all three GETs answered
+        j = json.loads(CANDLES)
+        starts = sorted(int(c["start"]) for c in j["candles"])
+        j["candles"] = [c for c in j["candles"] if int(c["start"]) != starts[-10]]
+        self.candles = json.dumps(j)
+        clock, out = Clock(T_FIX), os.path.join(self.tmp, "out")
+        code, err = self.main(["run", "--day", DAY, "--out", out, "--max-minutes", "1", "--every", "1",
+                               "--candidates", "ETH-USD"], clock)
+        self.assertEqual(code, 0, err)
+        (row,) = self.rows(out, "ETH-USD")
+        self.assertIs(row["ok"], False)
+        self.assertTrue(row["error"].startswith("FeedError: candles: not contiguous"), row["error"])
+        self.assertEqual(row["gets"], {"book": "ok", "candles": "ok", "ticker": "ok"})
+        self.assertFalse(probe.ok_row(row))                 # features were not computed: not an ok row
+        self.assertFalse(probe.transport_failed(row))       # and not a transport failure either
 
     def test_a_short_window_is_an_error_row_too(self):
         clock, out = Clock(T_FIX), os.path.join(self.tmp, "out")
@@ -460,24 +495,34 @@ class Volume(Offline):
         self.assertEqual(self.calls[1][0] - self.calls[0][0], 1.0)
 
 
+ALL_OK = {"book": "ok", "candles": "ok", "ticker": "ok"}
+NO_BOOK = {"book": "http-503 /product_book"}
+
+
 def _prow(m, fill, ok=True, day="20260924", tick=0.0001):
     t = f"{day}T{m // 60:02d}{m % 60:02d}00Z"
-    if not ok:
-        return {"tick_id": t, "ts_rx": "x", "product": "P", "ok": False, "error": "FeedError: http-503 /product_book"}
+    if not ok:                                              # a transport failure: the book did not answer
+        return {"tick_id": t, "ts_rx": "x", "product": "P", "ok": False, "error": "FeedError: http-503 /product_book",
+                "gets": dict(NO_BOOK)}
     return {"tick_id": t, "ts_rx": "x", "product": "P", "ok": True, "mid": 0.5, "spread_bps": 1.0, "fill1k_bps": fill,
             "fill1k_short": False, "vol5_usd": 1.0, "trades_5m": 10, "feed_age_s": 5.0,
-            "tick_est": {"ask": tick, "bid": tick}}
+            "tick_est": {"ask": tick, "bid": tick}, "gets": dict(ALL_OK)}
 
 
-# h = fill * 0.5 / (1e4 * 0.0001 / 2) = fill: 3 x 1, 13 x 2, 3 x 3, 1 x 4
-PASSING = [1.0] * 3 + [2.0] * 13 + [3.0] * 3 + [4.0]
+# h = fill * 0.5 / (1e4 * 0.0001 / 2) = fill. One row a minute over D's 1,440: a 20-minute pattern of
+# 3 x 1, 13 x 2, 3 x 3, 1 x 4 repeated 72 times (15 %, 65 %, 15 %, 5 %), or every minute at 2
+PASSING = ([1.0] * 3 + [2.0] * 13 + [3.0] * 3 + [4.0]) * 72
+FLAT = [2.0] * 1440
+TEN = tuple(range(3, 13))                                   # ten minutes whose pattern value is 2
 
 
-def _write_product(d, product, fills, extra=True):
-    rows = [_prow(m, f) for m, f in enumerate(fills)]
+def _write_product(d, product, fills, errors=(), extra=True):
+    """One row a minute from fills; the minutes in `errors` are transport-failure rows instead."""
+    rows = [_prow(m, f, ok=m not in errors) for m, f in enumerate(fills)]
     if extra:
-        rows[5]["tick_est"] = {"ask": 0.0002, "bid": 0.0002}        # the mode still wins
-        rows.append(_prow(30, None, ok=False))                       # an error row: 20/21 GETs answered
+        if len(rows) > 20:
+            rows[20]["tick_est"] = {"ask": 0.0002, "bid": 0.0002}    # the mode still wins
+        rows.append(_prow(0, 9.0))                                   # minute 0 again: counted, not read
         rows.append(_prow(0, 9.0, day="20260925"))                   # the next day: not read
     with open(os.path.join(d, f"{product}.jsonl"), "w", encoding="utf-8") as fh:
         for r in rows:
@@ -486,12 +531,12 @@ def _write_product(d, product, fills, extra=True):
             fh.write('{"tick_id": "20260924T0031')                      # torn
 
 
-def _write_dir(d, products, volumes):
+def _write_dir(d, products, volumes, errors=None):
     os.makedirs(d, exist_ok=True)
     with open(os.path.join(d, "run.json"), "w", encoding="utf-8") as fh:
         json.dump({"day": DAY, "candidates": list(products), "every": 60, "start_second": 30}, fh)
     for p, fills in products.items():
-        _write_product(d, p, fills)
+        _write_product(d, p, fills, (errors or {}).get(p, ()))
     with open(os.path.join(d, "volume.json"), "w", encoding="utf-8") as fh:
         json.dump({"products": {p: {"usd_per_day": v, "rows": 30, "candles": []} for p, v in volumes.items()}}, fh)
 
@@ -502,52 +547,126 @@ def _summarize(d, *extra):
     return code, out.getvalue(), err.getvalue()
 
 
+CRITERIA = ("criteria: (1) ok rows (the three public GETs answered, features computed) >= 99% of D's minutes with a"
+            " row for any candidate; (2) volume >= 50000000 USD/day over 30 days; (3) each liq word in [3%, 90%] of"
+            " D's ok rows under the h-rule; (4) not a stablecoin")
+VOID = "chosen: none (D is void; PREREG-v2 §2: D becomes the next UTC day, once, named in §14)"
+
+
+def _h(p10, p50, p90, p99, mx):
+    return [f"h_p10: {p10:.4f}", f"h_p50: {p50:.4f}", f"h_p90: {p90:.4f}", f"h_p99: {p99:.4f}", f"h_max: {mx:.4f}"]
+
+
 class Summarize(unittest.TestCase):
     def setUp(self):
         self.tmp = self.enterContext(tempfile.TemporaryDirectory())
 
-    def test_one_passing_one_failing_volume_one_failing_occupancy(self):
+    def test_passing_and_failing_ok_rows_volume_and_occupancy(self):
         d = os.path.join(self.tmp, "probe")
-        _write_dir(d, {"ETH-USD": PASSING, "XRP-USD": PASSING, "DOGE-USD": [2.0] * 20},
-                   {"ETH-USD": 40e6, "XRP-USD": 60e6, "DOGE-USD": 80e6})
+        _write_dir(d, {"ETH-USD": PASSING, "XRP-USD": PASSING, "DOGE-USD": FLAT, "AVAX-USD": PASSING},
+                   {"ETH-USD": 60e6, "XRP-USD": 40e6, "DOGE-USD": 80e6, "AVAX-USD": 70e6},
+                   errors={"ETH-USD": TEN, "AVAX-USD": TEN + tuple(m + 20 for m in TEN)})
         code, out, err = _summarize(d)
         self.assertEqual(code, 0, err)
-        tail = ["h_p10: 1.0000", "h_p50: 2.0000", "h_p90: 3.0000", "h_p99: 4.0000", "h_max: 4.0000",
-                "a10: 1", "a90: 3", "rule: deep iff h < 1.5; thin iff h > 3.5 or fill1k_short; normal otherwise",
-                "thin_fallback: no", "deep: 3/20 15.00%", "normal: 16/20 80.00%", "thin: 1/20 5.00%"]
-        head = ["rows: 21 (ok 20, error 1; unparsable lines 1, rows outside the day 1)",
-                "get_success: 20/21 95.24%",
-                "tick: 0.0001 (mode of 40 per-side minimum steps, 38 at the mode)",
-                "fill1k_bps_median: 2.0000"]
+        tail = ["a10: 1", "a90: 3", "rule: deep iff h < 1.5; thin iff h > 3.5 or fill1k_short; normal otherwise",
+                "thin_fallback: no"]
+        seen = "unparsable lines 1, rows outside the day 1, repeated minutes 1)"
         self.assertEqual(out.splitlines(), [
-            f"dir: {d}",
-            "day: 2026-09-24",
-            "candidates: ETH-USD XRP-USD DOGE-USD",
-            "criteria: get_success >= 95% of the day's rows; volume >= 50000000 USD/day over 30 days;"
-            " each liq word in [3%, 90%] under the h-rule; not a stablecoin",
-            "== ETH-USD", *head, *tail,
-            "volume_usd_per_day: 40000000 (30 daily rows / 30)",
-            "criterion_gets: PASS", "criterion_volume: FAIL 40000000 < 50000000", "criterion_occupancy: PASS",
-            "criterion_stablecoin: PASS", "result: FAIL",
-            "== XRP-USD", *head, *tail,
+            f"dir: {d}", "day: 2026-09-24", "candidates: ETH-USD XRP-USD DOGE-USD AVAX-USD", CRITERIA,
+            "minutes_with_rows: 1440/1440 100.00% (D is void below 95%)",
+            "transport_failures: 30/5760 0.52% of D's minutes summed over 4 candidates (D is void above 5%)",
+            "day_valid: yes",
+            "== ETH-USD",                                   # ten transport failures: 1430 ok minutes, 99.31 %
+            f"rows: 1440 (features computed 1430, error 10; {seen}", "transport_failures: 10",
+            "ok_rows: 1430/1440 99.31%", "tick: 0.0001 (mode of 2860 per-side minimum steps, 2858 at the mode)",
+            "fill1k_bps_median: 2.0000", *_h(1, 2, 3, 4, 4), *tail,
+            "deep: 216/1430 15.10%", "normal: 1142/1430 79.86%", "thin: 72/1430 5.03%",
             "volume_usd_per_day: 60000000 (30 daily rows / 30)",
-            "criterion_gets: PASS", "criterion_volume: PASS", "criterion_occupancy: PASS",
+            "criterion_ok_rows: PASS", "criterion_volume: PASS", "criterion_occupancy: PASS",
             "criterion_stablecoin: PASS", "result: PASS",
-            "== DOGE-USD", *head[:3], "fill1k_bps_median: 2.0000",
-            "h_p10: 2.0000", "h_p50: 2.0000", "h_p90: 2.0000", "h_p99: 2.0000", "h_max: 2.0000",
+            "== XRP-USD",
+            f"rows: 1440 (features computed 1440, error 0; {seen}", "transport_failures: 0",
+            "ok_rows: 1440/1440 100.00%", "tick: 0.0001 (mode of 2880 per-side minimum steps, 2878 at the mode)",
+            "fill1k_bps_median: 2.0000", *_h(1, 2, 3, 4, 4), *tail,
+            "deep: 216/1440 15.00%", "normal: 1152/1440 80.00%", "thin: 72/1440 5.00%",
+            "volume_usd_per_day: 40000000 (30 daily rows / 30)",
+            "criterion_ok_rows: PASS", "criterion_volume: FAIL 40000000 < 50000000", "criterion_occupancy: PASS",
+            "criterion_stablecoin: PASS", "result: FAIL",
+            "== DOGE-USD",
+            f"rows: 1440 (features computed 1440, error 0; {seen}", "transport_failures: 0",
+            "ok_rows: 1440/1440 100.00%", "tick: 0.0001 (mode of 2880 per-side minimum steps, 2878 at the mode)",
+            "fill1k_bps_median: 2.0000", *_h(2, 2, 2, 2, 2),
             "a10: 2", "a90: 2", "rule: deep iff h < 2.5; thin iff h > 1.5 or fill1k_short; normal otherwise",
-            "thin_fallback: yes (thin held 0/20 0.00% under h > 2.5)",
-            "deep: 20/20 100.00%", "normal: 0/20 0.00%", "thin: 0/20 0.00%",
+            "thin_fallback: yes (thin held 0/1440 0.00% under h > 2.5)",
+            "deep: 1440/1440 100.00%", "normal: 0/1440 0.00%", "thin: 0/1440 0.00%",
             "volume_usd_per_day: 80000000 (30 daily rows / 30)",
-            "criterion_gets: PASS", "criterion_volume: PASS",
+            "criterion_ok_rows: PASS", "criterion_volume: PASS",
             "criterion_occupancy: FAIL deep 100.00%, normal 0.00%, thin 0.00% outside [3%, 90%]",
             "criterion_stablecoin: PASS", "result: FAIL",
-            "chosen: XRP-USD (only 1 of 3 passed; v2 runs on what passed)",
+            "== AVAX-USD",                                  # twenty: 1420 ok minutes, 98.61 % < 99 %
+            f"rows: 1440 (features computed 1420, error 20; {seen}", "transport_failures: 20",
+            "ok_rows: 1420/1440 98.61%", "tick: 0.0001 (mode of 2840 per-side minimum steps, 2838 at the mode)",
+            "fill1k_bps_median: 2.0000", *_h(1, 2, 3, 4, 4), *tail,
+            "deep: 216/1420 15.21%", "normal: 1132/1420 79.72%", "thin: 72/1420 5.07%",
+            "volume_usd_per_day: 70000000 (30 daily rows / 30)",
+            "criterion_ok_rows: FAIL 1420/1440 98.61% < 99%", "criterion_volume: PASS", "criterion_occupancy: PASS",
+            "criterion_stablecoin: PASS", "result: FAIL",
+            "chosen: ETH-USD (only 1 of 4 passed; v2 runs on what passed)",
         ])
+
+    def test_a_partial_day_is_void_and_a_partial_candidate_fails(self):
+        # the refuter's S1/S2: a candidate with 20 rows passed on 20/20. The share is of D's minutes with a row
+        # for any candidate, and a day with rows in fewer than 95 % of its 1,440 minutes chooses nothing
+        d = os.path.join(self.tmp, "probe")
+        _write_dir(d, {"ETH-USD": PASSING[:1300], "ADA-USD": PASSING[:20]}, {"ETH-USD": 60e6, "ADA-USD": 60e6})
+        code, out, _ = _summarize(d)
+        lines = out.splitlines()
+        self.assertEqual(code, 1)
+        self.assertIn("minutes_with_rows: 1300/1440 90.28% (D is void below 95%)", lines)
+        self.assertIn("day_valid: no (rows in 1300/1440 90.28% of D's minutes < 95%)", lines)
+        ada = lines[lines.index("== ADA-USD"):]
+        self.assertIn("ok_rows: 20/1300 1.54%", ada)
+        self.assertIn("criterion_ok_rows: FAIL 20/1300 1.54% < 99%", ada)
+        self.assertIn("result: FAIL", ada)
+        self.assertIn("result: PASS", lines[lines.index("== ETH-USD"):lines.index("== ADA-USD")])
+        self.assertEqual(lines[-1], VOID)                    # ETH passed its criteria; a void D chooses nothing
+        _write_dir(d, {"ETH-USD": PASSING[:1368]}, {"ETH-USD": 60e6})   # 1368/1440 is exactly 95 %: D stands
+        code, out, _ = _summarize(d)
+        self.assertEqual(code, 0)
+        self.assertIn("day_valid: yes", out.splitlines())
+        self.assertEqual(out.splitlines()[-1], "chosen: ETH-USD (only 1 of 1 passed; v2 runs on what passed)")
+
+    def test_transport_failures_above_five_percent_void_the_day(self):
+        d = os.path.join(self.tmp, "probe")
+        for n, void in ((144, False), (145, True)):          # of 1440 x 2 = 2880 candidate-minutes; 144 is 5.00 %
+            _write_dir(d, {"ETH-USD": PASSING, "XRP-USD": PASSING}, {"ETH-USD": 60e6, "XRP-USD": 60e6},
+                       errors={"XRP-USD": tuple(range(n))})
+            code, out, _ = _summarize(d)
+            lines = out.splitlines()
+            self.assertEqual(code, 1 if void else 0, n)
+            share = f"{n}/2880 {100.0 * n / 2880:.2f}%"
+            self.assertIn(f"transport_failures: {share} of D's minutes summed over 2 candidates (D is void above 5%)",
+                          lines)
+            self.assertEqual(lines[lines.index("transport_failures: " + share + " of D's minutes summed over 2"
+                                               " candidates (D is void above 5%)") + 1],
+                             f"day_valid: no (transport failures {share} > 5%)" if void else "day_valid: yes")
+            self.assertEqual(lines[-1], VOID if void else "chosen: ETH-USD (only 1 of 2 passed; v2 runs on what passed)")
+
+    def test_what_is_an_ok_row_and_what_is_a_transport_failure(self):
+        good = _prow(0, 1.0)
+        quiet = {**_prow(1, None, ok=False), "error": "FeedError: candles: not contiguous inside the last 300",
+                 "gets": dict(ALL_OK)}                     # the refuter's gap.py: three answers, no features
+        no_ticker = {**_prow(2, 1.0), "trades_5m": -1, "gets": {**ALL_OK, "ticker": "http-503 /products/P/ticker"}}
+        no_list = {**_prow(3, 1.0), "trades_5m": -1}        # the ticker answered with no trades list
+        refused = _prow(4, None, ok=False)
+        self.assertEqual([probe.ok_row(r) for r in (good, quiet, no_ticker, no_list, refused)],
+                         [True, False, False, False, False])
+        self.assertEqual([probe.transport_failed(r) for r in (good, quiet, no_ticker, no_list, refused)],
+                         [False, False, True, False, True])
 
     def test_the_first_two_passing_in_candidate_order(self):
         d = os.path.join(self.tmp, "probe")
-        order = {"ETH-USD": PASSING, "XRP-USD": PASSING, "DOGE-USD": [2.0] * 20, "AVAX-USD": PASSING, "LINK-USD": PASSING}
+        order = {"ETH-USD": PASSING, "XRP-USD": PASSING, "DOGE-USD": FLAT, "AVAX-USD": PASSING, "LINK-USD": PASSING}
         _write_dir(d, order, {"ETH-USD": 1e6, "XRP-USD": 60e6, "DOGE-USD": 80e6, "AVAX-USD": 50e6, "LINK-USD": 9e9})
         code, out, _ = _summarize(d)
         self.assertEqual(code, 0)
@@ -563,25 +682,33 @@ class Summarize(unittest.TestCase):
         self.assertIn("tick: 0.0002 (--tick-override)", lines)
         self.assertIn("a10: 1", lines)                       # h halves: p10 0.5 rounds up to 1
         self.assertIn("a90: 2", lines)
-        self.assertIn("rows: 0 (ok 0, error 0; unparsable lines 0, rows outside the day 0)", lines)
-        self.assertIn("criterion_gets: FAIL 0/0 < 95%", lines)
-        self.assertIn("criterion_occupancy: FAIL no usable fill1k_bps row", lines)
+        self.assertIn("rows: 0 (features computed 0, error 0; unparsable lines 0, rows outside the day 0,"
+                      " repeated minutes 0)", lines)
+        self.assertIn("criterion_ok_rows: FAIL 0/1440 0.00% < 99%", lines)
+        self.assertIn("criterion_occupancy: FAIL no usable fill1k_bps in an ok row", lines)
         self.assertIn("criterion_volume: FAIL not in volume.json", lines)
         os.remove(os.path.join(d, "volume.json"))
         self.assertIn("criterion_volume: FAIL no volume.json", _summarize(d)[1].splitlines())
         self.assertEqual(_summarize(os.path.join(self.tmp, "absent"))[0], 2)
+        os.remove(os.path.join(d, "run.json"))               # no run.json: no day to judge
+        code, _, err = _summarize(d)
+        self.assertEqual(code, 2)
+        self.assertIn("no run.json", err)
 
     def test_a_stablecoin_fails(self):
         rows = [_prow(m, f) for m, f in enumerate(PASSING)]
-        lines, passed = probe.summarize_product("USDT-USD", rows, 0, 0, None, {"USDT-USD": {"usd_per_day": 1e9}})
+        counts = {"bad": 0, "outside": 0, "repeated": 0}
+        lines, passed = probe.summarize_product("USDT-USD", rows, counts, 1440, None, {"USDT-USD": {"usd_per_day": 1e9}})
         self.assertFalse(passed)
         self.assertIn("criterion_stablecoin: FAIL USDT is a stablecoin", lines)
-        lines, passed = probe.summarize_product("ETH-USD", rows, 0, 0, None, {"ETH-USD": {"usd_per_day": 1e9}})
+        lines, passed = probe.summarize_product("ETH-USD", rows, counts, 1440, None, {"ETH-USD": {"usd_per_day": 1e9}})
         self.assertTrue(passed, lines)
 
     def test_criteria_constants_are_the_prereg_revision(self):
         self.assertEqual(probe.DEFAULT_CANDIDATES, ("ETH-USD", "XRP-USD", "DOGE-USD", "AVAX-USD", "LINK-USD", "ADA-USD"))
         self.assertEqual((probe.MIN_USD_PER_DAY, probe.VOLUME_DAYS, probe.CHOOSE), (50e6, 30, 2))
+        self.assertEqual((probe.OK_ROWS_MIN_PCT, probe.DAY_MINUTES, probe.DAY_ROWS_MIN_PCT, probe.TRANSPORT_MAX_PCT),
+                         (99, 1440, 95, 5))
         self.assertEqual((probe.OCC_LO_PCT, probe.OCC_HI_PCT), (probe.RULE.OCC_LO_PCT, probe.RULE.OCC_HI_PCT))
         self.assertEqual((probe.OCC_LO_PCT, probe.OCC_HI_PCT), (3, 90))
 
