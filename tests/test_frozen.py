@@ -34,6 +34,10 @@ THRESHOLDS = {                                       # what a row's words, colum
     "FLOW_P_LO": 10, "FLOW_P_HI": 90, "TREND_Z": 1.0, "VOL_RATIO_LO": 0.5, "VOL_RATIO_HI": 2.0,
     "WINDOW_MIN": 300, "DEAD_BAND_BPS": 5.0, "FEE_BPS_PRIMARY": 0.0,
     "CONF_THRESHOLDS": (0.50, 0.70, 0.85, 0.99), "VETO_NOUL": 0.5, "PBUY": 0.60, "NOUL_TAIL": 0.99,
+    # PREREG-v2 §2-§4, §10 (pinned 2026-09-29 with the constants themselves; the two probe products, their TICK_P
+    # and atoms join PRODUCTS here in the commit that adds them to loop/config.py, before the draft tag)
+    "PRODUCTS": ("SOL-USD",), "TICK_P": {"SOL-USD": 0.01}, "LIQ_ATOMS": {"SOL-USD": (1, 4)},
+    "LIQ_THIN_FALLBACK": {"SOL-USD": False}, "CADENCES": (900, 3600, 14400), "FROZEN_A": "v2",
 }
 
 ALPHABET = {"liq": ("thin", "normal", "deep"), "flow": ("quiet", "organic", "bot_war"),
