@@ -155,6 +155,23 @@ class Quantiles(unittest.TestCase):
             "thin_fallback: yes (thin held 0/30 0.00% < 3% under h > 2.5; applied once: thin iff h > 1.5)",
             "deep: 30/30 100.00%", "normal: 0/30 0.00%", "thin: 0/30 0.00%", "every_word_within_3_90: no"])
 
+    def test_a_row_that_names_no_product_is_left_out(self):
+        # mode, absence, tick_id and product select the rows: a live row in the window without a product
+        # string is not a SOL row, so it is counted with the other products and read no further
+        path = os.path.join(self.tmp, "noproduct.jsonl")
+        rows = [_row(m, 1.0) for m in range(3)]
+        rows.append({k: v for k, v in _row(3, 9.0).items() if k != "product"})
+        rows += [_row(4, 9.0, product=None), _row(5, 9.0, product=7), _row(6, 9.0, product="SOLUSD-ETH")]
+        with open(path, "w", encoding="utf-8") as fh:
+            for r in rows:
+                fh.write(json.dumps(r) + "\n")
+        code, out, err = _run("--log", path, "--t0", T0, "--until", UNTIL)
+        self.assertEqual(code, 0, err)
+        lines = out.splitlines()
+        for want in ("rows_parsed: 7", "live_rows_other_product: 4", "live_rows: 3", "quantile_rows: 3",
+                     "fill1k_bps_max: 1.0000"):
+            self.assertIn(want, lines)
+
     def test_usage_errors_and_an_empty_window_exit_2(self):
         self.assertEqual(_run("--log", self.log, "--t0", "2026-09-25", "--until", UNTIL)[0], 2)
         self.assertEqual(_run("--log", self.log, "--t0", UNTIL, "--until", T0)[0], 2)

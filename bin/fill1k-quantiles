@@ -6,8 +6,10 @@
 Reads the log one line at a time (one JSON object per line; a line that does not parse, the
 torn last line of a log the loop is still appending to included, is skipped and counted) and
 keeps the live rows, mode "live" and absence null, with t0 <= tick_id < until (half-open;
-tick_id is fixed-width, so the comparison is on the strings). A row that names a product
-whose base is not --product-base is counted and left out. From each kept row it reads
+tick_id is fixed-width, so the comparison is on the strings). A row that names no product, or
+a product whose base is not --product-base, is counted and left out: mode, absence, tick_id and
+product select the rows (PREREG-v2 §3), and every row the loop writes names its product (one
+of the writer's keys). From each kept row it reads
 features.fill1k_bps, features.fill1k_short and features.mid, and nothing else from the
 features: never a field the model wrote, never anything joined to a later tick (the sample
 is blind until 2026-10-23; tests/test_fill1k_quantiles.py scans this file for the words).
@@ -118,7 +120,7 @@ def read_log(fh, t0, until, base):
             c["outside"] += 1
             continue
         product = row.get("product")
-        if isinstance(product, str) and product.split("-")[0] != base:
+        if not (isinstance(product, str) and product.split("-")[0] == base):   # no product is not this one
             c["other_product"] += 1
             continue
         c["live"] += 1
