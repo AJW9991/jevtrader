@@ -23,7 +23,8 @@ T0_RE = re.compile(r"T0 \(first tick_id of day 1\): `(\d{8}T\d{6}Z)`")   # PRERE
 PREREG_PATH = os.path.join(config.REPO, "PREREG.md")   # the repository's PREREG, read at call time (tests pin a fixture)
 # ---- PREREG-v2 §12 and the v2 spec sha: what the v2 withholding reads (report, status, dash; inference later) ----
 PREREG_V2_PATH = os.path.join(config.REPO, "PREREG-v2.md")   # the repository's PREREG-v2, read at call time (tests pin a fixture)
-T0_V2_RE = re.compile(r"T0_v2: `([^`\n]*)`")                  # §12's field line: T_first_v2: `...`   T0_v2: `...`   Sealed by: ...
+T0_V2_RE = re.compile(r"T0_v2[ \t]*:[ \t]*`([^`\n]*)`")        # §12's field line: T_first_v2: `...`   T0_v2: `...`   Sealed by: ...
+T0_V2_ANY = re.compile(r"T0_v2[ \t]*:")                        # any field-like mention in §12: each must be T0_V2_RE's form
 BLANK_RE = re.compile(r"_*")                                  # an unfilled field is underscores (or nothing)
 TICK_RE = re.compile(r"\d{8}T\d{4}00Z")                        # a filled T0_v2 is a tick_id: a minute boundary (§2)
 V1_SPEC_SHA = "5d4f355e181739ae2a65a6496ecddf195d9dde7c7668c7606c19d795c5254ca7"   # sha256 of `git show prereg-v1:SPEC.md`:
@@ -83,7 +84,9 @@ def read_t0(prereg=None):
 def read_t0_v2(prereg=None):
     """PREREG-v2.md §12's T0_v2 as epoch seconds, or None while the field is blank (underscores) or the file or
     the field is absent. A filled field that is not a tick_id on a minute boundary ('20261024T220000Z') raises
-    ValueError: a malformed seal must be loud, never read as unsealed. Read at call time from `prereg` or the
+    ValueError: a malformed seal must be loud, never read as unsealed. So does a field-like `T0_v2:` in §12 whose
+    value is not in backticks, and a second such field; spaces or tabs around the colon and inside the backticks
+    are only spacing and are read. Read at call time from `prereg` or the
     repository's own PREREG-v2.md (PREREG_V2_PATH), whatever a reader's --prereg or --t0 say (§9.5)."""
     try:
         with open(prereg or PREREG_V2_PATH, encoding="utf-8") as fh:
@@ -91,7 +94,12 @@ def read_t0_v2(prereg=None):
     except OSError:
         return None
     sec = re.search(r"^## 12\..*?(?=^## |\Z)", text, re.M | re.S)          # §12 only: the field is filled there
-    m = T0_V2_RE.search(sec.group(0)) if sec else None
+    body = sec.group(0) if sec else ""
+    found, fields = T0_V2_ANY.findall(body), T0_V2_RE.findall(body)
+    if len(found) != len(fields) or len(fields) > 1:        # a field without its backticks, or two fields: never "blank"
+        bad = [l.strip() for l in body.splitlines() if T0_V2_ANY.search(l)]
+        raise ValueError(f"PREREG-v2 §12's T0_v2 field is not one `T0_v2: `YYYYMMDDTHHMM00Z`` (or blank underscores): {bad!r}")
+    m = T0_V2_RE.search(body)
     if m is None or BLANK_RE.fullmatch(m.group(1).strip()):
         return None
     v = m.group(1).strip()
@@ -840,8 +848,9 @@ def main(argv=None):
     args = ap.parse_args(argv)
     try:
         t0_v2 = read_t0_v2()                                                     # PREREG-v2 §12, once sealed, is the sample's T0
-    except ValueError:
-        t0_v2 = None                                                             # malformed: the v1 T0 below, and report says why
+    except ValueError as e:                                                      # malformed: the v1 T0 below, said here as report says it
+        t0_v2 = None
+        sys.stderr.write(f"dash: {e}; the page uses PREREG.md §11's T0 (or --t0) meanwhile\n")
     try:
         t0 = report._t0(args.t0) if args.t0 else (None if args.no_t0 else t0_v2 if t0_v2 is not None else read_t0(args.prereg))
     except ValueError:

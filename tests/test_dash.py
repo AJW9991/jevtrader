@@ -811,6 +811,21 @@ class DashV2(unittest.TestCase):
             fh.write("x\n")
         self.assertIn("HALT present", self._page())
 
+    def test_a_malformed_t0_v2_is_said_on_stderr(self):
+        # "a malformed seal must be loud": a filled T0_v2 the reader cannot take (here without its backticks) is not read
+        # as blank in silence; the page falls back to PREREG.md §11's T0 and says why on stderr, as report does
+        path = os.path.join(self.data, "PREREG-v2-bad.md")
+        from fixture_prereg import text_v2
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text_v2().replace("T0_v2: `________`", "T0_v2: 20261024T220000Z"))
+        self.enterContext(mock.patch.object(dash, "PREREG_V2_PATH", path))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            page = self._page()
+        self.assertIn("dash: PREREG-v2 §12's T0_v2 field is not one", err.getvalue())
+        self.assertIn("the page uses PREREG.md §11's T0", err.getvalue())
+        self.assertNotIn("T0 2026-10-24T22:00Z", page)
+
     def test_health_only_neither_agreement(self):
         page = self._page()
         body = page.split("<div class='foot'>")[0]

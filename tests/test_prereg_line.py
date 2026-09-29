@@ -63,6 +63,38 @@ class PreregV2Line(unittest.TestCase):
                 fh.write(text_v2())
             self.assertIsNone(dash.read_t0_v2(p))
 
+    def _read_line(self, field_line):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "PREREG-v2.md")
+            text = text_v2()
+            start = text.index("T_first_v2:")
+            end = text.index("\n", start)
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write(text[:start] + field_line + text[end:])
+            return dash.read_t0_v2(p)
+
+    def test_a_filled_field_in_a_near_form_is_read_or_loud_never_blank(self):
+        # "a malformed seal must be loud": a filled T0_v2 written a little differently from `T0_v2: `...`` must never
+        # read as blank (None), which keeps everything withheld with no clock to lift it, makes --sample say "blank"
+        # and the dash fall back to v1's T0. Spaces around the backticked value are only spacing and read; a value
+        # without its backticks, or a second T0_v2 field in §12, is a ValueError (2026-09-29 refuter: p5.md, p6.md).
+        tick = dash.report.tick_epoch("20261025T220000Z")
+        for line in ("T_first_v2: `________`   T0_v2:  `20261025T220000Z`   Sealed by: `________`   on: `________`",
+                     "T_first_v2: `________`   T0_v2:\t`20261025T220000Z`   Sealed by: `________`   on: `________`",
+                     "T_first_v2: `________`   T0_v2 : `20261025T220000Z`   Sealed by: `________`   on: `________`",
+                     "T_first_v2: `________`   T0_v2: ` 20261025T220000Z `   Sealed by: `________`   on: `________`"):
+            self.assertEqual(self._read_line(line), tick, line)
+        self.assertIsNone(self._read_line("T_first_v2: `________`   T0_v2:  `________`   Sealed by: `________`   on: `________`"))
+        for line in ("T_first_v2: `________`   T0_v2: 20261025T220000Z   Sealed by: `________`   on: `________`",
+                     "T_first_v2: `________`   T0_v2: ________   Sealed by: `________`   on: `________`",
+                     "T_first_v2: `________`   T0_v2: '20261025T220000Z'   Sealed by: `________`   on: `________`",
+                     "T0_v2: `20261025T220000Z`\nT0_v2: `20261026T220000Z`"):
+            with self.assertRaises(ValueError, msg=line):
+                self._read_line(line)
+        # the §12 table row that names the field ("T_first_v2, T0_v2, sealed-by, ...") is not a field line
+        self.assertIsNone(self._read_line("| T_first_v2, T0_v2, sealed-by, sealed-on | at sealing | the logs |\n"
+                                          "T_first_v2: `________`   T0_v2: `________`   Sealed by: `________`   on: `________`"))
+
     def test_the_v2_spec_sha(self):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "SPEC.md")
