@@ -56,6 +56,27 @@ class Products(unittest.TestCase):
         self.assertNotIn(OUTSIDE, ("SOL-USD",) + config.PROBE_CANDIDATES)   # so the tests' example outside PRODUCTS stays outside
 
 
+class Fees(unittest.TestCase):
+    def test_the_fee_columns_are_prereg_v2s_and_the_venue_fee_is_the_verified_taker(self):
+        # PREREG-v2 §6: FEE_BPS_COLUMNS = (0, 2, 10, 25, 50, 90), 50 and 90 the venue's retail maker and taker read
+        # in-account by Alex on 2026-09-27 (ERRATA.md's SPEC §10 row), FEE_BPS_VENUE = 90.0 with its source line
+        # filled; v1's unverified 60 and 120 are replaced. inference_v2 and the report's fee arithmetic transcribed
+        # §6's columns before config held them: one set now, so the report's §5 prints the columns RESULTS-v2 prints
+        from loop import inference_v2, report
+        self.assertEqual(config.FEE_BPS_COLUMNS, (0.0, 2.0, 10.0, 25.0, 50.0, 90.0))
+        self.assertEqual(list(config.FEE_BPS_COLUMNS), sorted(config.FEE_BPS_COLUMNS))
+        self.assertEqual(config.FEE_BPS_VENUE, 90.0)
+        self.assertEqual((config.FEE_BPS_COLUMNS[0], config.FEE_BPS_COLUMNS[-1]), (config.FEE_BPS_PRIMARY, config.FEE_BPS_VENUE))
+        self.assertNotIn("UNVERIFIED", config.FEE_BPS_VENUE_SOURCE)
+        for fact in ("0.90 %", "0.50 %", "https://www.coinbase.com/advanced-fees", "2026-09-27", "in-account"):
+            self.assertIn(fact, config.FEE_BPS_VENUE_SOURCE)
+        config.FEE_BPS_VENUE_SOURCE.encode("ascii")                  # printed beside the report's table, C locale included
+        self.assertEqual(inference_v2.FEE_COLUMNS, config.FEE_BPS_COLUMNS)
+        self.assertEqual(report._fee_list(), config.FEE_BPS_COLUMNS)  # nothing prepended or appended to config's six
+        self.assertEqual(report.BREAK_EVEN_FEE, config.FEE_BPS_VENUE)
+        self.assertEqual((report.ERRATA_TIER["maker"], report.ERRATA_TIER["taker"]), (50.0, config.FEE_BPS_VENUE))
+
+
 class Stores(unittest.TestCase):
     def test_sol_keeps_every_v1_path(self):
         self.assertEqual(config.store("SOL-USD"), (config.DECISIONS, config.SENDS, config.LOCK, config.HEARTBEAT))

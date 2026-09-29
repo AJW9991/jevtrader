@@ -80,8 +80,7 @@ MIN_KEPT_DAYS = 21                     # §9.4: a product with fewer kept days i
 EXIT_REFUSED = 3                       # every refusal of the pre-registered run (v1's code, kept)
 POWER = 0.8                            # §7: the MDE's power (z = 1.960 + 0.842 at alpha 1/40)
 # §6's printed fee columns, transcribed: 0 = gross (the primary), 2 = Binance.US, 10 = the article's, 25, 50 and 90 = the
-# venue's retail maker and taker, read in-account 2026-09-27. config.FEE_BPS_COLUMNS becomes the same at the SPEC/config
-# stage; until then it is v1's (..., 60, 120) and the report prints those.
+# venue's retail maker and taker, read in-account 2026-09-27; config.FEE_BPS_COLUMNS holds the same six (tests/test_config.py).
 FEE_COLUMNS = (0.0, 2.0, 10.0, 25.0, 50.0, 90.0)
 SEAL_TAG = "prereg-v2-seal"            # §13: v2's make results checks it and runs bin/seal-check --since it
 SEAL_CHECK_TIMEOUT_S = 3600            # bin/seal-check may run `make test` (§13 (e)); a hung tool is a failed check

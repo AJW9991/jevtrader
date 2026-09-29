@@ -29,7 +29,7 @@ computation, so a test asserts the number and the text together. The pair table 
 carries columns.d, has_d, so v1's report on the v1 log is unchanged), x
 len(config.FEE_BPS_COLUMNS) fees (6 today: 210 cells, ascending; the
 primary config.FEE_BPS_PRIMARY = 0 bps, gross, is the first and the venue's own taker
-config.FEE_BPS_VENUE = 120 bps, the realistic-cost column, the last); book.paired per cell
+config.FEE_BPS_VENUE = 90 bps, the verified realistic-cost column, the last); book.paired per cell
 is two replays, ~420 at 0.065 s per replay of 40,320 rows (28 days, measured), ~27 s. One
 replay per (arm, column, fee) is kept instead: 2 arms x 11 x 6 + 6 for arm C, which reads
 no column, + 6 for arm D at argmax = 144, ~9 s. d_t is book.paired's own expression, px[t] - py[t], on the cached
@@ -69,7 +69,7 @@ PAIRS = (("b", "c"), ("a", "c"), ("b", "a"),       # §4.5 order: the night shif
 # The primary CELL, PREREG §4's H1: (B, C, argmax, FEE_BPS_PRIMARY). The fee is 0 bps, gross
 # (2026-09-24, decided by Alex): at 0 a difference between arms is direction NET OF THE SPREAD
 # (a round trip still pays one spread: 0.87 bps at 1c, 1.74 at 2c on ~$115, against a 1.78 bps
-# per-block MDE, so trades/day is printed beside every cell and read with it); at the venue's 120 bps taker a round trip is 240 bps against a ~33 bps 15-min sd, so a net
+# per-block MDE, so trades/day is printed beside every cell and read with it); at the venue's 90 bps taker a round trip is 180 bps against a ~33 bps 15-min sd, so a net
 # cell mostly ranks turnover and is printed beside it as the realistic cost, descriptive only.
 # argmax is the one column with no threshold in it (every other column carries an unmeasured
 # cut this project exists to measure).
@@ -1321,9 +1321,9 @@ def cadence_table(per, anchor, n_of, kept, pool, sampled, tiers=(ERRATA_TIER,), 
     product mean over its kept blocks, and the pooled series S-bar_k over the blocks with a kept pooled product.
     The minute cadence is v1's design on v2's arms (decided every minute, 900 s blocks), B - C only. After each
     replay cadence, PREREG-v2 §6's fee arithmetic (fee_arithmetic), naming `tiers` (tier_lines' second value).
-    fees: the fee columns printed, _fee_list() (config's) when None; loop.inference_v2 passes PREREG-v2 §6's (0, 2, 10,
-    25, 50, 90) while config.FEE_BPS_COLUMNS is still v1's. A column adds cells and changes none (SPEC §10: the fee
-    enters the fills only)."""
+    fees: the fee columns printed, _fee_list() (config's, PREREG-v2 §6's (0, 2, 10, 25, 50, 90)) when None;
+    loop.inference_v2 passes its own transcription of the same six. A column adds cells and changes none (SPEC §10: the
+    fee enters the fills only)."""
     fees = _fee_list() if fees is None else tuple(fees)
     plans = [("minute", BLOCK_S, False, (("b", "c"),))] + [(c, c, True, PAIRS) for c in config.CADENCES]
     lines, cells, gaps, tpd, fas = [], {}, {}, {}, {}

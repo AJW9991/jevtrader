@@ -385,8 +385,8 @@ class Synthetic(unittest.TestCase):
         self.assertIn("direction net of the spread", text)
         self.assertNotIn("not turnover", text)
         self.assertIn(f"venue fee {config.FEE_BPS_VENUE:g} bps (config.FEE_BPS_VENUE)", text)
-        self.assertIn(config.FEE_BPS_VENUE_SOURCE, text)                 # UNVERIFIED, beside the table
-        self.assertTrue(config.FEE_BPS_VENUE_SOURCE.startswith("UNVERIFIED"))
+        self.assertIn(config.FEE_BPS_VENUE_SOURCE, text)                 # its source, beside the table
+        self.assertTrue(config.FEE_BPS_VENUE_SOURCE.startswith("verified"))   # read in-account 2026-09-27 (PREREG-v2 §6)
         self.assertFalse(hasattr(config, "FEE_BPS_PRIMARY_SOURCE"))      # moved: the primary has no source, it is 0
         for x, y in report.PAIRS[:3]:                                    # v1 rows: A, B and C's pairs (has_d)
             for fee in config.FEE_BPS_COLUMNS:

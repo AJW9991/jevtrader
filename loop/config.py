@@ -106,23 +106,24 @@ CADENCES = (900, 3600, 14400)      # PREREG-v2 §4: the decision-held replay cad
 FROZEN_A = "v2"                    # PREREG-v2 §1: arm A's frozen wording, prompts/v2.json, rendered per product
 
 # ---- paper execution --------------------------------------------------------------
-# 2026-09-24, decided by Alex: H1 is measured at 0 bps, GROSS (PREREG §4). Coinbase Advanced
-# retail tier 0 ("Intro 1", < $1K 30-day volume) is 0.60% maker / 1.20% TAKER per two sources
-# updated April 2026 (tokenecho.io, cryptofeediscount.com; fetched 2026-09-24); the official table
-# (coinbase.com/advanced-fees) is behind sign-in. A round trip at 120 bps is 240 bps against a
-# 15-minute sd of ~33 bps, so profitability at retail fees is settled by arithmetic, and a NET H1
-# would mostly rank which arm trades least. At 0 bps, gross of fees, a difference between arms is
-# direction NET OF THE SPREAD, which is the question: turnover still costs one spread per round trip
-# (open at the ask, close at the bid, marked to mid: 0.87 bps at 1c, 1.74 at 2c on ~$115, the order
-# of PREREG §7's 1.78 bps per-block MDE), so trades/day is read beside the cell. Every net-of-fee
-# column is descriptive.
-FEE_BPS_PRIMARY = 0.0              # the H1 cell (PREREG §4): gross of fees, not of the spread
-FEE_BPS_VENUE = 120.0              # the venue's own retail taker: the realistic-cost column, descriptive
-FEE_BPS_VENUE_SOURCE = ("UNVERIFIED — Coinbase Advanced Intro 1 taker per secondary sources "
-                        "(April 2026); confirm at https://www.coinbase.com/advanced-fees signed in")
-FEE_BPS_COLUMNS = (0.0, 2.0, 10.0, 25.0, 60.0, 120.0)   # ascending, the same decisions at six constants:
-                                                        # 0 = gross, the H1 cell; 2 = Binance.US; 10 = the
-                                                        # article's; 25; 60 = venue maker; 120 = venue taker
+# 2026-09-24, decided by Alex: H1 is measured at 0 bps, GROSS (PREREG §4, PREREG-v2 §5). A round trip at the venue's
+# retail taker is 2 x 90 = 180 bps against a 15-minute sd of ~33 bps, so profitability at retail fees is settled by
+# arithmetic (PREREG-v2 §6's break-even fees answer it by subtraction), and a NET H1 would mostly rank which arm trades
+# least. At 0 bps, gross of fees, a difference between arms is direction NET OF THE SPREAD, which is the question:
+# turnover still costs one spread per round trip (open at the ask, close at the bid, marked to mid: 0.87 bps at 1c,
+# 1.74 at 2c on ~$115, the order of the 1.78 bps per-block MDE), so trades/day is read beside the cell. Every
+# net-of-fee column is descriptive.
+# The venue's fee (PREREG-v2 §6, SPEC §10): Alex read coinbase.com/advanced-fees in-account on 2026-09-27 ~22:55Z:
+# tier Intro (30-day volume $0), spot maker 0.50 % / taker 0.90 %. v1 carried 60 / 120 bps from two secondary
+# sources (April 2026), UNVERIFIED; its rows carry no fee, so the change moves no row, only descriptive columns.
+FEE_BPS_PRIMARY = 0.0              # the H1 cell (PREREG-v2 §5): gross of fees, not of the spread
+FEE_BPS_VENUE = 90.0               # the venue's own retail taker, verified: the realistic-cost column, descriptive
+FEE_BPS_VENUE_SOURCE = ("verified: Coinbase Advanced spot taker, tier Intro (30-day volume $0), 0.90 %, maker 0.50 %;"
+                        " read in-account by Alex at https://www.coinbase.com/advanced-fees on 2026-09-27 ~22:55Z"
+                        " (ERRATA.md; SPEC.md's verified tier-0 taker row)")   # ASCII: printed under a C locale
+FEE_BPS_COLUMNS = (0.0, 2.0, 10.0, 25.0, 50.0, 90.0)    # ascending, the same decisions at six constants (PREREG-v2 §6):
+                                                        # 0 = gross, the H1 cell; 2 = Binance.US; 10 = the article's;
+                                                        # 25; 50 = venue maker; 90 = venue taker (both verified)
 
 # ---- rule columns ----------------------------------------------------------------
 CONF_THRESHOLDS = (0.50, 0.70, 0.85, 0.99)  # 0.99 is the only measured tail (JEV PROTOCOL 2.2); the
