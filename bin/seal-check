@@ -1,0 +1,588 @@
+#!/opt/homebrew/bin/python3
+"""bin/seal-check -- PREREG-v2 §13: what the tree may hold at the draft tag, at the seal, and at v2's day 28.
+
+    bin/seal-check                 the seal: §13 (a)-(e), on main after the switch, before `git tag -a prereg-v2-seal`
+    bin/seal-check --draft         before `git tag -a prereg-v2-draft` on the build branch (§13's draft command)
+    bin/seal-check --since TAG     v2's `make results` (loop/inference_v2.py runs it with prereg-v2-seal): §13's allowlist
+                                   from the seal until T0_v2 + 28 d
+
+Exit 0 when every check passes, 1 when one fails (each check on its own line, PASS or FAIL, then the verdict), 2 on a
+usage error or when git cannot answer. It checks the git tree this file lives in (as bin/promote does) and writes
+nothing there: the listed deviations are taken out in a temporary index outside the tree. It sends nothing.
+
+The seal (no flag) exits 0 only when all of §13's five hold:
+(a) `git merge-base --is-ancestor refs/tags/prereg-v2-draft HEAD`;
+(b) `git status --porcelain` is empty;
+(c) `git diff -U0 refs/tags/prereg-v2-draft HEAD -- . ':(exclude)RESULTS.md' ':(exclude)HANDOFF.md' ':(exclude)proposals'
+    ':(exclude)data/exclusions.tsv'` (printed in full; renames off, so a moved file is a deletion and an addition) has
+    hunks only where §13 (c) allows them. The commits named in the first column of ERRATA.md's "v2 deviations" table (a
+    heading holding those words; a row whose first cell is not a commit is refused) are taken out first: each one's diff
+    applied in reverse to HEAD's tree, newest first, in a temporary index; a deviation that a later commit overlaps
+    cannot be taken out, and (c) fails. Each is printed with its own diff. What is left is judged file by file:
+    - PREREG-v2.md: every hunk replaces lines one for one, each a line of §12 (from `## 12.` to the next `## `) that
+      holds ________ at the draft tag, by the same line with its blanks filled (each ________ replaced by text with no
+      backtick or line break; a blank may stay a blank); §12's `Tables rebuilt at the switch:` line only as below;
+    - prompts/v2.table.<p>.json and §12's rebuild line, under §8's once-only rebuild rule: either no v2 table differs
+      from the draft tag's and the rebuild line, if filled, reads `no`; or the table of every p in config.PRODUCTS
+      differs, all changed by one commit after the tag and no other, each reads as prompts.table reads it (v2, its
+      product, prompts/v2.json's sha, the product's 81 states, buy, sell or hold), each answered by a model_answered
+      other than the draft tag's table's (§8: rebuilt only when a different Jev version answers), and the rebuild line is
+      filled and names that model_answered and each table's sha (prompts.table's canonical sha, the row's table_sha:
+      its first 12 hex digits or more);
+    - prompts/CURRENT: any hunk (its value is (d));
+    - prompts/v<N>.json with N >= 3: added after the tag (v1's bin/promote) and not the version CURRENT names;
+    - ERRATA.md: pure additions at the end (HEAD's text begins with the tag's whole text, which ends in a line break);
+    - tests/test_frozen.py: every hunk replaces lines one for one, each line naming PREREG-v2.md or prompts/v2.table.,
+      each pair differing only in its 64-hex-digit shas (the pins of PREREG-v2.md and of those tables);
+    - any other path: none.
+    A listed deviation that touches a file holding what §13 says voids the draft tag (at_cadence, replay/paired,
+    inference, the pooling or exclusion readers, rule_c, the alphabet or its cuts, PROMPT.md v2, the digest, promote's
+    schedule) is named on a READ line: a file is coarser than what it holds, so the reading is the author's;
+(d) prompts/CURRENT names v2 (prompts.named);
+(e) `make test` exits 0 in the tree (its last lines are printed). NOT RUN when (a)-(d) already failed: the verdict is
+    FAIL either way, and the suite takes minutes. (c) is NOT RUN without a draft tag on HEAD.
+§12's blanks left at the seal are counted on a NOTE line (§13 seals "once §12 is filled"; (a)-(e) do not include it).
+
+--draft exits 0 only when all of §13's three hold:
+- no ________ remains in PREREG-v2.md outside §12: searched in the header and §0-§11, where §1, §2, §3 and §8 write
+  their values before the tag; §13 names the token in its own text and §14 is the amendment log, so neither holds a field;
+- probe/<D>/ is in HEAD with run.json naming D, volume.json and <p>.jsonl for every p in config.PRODUCTS but SOL-USD,
+  D the day §2 names in bold (`**D = YYYY-MM-DD**`; if §14 moves D, §2's D moves with it);
+- prompts/v2.table.<p>.json is in HEAD for every p in config.PRODUCTS and reads as prompts.table reads it;
+- PREREG-v2.md in HEAD is the tag prereg-v2-doc's, or §14 no longer reads "(none yet)" (no such tag: refused, since
+  nothing can be compared).
+The clean tree is the draft command's own `test -z "$(git status --porcelain)"`, before this.
+
+--since TAG exits 0 only when TAG names a commit that is an ancestor of HEAD and `git diff -U0 TAG` (every tracked file as
+it is on disk against TAG, so a change not yet committed is judged too; printed in full) touches only §13's post-seal
+allowlist: prompts/v<N>.json and prompts/v<N>.table.<p>.json with N >= 3 and p in config.PRODUCTS, prompts/CURRENT
+(bin/promote's commits), HANDOFF.md, proposals/, data/exclusions-v2.tsv and data/looks.tsv. Untracked files are named on
+a NOTE line and not judged (RESULTS-v2.md is one until it is committed).
+"""
+import argparse, datetime, json, os, re, subprocess, sys, tempfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(HERE)
+sys.path.insert(0, REPO)
+from loop import config, prompts                                # noqa: E402
+
+DRAFT_TAG = "refs/tags/prereg-v2-draft"
+DOC_TAG = "refs/tags/prereg-v2-doc"
+PREREG = "PREREG-v2.md"
+ERRATA = "ERRATA.md"
+FROZEN_TEST = "tests/test_frozen.py"
+CURRENT = "prompts/CURRENT"
+EXCLUDED = ("RESULTS.md", "HANDOFF.md", "proposals", "data/exclusions.tsv")      # §13 (c)'s excludes, in its order
+PATHSPEC = ("--", ".") + tuple(f":(exclude){p}" for p in EXCLUDED)
+DIFF = ("diff", "-U0", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames")
+BLANK = "________"
+REBUILD_LINE = "Tables rebuilt at the switch:"
+NO_FIELD_SECTIONS = ("12", "13", "14")      # --draft: §12 keeps its blanks, §13 names the token, §14 is the log
+PROBE_DAY_RE = re.compile(r"\*\*D = (\d{4}-\d{2}-\d{2})\*\*")
+DEVIATIONS_RE = re.compile(r"^(#{1,6}) .*\bv2 deviations\b", re.I)
+COMMIT_CELL = re.compile(r"[0-9a-f]{7,40}")
+SHA64 = re.compile(r"[0-9a-f]{64}")
+HEX12 = re.compile(r"[0-9a-f]{12,64}")
+PIN_NAME = re.compile(r"PREREG-v2\.md|prompts/v2\.table\.")
+HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+VERSION_FILE = re.compile(r"^prompts/v(\d+)\.json$")
+VERSION_TABLE = re.compile(r"^prompts/v(\d+)\.table\.(.+)\.json$")
+SINCE_FILES = ("prompts/CURRENT", "HANDOFF.md", "data/exclusions-v2.tsv", "data/looks.tsv")   # §13, after the seal
+SINCE_DIRS = ("proposals/",)
+VOIDING = {                                 # §13: a deviation touching what these files hold voids the draft tag
+    "loop/book.py": "at_cadence, replay, paired", "loop/inference_v2.py": "inference and the pooling",
+    "loop/inference.py": "inference", "loop/exclusions_v2.py": "an exclusion reader",
+    "loop/exclusions.py": "an exclusion reader", "loop/state.py": "rule_c, the alphabet and its cuts",
+    "loop/config.py": "the cuts (TICK_P, LIQ_ATOMS, LIQ_THIN_FALLBACK)", "nightly/PROMPT.md": "PROMPT.md v2",
+    "nightly/digest.py": "the digest", "bin/promote": "promote's schedule",
+}
+MAKE_TIMEOUT_S = 3600
+TAIL_LINES = 4
+
+
+class GitError(RuntimeError):
+    pass
+
+
+def _git(repo, *args, env=None, data=None, check=True):
+    """git in `repo`, bytes in and out (a diff may hold any bytes); GitError on a non-zero exit when `check`."""
+    r = subprocess.run(["git", "-c", "core.quotepath=false", *args], cwd=repo, capture_output=True, env=env, input=data)
+    if check and r.returncode != 0:
+        raise GitError(f"git {' '.join(args)}: exit {r.returncode}: {r.stderr.decode('utf-8', 'replace').strip()}")
+    return r
+
+
+def _text(b):
+    return b.decode("utf-8", "replace")
+
+
+def blob(repo, rev, path):
+    """The file at `rev` (a commit or a tree), as text, or None when it is not there."""
+    r = _git(repo, "cat-file", "blob", f"{rev}:{path}", check=False)
+    return _text(r.stdout) if r.returncode == 0 else None
+
+
+def hunks(diff):
+    """The hunks of one file's -U0 diff: {"old", "old_n", "new", "new_n", "minus", "plus", "eof"}."""
+    out, cur = [], None
+    for line in diff.split("\n"):
+        m = HUNK.match(line)
+        if m:
+            cur = {"old": int(m[1]), "old_n": int(m[2] if m[2] is not None else 1), "new": int(m[3]),
+                   "new_n": int(m[4] if m[4] is not None else 1), "minus": [], "plus": [], "eof": False}
+            out.append(cur)
+        elif cur is not None and line[:1] == "-":
+            cur["minus"].append(line[1:])
+        elif cur is not None and line[:1] == "+":
+            cur["plus"].append(line[1:])
+        elif cur is not None and line[:1] == "\\":
+            cur["eof"] = True                                    # "\ No newline at end of file"
+    return out
+
+
+def _at(h):
+    return f"@@ -{h['old']},{h['old_n']} +{h['new']},{h['new_n']} @@"
+
+
+def section_labels(lines):
+    """Per line, its PREREG section: 'head' before `## 0.`, then 'N' from each `## N.` to the next."""
+    labels, cur = [], "head"
+    for line in lines:
+        m = re.match(r"^## (\d+)\.", line)
+        if m:
+            cur = m.group(1)
+        labels.append(cur)
+    return labels
+
+
+def section(text, n):
+    m = re.search(rf"^## {n}\..*?(?=^## |\Z)", text, re.M | re.S)
+    return m.group(0) if m else ""
+
+
+def fills(old, new):
+    """The values `new` puts in `old`'s blanks (each ________ replaced by text with no backtick or line break), or
+    None when `new` is not `old` with its blanks filled."""
+    parts = old.split(BLANK)
+    if len(parts) < 2:
+        return None
+    m = re.fullmatch("([^`\n]+)".join(re.escape(p) for p in parts), new)
+    return list(m.groups()) if m else None
+
+
+def _blank(v):
+    return re.fullmatch(r"_*", v.strip()) is not None
+
+
+# ---- (c): the listed deviations, taken out in a temporary index -------------------------------------------------------
+def deviations(repo, errata_text):
+    """(the commits ERRATA.md's "v2 deviations" table names, full shas, newest first; refusals). A row whose first cell
+    is not a commit, a commit that is not in DRAFT_TAG..HEAD, and a merge commit are refused."""
+    listed, bad, depth = [], [], None
+    for line in errata_text.splitlines():
+        h = re.match(r"^(#{1,6}) ", line)
+        if h:
+            m = DEVIATIONS_RE.match(line)
+            depth = len(m.group(1)) if m else (None if depth is None or len(h.group(1)) <= depth else depth)
+            continue
+        if depth is None or not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        first = cells[0].strip("` ")
+        if set(first) <= set("-: ") or first.lower() in ("commit", "sha"):
+            continue                                             # the header and its separator
+        if not COMMIT_CELL.fullmatch(first):
+            bad.append(f"ERRATA.md's v2 deviations row {line.strip()[:80]!r} names no commit in its first cell (a row under"
+                       " that heading is a deviation until the next heading of its level: other additions go under one)")
+            continue
+        r = _git(repo, "rev-parse", "-q", "--verify", f"{first}^{{commit}}", check=False)
+        if r.returncode != 0:
+            bad.append(f"ERRATA.md's v2 deviations row names {first}, which is not a commit here")
+            continue
+        sha = _text(r.stdout).strip()
+        if (_git(repo, "merge-base", "--is-ancestor", DRAFT_TAG, sha, check=False).returncode != 0
+                or _git(repo, "merge-base", "--is-ancestor", sha, "HEAD", check=False).returncode != 0
+                or sha == _text(_git(repo, "rev-parse", f"{DRAFT_TAG}^{{commit}}").stdout).strip()):
+            bad.append(f"ERRATA.md's v2 deviations row names {sha[:12]}, which is not a commit after prereg-v2-draft on HEAD")
+            continue
+        if len(_text(_git(repo, "rev-list", "--parents", "-n", "1", sha).stdout).split()) != 2:
+            bad.append(f"ERRATA.md's v2 deviations row names {sha[:12]}, a merge: a deviation is one commit of its own")
+            continue
+        if sha not in listed:
+            listed.append(sha)
+    order = _text(_git(repo, "rev-list", "--topo-order", f"{DRAFT_TAG}..HEAD").stdout).split()
+    return sorted(listed, key=order.index), bad
+
+
+def without(repo, commits):
+    """(HEAD's tree with each commit's diff applied in reverse, newest first; refusals). Built in a temporary index:
+    neither the tree nor the repository's index is touched."""
+    if not commits:
+        return _text(_git(repo, "rev-parse", "HEAD^{tree}").stdout).strip(), []
+    bad = []
+    with tempfile.TemporaryDirectory() as d:
+        env = dict(os.environ, GIT_INDEX_FILE=os.path.join(d, "index"))
+        _git(repo, "read-tree", "HEAD", env=env)
+        for c in commits:
+            patch = _git(repo, "diff", "--binary", "--full-index", "--no-renames", "--no-color", "--no-ext-diff",
+                         "--no-textconv", f"{c}^", c, *PATHSPEC).stdout
+            if not patch.strip():
+                continue
+            r = _git(repo, "apply", "--cached", "-R", "--whitespace=nowarn", env=env, data=patch, check=False)
+            if r.returncode != 0:
+                bad.append(f"the listed deviation {c[:12]} cannot be taken out of HEAD (a later commit changed its lines;"
+                           f" git apply -R: {_text(r.stderr).strip().splitlines()[-1] if r.stderr.strip() else 'failed'})")
+        tree = _text(_git(repo, "write-tree", env=env).stdout).strip()
+    return tree, bad
+
+
+def changed(repo, a, b=None, pathspec=PATHSPEC):
+    """[(status letter, path)] of `git diff --name-status` from a to b (b None: the files on disk)."""
+    raw = _text(_git(repo, "diff", "--name-status", "--no-renames", "-z", a, *((b,) if b else ()), *pathspec).stdout)
+    parts = [p for p in raw.split("\0")]
+    return [(parts[i][:1], parts[i + 1]) for i in range(0, len(parts) - 1, 2) if parts[i]]
+
+
+# ---- (c): the file-by-file rules ----------------------------------------------------------------------------------------
+def tables(repo, tree, products, paths):
+    """§8's once-only rebuild of v2's tables: (refusals, {"changed": [p], "models": {model}, "shas": {p: sha}})."""
+    names = {p: f"prompts/v2.table.{p}.json" for p in products}
+    info = {"changed": [p for p in products if names[p] in paths], "models": set(), "shas": {}}
+    bad = []
+    if not info["changed"]:
+        return bad, info
+    commits = _text(_git(repo, "rev-list", f"{DRAFT_TAG}..HEAD", "--", *names.values()).stdout).split()
+    if len(commits) != 1:
+        bad.append(f"prompts/v2.table.*.json: changed by {len(commits)} commits after prereg-v2-draft "
+                   f"({', '.join(c[:12] for c in commits) or 'none on HEAD'}): §8 rebuilds them once, in one commit")
+    missing = [p for p in products if p not in info["changed"]]
+    if missing:
+        bad.append(f"prompts/v2.table.*.json: {', '.join(info['changed'])} rebuilt and {', '.join(missing)} not: §8 "
+                   "rebuilds every product's table together, once")
+    with tempfile.TemporaryDirectory() as root:
+        with open(os.path.join(root, "v2.json"), "w", encoding="utf-8") as fh:
+            fh.write(blob(repo, tree, "prompts/v2.json") or "")
+        for p in info["changed"]:
+            text = blob(repo, tree, names[p])
+            if text is None:
+                bad.append(f"{names[p]}: removed after prereg-v2-draft")
+                continue
+            with open(os.path.join(root, f"v2.table.{p}.json"), "w", encoding="utf-8") as fh:
+                fh.write(text)
+            try:
+                t = prompts.table("v2", p, root)
+            except prompts.PromptError as e:
+                bad.append(f"{names[p]}: not a v2 table as prompts.table reads one: {e}")
+                continue
+            model = json.loads(text).get("model_answered")
+            old = blob(repo, DRAFT_TAG, names[p])
+            try:
+                old_model = json.loads(old).get("model_answered") if old is not None else None
+            except (ValueError, AttributeError):
+                old_model = None
+            if model == old_model:
+                bad.append(f"{names[p]}: answered by {model!r}, the model the draft tag's table names: §8 rebuilds the"
+                           " tables only when a different Jev version answers")
+            info["models"].add(model)
+            info["shas"][p] = t["sha"]
+    return bad, info
+
+
+def rebuild_value(value, info):
+    """None when §12's rebuild line may hold `value` under §8's rule (info from tables()), else why not."""
+    v = value.strip()
+    if not info["changed"]:
+        return None if v == "no" else f"§12's rebuild line reads {v!r} while no v2 table differs from the draft tag's: it may read only `no`"
+    runs = HEX12.findall(v)
+    missing = [str(m) for m in sorted(info["models"], key=str) if not isinstance(m, str) or m not in v]
+    missing += [f"{p}'s table sha {s[:12]}" for p, s in info["shas"].items() if not any(s.startswith(h) for h in runs)]
+    return (f"§12's rebuild line {v!r} does not name {', '.join(missing)} (§8: the answering Jev version and one sha per"
+            " product)") if missing else None
+
+
+def judge_prereg(draft_text, new_text, hs, info):
+    """PREREG-v2.md's hunks: §12's blank fields filled, the rebuild line under §8's rule; and a rebuild recorded."""
+    lines, bad = draft_text.split("\n"), []
+    labels = section_labels(lines)
+    for h in hs:
+        where = f"{PREREG} {_at(h)}"
+        if h["old_n"] != h["new_n"] or h["old_n"] == 0 or h["eof"]:
+            bad.append(f"{where}: not a one-for-one replacement of lines (only §12's blank fields may be filled)")
+            continue
+        for i, (o, n) in enumerate(zip(h["minus"], h["plus"])):
+            k = h["old"] - 1 + i
+            if k >= len(lines) or lines[k] != o or labels[k] != "12" or BLANK not in o:
+                bad.append(f"{where}: line {k + 1} {o[:70]!r} is not a blank field of §12")
+                break
+            vals = fills(o, n)
+            if vals is None:
+                bad.append(f"{where}: line {k + 1} changes beyond its blanks: {o!r} -> {n!r}")
+                break
+            if o.startswith(REBUILD_LINE):
+                why = rebuild_value(vals[0], info)
+                if why:
+                    bad.append(f"{where}: {why}")
+    if info["changed"]:
+        line = next((l for l in section(new_text, 12).splitlines() if l.startswith(REBUILD_LINE)), None)
+        vals = fills(next((l for l in section(draft_text, 12).splitlines() if l.startswith(REBUILD_LINE)), ""), line or "")
+        if line is None or not vals or _blank(vals[0]):
+            bad.append(f"{PREREG}: v2's tables were rebuilt and §12's rebuild line does not record it (§8, §12)")
+    return bad
+
+
+def judge_errata(draft_text, new_text):
+    if draft_text and not draft_text.endswith("\n"):
+        return [f"{ERRATA}: the draft tag's text does not end in a line break, so nothing can be added after it unchanged"]
+    return [] if new_text.startswith(draft_text) else [f"{ERRATA}: a hunk that is not a pure addition at the end"]
+
+
+def judge_frozen(hs):
+    bad = []
+    for h in hs:
+        pairs = list(zip(h["minus"], h["plus"]))
+        if h["old_n"] != h["new_n"] or h["old_n"] == 0 or any(
+                not (PIN_NAME.search(o) and PIN_NAME.search(n)) or SHA64.sub("", o) != SHA64.sub("", n) for o, n in pairs):
+            bad.append(f"{FROZEN_TEST} {_at(h)}: a change beyond the sha of a pin of PREREG-v2.md or of v2's tables")
+    return bad
+
+
+def current_name(repo, rev):
+    text = blob(repo, rev, CURRENT)
+    names = [l.strip() for l in (text or "").splitlines() if l.strip()]
+    return names[0] if len(names) == 1 else None
+
+
+def judge(repo, tree, products):
+    """§13 (c) on DRAFT_TAG -> tree: the refusals, one line each."""
+    names = changed(repo, DRAFT_TAG, tree)
+    paths = {p for _, p in names}
+    bad, info = tables(repo, tree, products, paths)
+    table_paths = {f"prompts/v2.table.{p}.json" for p in products}
+    cur = current_name(repo, "HEAD")
+    for status, path in names:
+        d = _text(_git(repo, *DIFF, DRAFT_TAG, tree, "--", path).stdout)
+        if path == PREREG:
+            bad += judge_prereg(blob(repo, DRAFT_TAG, path) or "", blob(repo, tree, path) or "", hunks(d), info)
+        elif path in table_paths or path == CURRENT:
+            continue                                             # the rebuild rule above; CURRENT's value is (d)
+        elif VERSION_FILE.match(path) and int(VERSION_FILE.match(path).group(1)) >= 3:
+            n = VERSION_FILE.match(path).group(1)
+            if status != "A":
+                bad.append(f"{path}: {'changed' if status == 'M' else 'removed'} after prereg-v2-draft: only a version "
+                           "file v1's bin/promote adds is allowed")
+            elif cur == f"v{n}":
+                bad.append(f"{path}: added after prereg-v2-draft and named by prompts/CURRENT")
+        elif path == ERRATA:
+            bad += judge_errata(blob(repo, DRAFT_TAG, path) or "", blob(repo, tree, path) or "")
+        elif path == FROZEN_TEST:
+            bad += judge_frozen(hunks(d))
+        else:
+            bad.append(f"{path}: {'added' if status == 'A' else 'removed' if status == 'D' else 'changed'} after "
+                       "prereg-v2-draft, which §13 (c) does not allow")
+    if info["changed"] and PREREG not in paths:
+        bad.append(f"{PREREG}: v2's tables were rebuilt and §12's rebuild line does not record it (§8, §12)")
+    return bad
+
+
+# ---- the three modes -----------------------------------------------------------------------------------------------------
+def _say(out, line=""):
+    out.write(line + "\n")
+    out.flush()
+
+
+def _verbatim(out, title, diff):
+    _say(out, title)
+    for line in diff.splitlines():
+        _say(out, "    | " + line)
+    if not diff.strip():
+        _say(out, "    (empty)")
+
+
+def seal(repo, products, out):
+    fails = []
+
+    def verdict(tag, ok, text):
+        _say(out, f"({tag}) {'PASS' if ok else 'FAIL'}: {text}")
+        if not ok:
+            fails.append(tag)
+
+    r = _git(repo, "merge-base", "--is-ancestor", DRAFT_TAG, "HEAD", check=False)
+    verdict("a", r.returncode == 0, f"{DRAFT_TAG} is an ancestor of HEAD" if r.returncode == 0 else
+            f"`git merge-base --is-ancestor {DRAFT_TAG} HEAD` exited {r.returncode}"
+            + (f": {_text(r.stderr).strip()}" if r.stderr.strip() else ""))
+    st = _text(_git(repo, "status", "--porcelain").stdout)
+    verdict("b", not st.strip(), "`git status --porcelain` is empty" if not st.strip() else
+            f"`git status --porcelain` lists {len(st.splitlines())}: " + "; ".join(l.strip() for l in st.splitlines()[:5]))
+    if "a" in fails:
+        _say(out, "(c) NOT RUN: there is no draft tag on HEAD to diff from")
+    else:
+        cmd = f"git diff -U0 {DRAFT_TAG} HEAD -- . " + " ".join(f"':(exclude){p}'" for p in EXCLUDED)
+        _verbatim(out, f"(c) `{cmd}` (renames off), verbatim:",
+                  _text(_git(repo, *DIFF, DRAFT_TAG, "HEAD", *PATHSPEC).stdout))
+        listed, bad = deviations(repo, blob(repo, "HEAD", ERRATA) or "")
+        for c in listed:
+            _verbatim(out, f"(c) listed deviation {c} (ERRATA.md's v2 deviations table), taken out before the judgement:",
+                      _text(_git(repo, "show", "-U0", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames",
+                                 "--format=%H %s", c).stdout))
+            for _, path in changed(repo, f"{c}^", c):
+                if path in VOIDING:
+                    _say(out, f"(c) READ: the listed deviation {c[:12]} touches {path}, which holds {VOIDING[path]}: a "
+                              "deviation touching those voids the draft tag (§13), which a file alone cannot show")
+        tree, more = without(repo, listed)
+        bad += more
+        if not more:
+            bad += judge(repo, tree, products)
+        verdict("c", not bad, f"every hunk is one §13 (c) allows ({len(listed)} listed deviation(s) taken out)" if not bad
+                else f"{len(bad)} hunk(s) or file(s) §13 (c) does not allow:")
+        for b in bad:
+            _say(out, "    " + b)
+    try:
+        name = prompts.named(os.path.join(repo, "prompts"))
+    except prompts.PromptError as e:
+        name, why = None, str(e)
+    verdict("d", name == "v2", "prompts/CURRENT names v2" if name == "v2" else
+            f"prompts/CURRENT names {name!r}, not v2" if name else f"prompts/CURRENT cannot be read: {why}")
+    blanks = section(blob(repo, "HEAD", PREREG) or "", 12).count(BLANK)
+    if blanks:
+        _say(out, f"NOTE: §12 of PREREG-v2.md still holds {blanks} blank(s): §13 seals once §12 is filled")
+    if fails:
+        _say(out, f"(e) NOT RUN: ({'), ('.join(fails)}) failed already, and the suite takes minutes")
+    else:
+        env = {k: v for k, v in os.environ.items() if not k.startswith("MAKE")}
+        try:
+            r = subprocess.run(["make", "test"], cwd=repo, capture_output=True, env=env, timeout=MAKE_TIMEOUT_S)
+            rc, tail = r.returncode, _text(r.stdout + r.stderr).strip().splitlines()[-TAIL_LINES:]
+        except (OSError, subprocess.TimeoutExpired) as e:
+            rc, tail = None, [f"{type(e).__name__}: {e}"]
+        verdict("e", rc == 0, f"`make test` exited {rc}; its last lines:")
+        for line in tail:
+            _say(out, "    | " + line)
+    return fails
+
+
+def draft(repo, products, out):
+    fails = []
+
+    def verdict(tag, ok, text):
+        _say(out, f"{tag}: {'PASS' if ok else 'FAIL'}: {text}")
+        if not ok:
+            fails.append(tag)
+
+    text = blob(repo, "HEAD", PREREG)
+    if text is None:
+        verdict("blanks", False, f"{PREREG} is not in HEAD")
+        text = ""
+    else:
+        lines = text.split("\n")
+        labels = section_labels(lines)
+        left = [f"line {i + 1} (§{labels[i]})" if labels[i] != "head" else f"line {i + 1} (the header)"
+                for i, l in enumerate(lines) if BLANK in l and labels[i] not in NO_FIELD_SECTIONS]
+        verdict("blanks", not left, f"no {BLANK} outside §12 (searched: the header and §0-§11; §13 names the token and"
+                " §14 is the amendment log)" if not left else f"{BLANK} remains outside §12 at " + ", ".join(left))
+    m = PROBE_DAY_RE.search(section(text, 2))
+    if m is None:
+        verdict("probe", False, f"§2 of {PREREG} names no day as **D = YYYY-MM-DD**")
+    else:
+        day = m.group(1)
+        d = f"probe/{day}"
+        have = set(_text(_git(repo, "ls-tree", "--name-only", "HEAD", d + "/").stdout).splitlines())
+        want = ["run.json", "volume.json"] + [f"{p}.jsonl" for p in products if p != config.PRODUCT]
+        gone = [f for f in want if f"{d}/{f}" not in have]
+        try:
+            named = json.loads(blob(repo, "HEAD", f"{d}/run.json") or "null").get("day") if not gone else None
+        except (ValueError, AttributeError):
+            named = None
+        verdict("probe", not gone and named == day, f"{d}/ is in HEAD with {', '.join(want)}" if not gone and named == day
+                else f"{d}/ lacks {', '.join(gone)} in HEAD" if gone else f"{d}/run.json names day {named!r}, not {day}")
+    with tempfile.TemporaryDirectory() as root:
+        with open(os.path.join(root, "v2.json"), "w", encoding="utf-8") as fh:
+            fh.write(blob(repo, "HEAD", "prompts/v2.json") or "")
+        bad = []
+        for p in products:
+            t = blob(repo, "HEAD", f"prompts/v2.table.{p}.json")
+            if t is None:
+                bad.append(f"prompts/v2.table.{p}.json is not in HEAD")
+                continue
+            with open(os.path.join(root, f"v2.table.{p}.json"), "w", encoding="utf-8") as fh:
+                fh.write(t)
+            try:
+                prompts.table("v2", p, root)
+            except prompts.PromptError as e:
+                bad.append(f"prompts/v2.table.{p}.json: {e}")
+        verdict("tables", not bad, f"prompts/v2.table.<p>.json in HEAD for {', '.join(products)}, each a v2 table"
+                if not bad else "; ".join(bad))
+    if _git(repo, "rev-parse", "-q", "--verify", DOC_TAG, check=False).returncode != 0:
+        verdict("§14", False, f"no tag {DOC_TAG}: whether {PREREG} changed since the doc tag cannot be shown")
+    else:
+        same = _git(repo, "diff", "--quiet", DOC_TAG, "HEAD", "--", PREREG, check=False).returncode == 0
+        none = "(none yet)" in section(text, 14)
+        verdict("§14", same or not none, f"{PREREG} is the doc tag's" if same else f"{PREREG} changed since the doc tag"
+                + (" and §14 holds entries" if not none else " while §14 reads \"(none yet)\""))
+    return fails
+
+
+def since(repo, tag, products, out):
+    fails = []
+    r = _git(repo, "rev-parse", "-q", "--verify", f"{tag}^{{commit}}", check=False)
+    if r.returncode != 0:
+        _say(out, f"tag: FAIL: {tag} names no commit here")
+        return ["tag"]
+    commit = _text(r.stdout).strip()
+    ok = _git(repo, "merge-base", "--is-ancestor", commit, "HEAD", check=False).returncode == 0
+    _say(out, f"tag: {'PASS' if ok else 'FAIL'}: {tag} (commit {commit}) is {'' if ok else 'NOT '}an ancestor of HEAD")
+    if not ok:
+        fails.append("tag")
+    _verbatim(out, f"diff: `git diff -U0 {tag}` (every tracked file as it is on disk), verbatim:",
+              _text(_git(repo, *DIFF, commit, "--").stdout))
+    bad = []
+    for status, path in changed(repo, commit, None, ("--",)):
+        v, t = VERSION_FILE.match(path), VERSION_TABLE.match(path)
+        if (path in SINCE_FILES or path.startswith(SINCE_DIRS) or (v and int(v.group(1)) >= 3)
+                or (t and int(t.group(1)) >= 3 and t.group(2) in products)):
+            continue
+        bad.append(f"{path}: {'added' if status == 'A' else 'removed' if status == 'D' else 'changed'} since {tag}")
+    _say(out, f"allowlist: {'PASS' if not bad else 'FAIL'}: " + ("every changed path is on §13's post-seal allowlist"
+          if not bad else f"{len(bad)} path(s) off §13's post-seal allowlist:"))
+    for b in bad:
+        _say(out, "    " + b)
+    if bad:
+        fails.append("allowlist")
+    untracked = _text(_git(repo, "ls-files", "--others", "--exclude-standard", "-z").stdout).split("\0")
+    untracked = [u for u in untracked if u]
+    if untracked:
+        _say(out, f"NOTE: untracked, not judged: {', '.join(untracked[:10])}" + (" ..." if len(untracked) > 10 else ""))
+    return fails
+
+
+def main(argv=None, repo=None, out=None):
+    """`repo` exists for tests (a temporary repository); a person never has another: the tree checked is this file's."""
+    ap = argparse.ArgumentParser(prog="seal-check", description="PREREG-v2 section 13: the seal's checks (a)-(e), "
+                                 "--draft before the draft tag, --since TAG at v2's make results")
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("--draft", action="store_true", help="the draft tag's preconditions")
+    g.add_argument("--since", metavar="TAG", help="the post-seal allowlist from TAG to the files on disk")
+    a = ap.parse_args(argv)
+    repo = REPO if repo is None else repo
+    if out is None:
+        out = sys.stdout
+        try:                                    # PREREG text and diffs hold '§' and dashes; a C locale's stdout cannot
+            out.reconfigure(errors="backslashreplace")
+        except (AttributeError, ValueError):
+            pass
+    products = tuple(config.PRODUCTS)
+    mode = "--draft" if a.draft else f"--since {a.since}" if a.since else "the seal, (a)-(e)"
+    try:
+        head = _text(_git(repo, "rev-parse", "HEAD").stdout).strip()
+        _say(out, f"seal-check (PREREG-v2 §13), {mode}, in {repo} at HEAD {head}, products {', '.join(products)}, "
+                  f"{datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}")
+        fails = draft(repo, products, out) if a.draft else since(repo, a.since, products, out) if a.since else \
+            seal(repo, products, out)
+    except (GitError, OSError) as e:
+        _say(out, f"seal-check: FAIL: git could not answer: {e}")
+        return 2
+    _say(out, f"seal-check: {'PASS' if not fails else 'FAIL'} ({mode})" + (f": {', '.join(fails)} failed" if fails else ""))
+    return 1 if fails else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

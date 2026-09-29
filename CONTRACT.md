@@ -80,6 +80,7 @@ jev-paper-loop/
   nightly/propose.sh  nightly/PROMPT.md  nightly/settings.json
   bin/promote            the human apply step
   bin/readers-diff       two trees' readers on one log: counts and tick_ids only (before a pull)
+  bin/seal-check         PREREG-v2 §13: the seal's (a)-(e); --draft before the draft tag; --since TAG at v2's make results
   launchd/com.alexward.jevloop.loop.plist  launchd/com.alexward.jevloop.nightly.plist
   prompts/v1.json        frozen (written)   prompts/v2.json (promoted 2026-09-26)   prompts/CURRENT  → "v2" (one line)
   fixtures/              one recorded Coinbase snapshot set, committed
