@@ -23,9 +23,12 @@ LEFT_OUT = {
                    " by rule they change in the commit that adds the products",
     "test_probe": "bin/probe is finished and reads no PRODUCTS; a real probe run holds its lock on D, which the"
                   " module's own one-at-a-time test meets",
-    "test_nightly": "22 s of shell runs; what it reads of PRODUCTS today (bin/promote builds every product) passed"
-                    " with three by hand at S1; the stage that makes the nightly per product takes it in or says why not",
+    "test_nightly": "its in-process table tests run (PARTS); its other classes drive propose.sh, capped.py and the"
+                    " plists in subprocesses, which import the committed config (one product until the probe's are added),"
+                    " so they gain nothing here and cost ~25 s; the per-product nightly is held in process by"
+                    " test_digest_v2 and test_policy_table_v2, which run here",
 }
+PARTS = {"test_nightly": ("test_nightly.PolicyTableTest",)}   # the classes of a LEFT_OUT module that do run: in process
 from fixture_products import STAND_IN          # per candidate: (TICK_P, (a10, a90), thin fallback) -- illustrative
 BOOT = r"""
 import json, sys, unittest
@@ -43,13 +46,19 @@ unittest.main(module=None, argv=["products-added"] + sys.argv[4:])
 
 def modules():
     names = sorted(os.path.splitext(f)[0] for f in os.listdir(TESTS) if f.startswith("test") and f.endswith(".py"))
-    return [m for m in names if m not in LEFT_OUT]
+    return [m for m in names if m not in LEFT_OUT] + [c for m in sorted(PARTS) for c in PARTS[m]]
 
 
 class ProductsAdded(unittest.TestCase):
     def test_every_left_out_module_exists(self):
         names = {os.path.splitext(f)[0] for f in os.listdir(TESTS)}
         self.assertLessEqual(set(LEFT_OUT), names)
+        self.assertLessEqual(set(PARTS), set(LEFT_OUT))
+        import importlib
+        for m, classes in PARTS.items():
+            mod = importlib.import_module(m)
+            for c in classes:
+                self.assertTrue(isinstance(getattr(mod, c.split(".", 1)[1], None), type), c)
 
     def test_the_suite_holds_with_three_products(self):
         add = [p for p in config.PROBE_CANDIDATES if p not in config.PRODUCTS][:3 - len(config.PRODUCTS)]

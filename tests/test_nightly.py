@@ -212,7 +212,13 @@ CAND = {"rationale": "test", "instructions": "Decide whether to be long for the 
 
 
 def _by_state():
-    return {state.state_string(a): a for a in state.all_states()}
+    """Every product's 81 state strings (its base first) -> the adjectives: the table asks each product's."""
+    return {state.state_string(a, config.base(p)): a for p in config.PRODUCTS for a in state.all_states()}
+
+
+def _n():
+    """The table's requests: 81 a product (PREREG-v2 §8)."""
+    return 81 * len(config.PRODUCTS)
 
 
 class PolicyTableTest(unittest.TestCase):
@@ -260,7 +266,7 @@ class PolicyTableTest(unittest.TestCase):
         self.assertFalse(os.path.exists(ledger))
         self.ask.assert_not_called()
         first, body = buf.getvalue().split("\n", 1)
-        self.assertEqual(first, "dry: 81 payloads, 0 sent")
+        self.assertEqual(first, f"dry: {_n()} payloads, 0 sent")
         p = json.loads(body)
         self.assertEqual(p["model"], config.MODEL)
         self.assertEqual(p["state"], policy_table.states()[0][0])
@@ -280,7 +286,8 @@ class PolicyTableTest(unittest.TestCase):
                            cwd=self.tmp, capture_output=True, text=True, timeout=60, env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
         first, body = r.stdout.split("\n", 1)
-        self.assertEqual(first, "dry: 81 payloads, 0 sent")
+        m = re.fullmatch(r"dry: (\d+) payloads, 0 sent", first)              # 81 a product of the committed config
+        self.assertTrue(m and int(m.group(1)) % 81 == 0, first)
         self.assertEqual(json.loads(body)["questions"]["current"]["instructions"], prompts.load("v1")["action"]["instructions"])
         r = subprocess.run([sys.executable, os.path.join(REPO, "nightly", "digest.py"), "--help"],
                            cwd=self.tmp, capture_output=True, text=True, timeout=60, env=env)
@@ -308,17 +315,19 @@ class PolicyTableTest(unittest.TestCase):
         with redirect_stdout(io.StringIO()):
             rc = policy_table.main([self.prop, "--out", out])
         self.assertEqual(rc, 0)
-        self.assertEqual(self.ask.call_count, 81)
+        self.assertEqual(self.ask.call_count, _n())
         for call in self.ask.call_args_list:
             self.assertEqual(list(call.args[1]), ["cand_0", "current"])
         with open(out, encoding="utf-8") as fh:
             text = fh.read()
-        self.assertIn("differs from rule_c on 0 of 81 answered states", text)          # current
-        self.assertIn("differs from CURRENT on 57 of 81 answered states; from rule_c on 57 of 81", text)
+        self.assertIn(f"differs from rule_c on 0 of {_n()} answered states", text)      # current, pooled
+        k = len(config.PRODUCTS)
+        self.assertIn(f"differs from CURRENT on {57 * k} of {_n()} answered states; from rule_c on {57 * k} of {_n()}", text)
+        self.assertIn("### SOL-USD\n\ndiffers from CURRENT on 57 of 81 answered states; from rule_c on 57 of 81", text)
         self.assertIn("-buy: the trend is pumping, volatility is not violent, and liquidity is not thin", text)
         self.assertIn("+buy: the trend is pumping and liquidity is deep", text)
         self.assertIn("rationale: test", text)
-        self.assertIn("requests: 81, answered: 81, errors: 0", text)
+        self.assertIn(f"requests: {_n()}, answered: {_n()}, errors: 0", text)
         self.assertNotIn("INCOMPLETE", text)
         self.assertNotIn("DRIFT", text)
         self.assertEqual(text.count("| SOL: liquidity "), 162)                            # 81 rows x 2 tables
@@ -335,7 +344,7 @@ class PolicyTableTest(unittest.TestCase):
         with open(out, encoding="utf-8") as fh:
             text = fh.read()
         self.assertIn("INCOMPLETE", text)
-        self.assertIn("errors: 81", text)
+        self.assertIn(f"errors: {_n()}", text)
         with open(self.halt, encoding="utf-8") as fh:                                   # the caller writes HALT (CONTRACT §2)
             reason = fh.read()
         self.assertIn("key rejected", reason)
@@ -425,11 +434,13 @@ class PolicyTableTest(unittest.TestCase):
                  "- trend: dumping 9/26, flat 9/27, pumping 9/27\n"
                  "- vol: calm 0/26, normal 0/27, violent 27/27\n"
                  "- moves: sell -> hold 27\n")
-        self.assertIn("## cand_0\n\nrationale: test\n\ndiffers from CURRENT on 27 of 80 answered states; from rule_c on 27 of 80\n", text)
+        k = len(config.PRODUCTS)
+        self.assertIn(f"## cand_0\n\nrationale: test\n\ndiffers from CURRENT on {27 * k} of {_n() - 1} answered states; "
+                      f"from rule_c on {27 * k} of {_n() - 1}\n", text)
         self.assertIn("### SOL-USD\n\ndiffers from CURRENT on 27 of 80 answered states; from rule_c on 27 of 80\n\n" + block
                       + "\n| state | choice | confidence | rule_c | current | moved |", text)
         from loop import dash                                      # the dash still reads the counts line
-        self.assertEqual(dash.PROPOSAL_COUNTS.search(text).groups(), ("27", "80", "27", "80"))
+        self.assertEqual(dash.PROPOSAL_COUNTS.search(text).groups(), (str(27 * k), str(_n() - 1), str(27 * k), str(_n() - 1)))
 
     def test_a_candidate_that_changes_nothing_says_so(self):
         self.ask.side_effect = lambda s, qs, **kw: {"answers": {q: _answer("hold", 0.6) for q in qs}, "model": config.MODEL}
@@ -530,7 +541,7 @@ class PolicyTableTest(unittest.TestCase):
         self.assertEqual(len(calls), 3)                                  # the fourth state found HALT: no send
         with open(out, encoding="utf-8") as fh:
             text = fh.read()
-        self.assertIn("requests: 81, answered: 3, errors: 78 -- INCOMPLETE", text)
+        self.assertIn(f"requests: {_n()}, answered: 3, errors: {_n() - 3} -- INCOMPLETE", text)
         self.assertIn("error kinds: halt", text)
         self.urlopen.assert_not_called()
 
@@ -595,13 +606,13 @@ class PolicyTableTest(unittest.TestCase):
             self.assertEqual(policy_table.main([self.prop, "--out", out]), 0)
         with open(out, encoding="utf-8") as fh:
             text = fh.read()
-        self.assertIn(f"model answered: no model named on 81 -- DRIFT, requested {config.MODEL}", text)
+        self.assertIn(f"model answered: no model named on {_n()} -- DRIFT, requested {config.MODEL}", text)
         self.ask.side_effect = lambda s, qs, **kw: self._answers(s, model=None if s.endswith("calm") else config.MODEL)
         with redirect_stdout(io.StringIO()):
             self.assertEqual(policy_table.main([self.prop, "--out", out]), 0)
         with open(out, encoding="utf-8") as fh:
             text = fh.read()
-        self.assertIn(f"model answered: {config.MODEL}, no model named on 27 -- DRIFT", text)
+        self.assertIn(f"model answered: {config.MODEL}, no model named on {27 * len(config.PRODUCTS)} -- DRIFT", text)
 
 
 def _load_promote():
@@ -850,7 +861,7 @@ class ProposeDryTest(unittest.TestCase):
         with open(os.path.join(tmp, "logs", "propose.log"), encoding="utf-8") as fh:
             log = fh.read()
         self.assertIn("OK proposals/2026-09-22.json", log)
-        self.assertIn("dry: 81 payloads, 0 sent", log)
+        self.assertIn(f"dry: {_n()} payloads, 0 sent", log)
         self.assertTrue(os.path.exists(os.path.join(tmp, "data", "digest-2026-09-22.md")))
         # the digest (and the table) read the pinned v1 root, never the live CURRENT (v2 since 2026-09-26)
         with open(os.path.join(tmp, "data", "digest-2026-09-22.md"), encoding="utf-8") as fh:
@@ -937,7 +948,7 @@ class ProposeDryTest(unittest.TestCase):
         with open(os.path.join(tmp, "logs", "propose.log"), encoding="utf-8") as fh:
             log = fh.read()
         self.assertIn("HALT present", log)
-        self.assertNotIn("dry: 81 payloads", log)                    # policy_table.py never ran
+        self.assertNotIn("dry: ", log)                               # policy_table.py never ran
         self.assertNotIn("OK proposals/", log)
         self.assertTrue(os.path.exists(os.path.join(tmp, "proposals", "2026-09-22.json")))
         # a HALT night still rebuilds the health page (the EXIT trap), where the HALT shows
@@ -1016,7 +1027,7 @@ class ProposeDryTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stderr.count("FAIL"), 1, r.stderr)
         self.assertIn("FAIL proposals/2026-09-22.json exists: one run per day", r.stderr)
-        self.assertNotIn("dry: 81 payloads", r.stderr)
+        self.assertNotIn("dry: ", r.stderr)
         for p, (data, mtime) in zip(paths, before):
             with open(p, "rb") as fh:
                 self.assertEqual(fh.read(), data, p)
