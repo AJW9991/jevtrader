@@ -5,7 +5,8 @@ way to sit exactly ON a cut), and `features` is pinned on a seeded random walk a
 plain-index restatements of every definition in state.py's docstring. When the
 fixtures builder lands a real snapshot, add a smoke test here; do not replace these.
 """
-import math, random, re, statistics, unittest
+import importlib.machinery, importlib.util, math, os, random, re, statistics, unittest
+from unittest import mock
 from loop import config, state
 
 W = config.WINDOW_MIN                     # 300
@@ -47,7 +48,7 @@ def snapshot(closes, vols, bid=199.99, ask=200.01, bid_size=20.0, ask_size=30.0,
             "trades_5m": 100, "feed_age_s": 3.0, "http": {"calls": 3, "ms": 250}}
 
 
-MID_FEAT = {"mid": 200.0, "spread_bps": 1.0, "l1_min_usd": 5000.0, "fill1k_bps": 3.0, "fill1k_short": False,
+MID_FEAT = {"mid": 200.0, "spread_bps": 1.0, "l1_min_usd": 5000.0, "fill1k_bps": 0.75, "fill1k_short": False,
             "vol5_usd": 500.0, "vol5_p10": 100.0, "vol5_p90": 900.0,
             "ret15_bps": 0.0, "ret15_sd_bps": 10.0, "ret15_z": 0.0,
             "rv15": 1e-6, "rv15_med": 1e-6, "rv_ratio": 1.0, "window_min": W}
@@ -172,11 +173,66 @@ class Boundaries(unittest.TestCase):
         self.assertEqual(self.words(dim, key, hi + 1.0), whi)
 
     def test_liq(self):
-        # 2026-09-24: liq is fill1k_bps, the cost of walking the book for one NOTIONAL_USD order.
-        # It runs the other way round: a LOW cost is deep, so the low cut (1.0) is deep's and
-        # the high cut (5.0) is thin's; ON either cut is normal (strict < and >).
-        self.assertEqual((config.LIQ_DEEP_BPS, config.LIQ_THIN_BPS), (1.0, 5.0))
-        self.check("liq", "fill1k_bps", config.LIQ_DEEP_BPS, config.LIQ_THIN_BPS, "deep", "normal", "thin")
+        # PREREG-v2 §3: liq is h, the cost of walking the book for one NOTIONAL_USD order in the product's
+        # half-ticks. It runs the other way round: a LOW cost is deep, so the low cut (a10 + 0.5 = 1.5 for
+        # SOL) is deep's and the high cut (a90 + 0.5 = 4.5) is thin's; ON either cut is normal (strict < and
+        # >). Checked on h itself: one ulp of fill1k_bps does not survive the product with mid.
+        lo, hi = config.liq_cuts("SOL-USD")
+        self.assertEqual((lo, hi), (1.5, 4.5))
+        word = lambda h: state.liq(h, False, "SOL-USD")
+        self.assertEqual([word(below(lo)), word(lo), word(above(lo)), word(below(hi)), word(hi), word(above(hi))],
+                         ["deep", "normal", "normal", "normal", "normal", "thin"])
+        self.assertEqual([word(0.0), word(1.0), word(2.0), word(4.0), word(5.0), word(math.inf)],
+                         ["deep", "deep", "normal", "normal", "thin", "thin"])
+
+    def test_h_is_the_fill_in_half_ticks_of_the_product(self):
+        # h = fill1k_bps * mid / (1e4 * TICK_P / 2): at mid 200 and a 1c tick half a tick is 0.25 bps
+        self.assertEqual(state.half_ticks(0.25, 200.0, "SOL-USD"), 1.0)
+        self.assertEqual(state.half_ticks(1.125, 200.0, "SOL-USD"), 4.5)
+        self.assertAlmostEqual(state.half_ticks(0.8698677800991063, 114.96, "SOL-USD"), 2.0, places=9)
+        for fill, want in ((0.25, "deep"), (0.37, "deep"), (0.38, "normal"), (0.75, "normal"),
+                           (1.12, "normal"), (1.13, "thin"), (3.0, "thin")):
+            self.assertEqual(state.adjectives(feat(fill1k_bps=fill))["liq"], want, fill)
+        # the same bps at half the price is half the ticks: the cut moves with the price in bps, not in h
+        self.assertEqual(state.adjectives(feat(fill1k_bps=1.0, mid=100.0))["liq"], "normal")    # h 2.0
+        self.assertEqual(state.adjectives(feat(fill1k_bps=1.0, mid=200.0))["liq"], "normal")    # h 4.0
+        self.assertEqual(state.adjectives(feat(fill1k_bps=1.0, mid=300.0))["liq"], "thin")      # h 6.0
+
+    def test_liq_reads_the_products_own_tick_atoms_and_fallback(self):
+        two = ("SOL-USD", "ETH-USD")
+        with mock.patch.object(config, "PRODUCTS", two), \
+                mock.patch.dict(config.TICK_P, {"ETH-USD": 0.1}), \
+                mock.patch.dict(config.LIQ_ATOMS, {"ETH-USD": (2, 6)}), \
+                mock.patch.dict(config.LIQ_THIN_FALLBACK, {"ETH-USD": False}):
+            f = feat(fill1k_bps=10.0, mid=200.0)                    # h: SOL 40.0 (1c tick), ETH 4.0 (10c tick)
+            self.assertEqual(state.adjectives(f, "SOL-USD")["liq"], "thin")
+            self.assertEqual(state.adjectives(f, "ETH-USD")["liq"], "normal")
+            self.assertEqual(state.adjectives(feat(fill1k_bps=5.0, mid=200.0), "ETH-USD")["liq"], "deep")   # h 2.0 < 2.5
+            self.assertEqual(state.adjectives(feat(fill1k_bps=17.5, mid=200.0), "ETH-USD")["liq"], "thin")  # h 7.0 > 6.5
+            with mock.patch.dict(config.LIQ_THIN_FALLBACK, {"ETH-USD": True}):          # thin iff h > a90 - 0.5
+                self.assertEqual(state.adjectives(feat(fill1k_bps=15.0, mid=200.0), "ETH-USD")["liq"], "thin")  # 6.0
+            self.assertEqual(state.adjectives(feat(fill1k_bps=15.0, mid=200.0), "ETH-USD")["liq"], "normal")
+        with self.assertRaises(KeyError):
+            state.adjectives(feat(), "ETH-USD")                   # no tick for a product outside PRODUCTS
+
+    def test_liq_is_bin_fill1k_quantiles_own_rule_and_sols_atoms_are_the_quoted_output(self):
+        # one rule in two places (the tool imports nothing from loop/): the same h, the same word, and
+        # SOL's atoms are the tool's rounding of the h_p10 / h_p90 PREREG-v2 §3 quotes from its output
+        path = os.path.join(config.REPO, "bin", "fill1k-quantiles")
+        loader = importlib.machinery.SourceFileLoader("fill1k_quantiles_for_state", path)
+        tool = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+        loader.exec_module(tool)
+        lo, hi = config.liq_cuts("SOL-USD")
+        for h in [i / 8 for i in range(0, 81)] + [below(lo), above(lo), below(hi), above(hi), math.inf]:
+            self.assertEqual(state.liq(h, False, "SOL-USD"), tool._word(h, lo, hi), h)
+        for fill, mid in ((0.25, 200.0), (0.8698677800991063, 114.96), (3.7485, 131.0)):
+            self.assertEqual(state.half_ticks(fill, mid, "SOL-USD"), tool.half_ticks(fill, mid, config.TICK_P["SOL-USD"]))
+        with open(os.path.join(config.REPO, "PREREG-v2.md"), encoding="utf-8") as fh:
+            text = fh.read()
+        q = dict(re.findall(r"^  (h_p10|h_p90|thin_fallback|a10|a90): (\S+)$", text, re.M))
+        self.assertEqual((tool.atom(float(q["h_p10"])), tool.atom(float(q["h_p90"]))), config.LIQ_ATOMS["SOL-USD"])
+        self.assertEqual((int(q["a10"]), int(q["a90"])), config.LIQ_ATOMS["SOL-USD"])
+        self.assertEqual(q["thin_fallback"] == "yes", config.LIQ_THIN_FALLBACK["SOL-USD"])
 
     def test_liq_short_side_is_thin(self):
         # a side the levels cannot fill: logged as null + fill1k_short, read as inf -> thin
@@ -187,7 +243,7 @@ class Boundaries(unittest.TestCase):
     def test_l1_no_longer_sets_liq(self):
         # the old word: l1_min_usd < $1000 -> thin. It is still logged; it moves no word now.
         for l1 in (0.0, 1.0, 999.0, 1e6):
-            self.assertEqual(state.adjectives(feat(l1_min_usd=l1, fill1k_bps=0.87))["liq"], "deep")
+            self.assertEqual(state.adjectives(feat(l1_min_usd=l1, fill1k_bps=0.25))["liq"], "deep")
             self.assertEqual(state.adjectives(feat(l1_min_usd=l1))["liq"], "normal")
         self.assertFalse(hasattr(config, "LIQ_THIN_USD"))
         self.assertFalse(hasattr(config, "LIQ_DEEP_USD"))
@@ -311,6 +367,19 @@ class StateString(unittest.TestCase):
         self.assertEqual(state.state_string(adj),
                          "SOL: liquidity deep, flow bot_war, trend pumping, vol calm")
 
+    def test_the_base_is_the_first_word_and_nothing_else_moves(self):
+        # PREREG-v2 §8: the product name is the first word of the state; the default is v1's SOL
+        adj = {"liq": "deep", "flow": "bot_war", "trend": "pumping", "vol": "calm"}
+        self.assertEqual(state.state_string(adj, "SOL"), state.state_string(adj))
+        self.assertEqual(state.state_string(adj, "ETH"), "ETH: liquidity deep, flow bot_war, trend pumping, vol calm")
+        for b in ("ETH", "DOGE", "XRP"):
+            for a in state.all_states():
+                s = state.state_string(a, b)
+                self.assertEqual(s, b + state.state_string(a)[len("SOL"):])
+        for bad in ("sol", "S0L", "", None, "SOL-USD", "SOL ", "ÉTH", "{BASE}"):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                state.state_string(adj, bad)
+
     def test_all_81_match_format_and_carry_no_digit(self):
         seen = set()
         for adj in state.all_states():
@@ -398,9 +467,11 @@ class ThresholdsComeFromConfig(unittest.TestCase):
         self.assertEqual(sorted(v for _, v in literal_compares), [0.0, 0.0], literal_compares)
         names = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)
                  and isinstance(n.value, ast.Name) and n.value.id == "config"}
-        for name in ("LIQ_THIN_BPS", "LIQ_DEEP_BPS", "NOTIONAL_USD", "FLOW_P_LO", "FLOW_P_HI", "TREND_Z",
+        for name in ("TICK_P", "liq_cuts", "base", "NOTIONAL_USD", "FLOW_P_LO", "FLOW_P_HI", "TREND_Z",
                      "VOL_RATIO_LO", "VOL_RATIO_HI", "WINDOW_MIN", "PRODUCT", "HORIZON_S", "CADENCE_S"):
             self.assertIn(name, names)
+        for name in ("LIQ_THIN_BPS", "LIQ_DEEP_BPS"):             # v1's bps cuts: no v2 word reads them
+            self.assertNotIn(name, names)
 
 
 if __name__ == "__main__":

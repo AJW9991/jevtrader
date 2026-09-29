@@ -16,6 +16,11 @@ index 0 is the oldest, -1 the newest closed minute, which is "now"):
               sell). A side the snapshot's levels cannot fill costs inf: logged as null with
               fill1k_short = true, and liq reads thin. l1_min_usd (the smaller level-1 side in
               USD) stays a logged feature; it no longer sets a word.
+  h           (v2, PREREG-v2 §3; not logged, a function of two logged features and a constant)
+              fill1k_bps · mid / (1e4 · TICK_P / 2): the fill cost in half-tick units of the
+              row's product, at a level-1 fill the spread in ticks. liq: deep iff h < a10 + 0.5,
+              thin iff h > the thin cut (a90 ± 0.5, config.liq_cuts) or fill1k_short, normal
+              otherwise; deep is read first. v1 cut fill1k_bps itself at LIQ_DEEP_BPS / LIQ_THIN_BPS.
   vol5_usd    sum over the last 5 candles of base volume × close (the candle carries
               no notional; close is the only price the venue closes the minute on).
   vol5_p10/90 nearest-rank percentiles of the window's 60 NON-overlapping 5-min sums,
@@ -43,7 +48,7 @@ VOL = ("calm", "normal", "violent")
 DIMS = ("liq", "flow", "trend", "vol")
 ALPHABET = {"liq": LIQ, "flow": FLOW, "trend": TREND, "vol": VOL}
 BUY, SELL, HOLD = "buy", "sell", "hold"
-BASE = config.PRODUCT.split("-")[0]                     # "SOL": the word in front of the colon
+BASE = config.base(config.PRODUCT)                      # "SOL": the v1 product's word in front of the colon
 FLOW_BLOCK_MIN = 5                                      # the 5 in vol5: CONTRACT §2 names the feature
 RET_BLOCK_MIN = config.HORIZON_S // config.CADENCE_S    # 15: the return block IS the horizon
 FEATURE_KEYS = ("mid", "spread_bps", "l1_min_usd", "fill1k_bps", "fill1k_short",
@@ -142,13 +147,30 @@ def _band(x, lo, hi, words):
     return words[0] if x < lo else words[2] if x > hi else words[1]
 
 
-def adjectives(feat):
-    """Numbers → four words. Every cut comes from config.py; flow's cuts come from the
-    window itself (the p10/p90 in feat), which is why they are features, not constants.
-    liq runs the other way round from the other three: a LOW cost is deep, so the cuts
-    are (LIQ_DEEP_BPS, LIQ_THIN_BPS) and the words reversed; a short side is inf → thin."""
-    fill = math.inf if feat["fill1k_short"] or feat["fill1k_bps"] is None else feat["fill1k_bps"]
-    return {"liq": _band(fill, config.LIQ_DEEP_BPS, config.LIQ_THIN_BPS, LIQ[::-1]),
+def half_ticks(fill_bps, mid, product):
+    """h = fill_bps · mid / (1e4 · TICK_P / 2): the fill cost in units of half the product's tick
+    (1e4 · TICK_P / 2 is half a tick in bps of a unit mid), bin/fill1k-quantiles' own expression."""
+    return fill_bps * mid / (1e4 * config.TICK_P[product] / 2)
+
+
+def liq(h, short, product):
+    """The liq word for one product (PREREG-v2 §3): a short side, or no reading, is thin; otherwise
+    deep iff h < deep_below, thin iff h > thin_above, normal between, deep read first (_band's
+    order, so a value both cuts could claim is deep) and a value ON a cut normal."""
+    if short or h is None:
+        return "thin"
+    deep_below, thin_above = config.liq_cuts(product)
+    return _band(h, deep_below, thin_above, LIQ[::-1])
+
+
+def adjectives(feat, product=config.PRODUCT):
+    """Numbers → four words for `product` (the v1 product by default). Every cut comes from
+    config.py; flow's cuts come from the window itself (the p10/p90 in feat), which is why they
+    are features, not constants. liq runs the other way round from the other three: a LOW cost
+    is deep. v2 reads it in h, the product's half-ticks (liq above); a short side → thin."""
+    short = bool(feat["fill1k_short"]) or feat["fill1k_bps"] is None
+    h = None if short else half_ticks(feat["fill1k_bps"], feat["mid"], product)
+    return {"liq": liq(h, short, product),
             "flow": _band(feat["vol5_usd"], feat["vol5_p10"], feat["vol5_p90"], FLOW),
             "trend": _band(feat["ret15_z"], -config.TREND_Z, config.TREND_Z, TREND),
             "vol": _band(feat["rv_ratio"], config.VOL_RATIO_LO, config.VOL_RATIO_HI, VOL)}
@@ -162,12 +184,16 @@ def _check(adj):
             raise ValueError("adj[%r]=%r not in %s" % (d, adj.get(d), ALPHABET[d]))
 
 
-def state_string(adj):
-    """The ~10 words arms A and B both ride. No number, no position: the two arms share
-    one request on one state, and a digit would be a number the SPEC says they never see."""
+def state_string(adj, base=BASE):
+    """The ~10 words arms A and B both ride, for the product whose base (config.base: "SOL",
+    "ETH") is the first word (PREREG-v2 §8: the product name is the first word of the state).
+    No number, no position: the two arms share one request on one state, and a digit would be
+    a number the SPEC says they never see. A base that is not capital letters is refused."""
     _check(adj)
+    if not isinstance(base, str) or not base.isascii() or not base.isalpha() or not base.isupper():
+        raise ValueError("base %r is not a product's capital-letter base" % (base,))
     s = "%s: liquidity %s, flow %s, trend %s, vol %s" % (
-        BASE, adj["liq"], adj["flow"], adj["trend"], adj["vol"])
+        base, adj["liq"], adj["flow"], adj["trend"], adj["vol"])
     if any(ch.isdigit() for ch in s):
         raise ValueError("state string carries a digit: %r" % s)
     return s

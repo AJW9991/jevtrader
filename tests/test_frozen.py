@@ -42,8 +42,15 @@ THRESHOLDS = {                                       # what a row's words, colum
 
 ALPHABET = {"liq": ("thin", "normal", "deep"), "flow": ("quiet", "organic", "bot_war"),
             "trend": ("dumping", "flat", "pumping"), "vol": ("calm", "normal", "violent")}
-# sha256 of json.dumps([[state_string, rule_c], ...]) over state.all_states(): arm C's answer on all 81 states
-RULE_C = "289e53281bde0399848a5911e236396a0269936ec5f5608498f1786e1d578bb6"
+# per product, sha256 of json.dumps([[state_string(adj, base), rule_c(adj)], ...]) over state.all_states(): arm C's
+# answer on all 81 states, the product's base first in each string (PREREG-v2 §3: one pin per product, SOL-USD's the
+# v1 pin unchanged; an added product's pin is set in the commit that adds it to config.PRODUCTS)
+RULE_C = {"SOL-USD": "289e53281bde0399848a5911e236396a0269936ec5f5608498f1786e1d578bb6"}
+
+
+def _rule_c_digest(product):
+    pairs = [[state.state_string(a, config.base(product)), state.rule_c(a)] for a in state.all_states()]
+    return hashlib.sha256(json.dumps(pairs).encode()).hexdigest(), pairs
 
 HOW = ("a frozen input changed during the sample (CLAUDE.md, 'What must not change'). If the change is"
        " Alex's and deliberate (an erratum, or prereg-v2 after 2026-10-23 21:40Z), update the pin in"
@@ -65,9 +72,15 @@ class Frozen(unittest.TestCase):
     def test_the_state_alphabet_and_arm_c_on_every_state_are_the_pinned_ones(self):
         self.assertEqual(state.DIMS, ("liq", "flow", "trend", "vol"), HOW)
         self.assertEqual(state.ALPHABET, ALPHABET, HOW)
-        pairs = [[state.state_string(a), state.rule_c(a)] for a in state.all_states()]
-        self.assertEqual(len(pairs), 81)
-        self.assertEqual(hashlib.sha256(json.dumps(pairs).encode()).hexdigest(), RULE_C, HOW)
+        self.assertEqual(sorted(RULE_C), sorted(config.PRODUCTS), "one RULE_C pin per product: " + HOW)
+        for product, want in RULE_C.items():
+            with self.subTest(product=product):
+                got, pairs = _rule_c_digest(product)
+                self.assertEqual(len(pairs), 81)
+                self.assertTrue(all(s.startswith(config.base(product) + ": liquidity ") for s, _ in pairs))
+                self.assertEqual(got, want, HOW)
+        pairs = [[state.state_string(a), state.rule_c(a)] for a in state.all_states()]      # v1's form, no base given
+        self.assertEqual(hashlib.sha256(json.dumps(pairs).encode()).hexdigest(), RULE_C["SOL-USD"], HOW)
 
     def test_the_pins_catch_an_edit(self):
         # the check itself, not only its inputs: one changed byte, one changed threshold, one changed state
@@ -78,7 +91,9 @@ class Frozen(unittest.TestCase):
         self.assertNotEqual(dict(THRESHOLDS, PBUY=0.61), THRESHOLDS)
         pairs = [[state.state_string(a), state.rule_c(a)] for a in state.all_states()]
         pairs[0][1] = {"buy": "hold", "hold": "sell", "sell": "buy"}[pairs[0][1]]
-        self.assertNotEqual(hashlib.sha256(json.dumps(pairs).encode()).hexdigest(), RULE_C)
+        self.assertNotEqual(hashlib.sha256(json.dumps(pairs).encode()).hexdigest(), RULE_C["SOL-USD"])
+        other = [[state.state_string(a, "ETH"), state.rule_c(a)] for a in state.all_states()]   # the base is in the pin
+        self.assertNotEqual(hashlib.sha256(json.dumps(other).encode()).hexdigest(), RULE_C["SOL-USD"])
 
 
 if __name__ == "__main__":

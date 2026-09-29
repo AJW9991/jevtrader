@@ -25,7 +25,8 @@ NOW = float(META["ts_rx_epoch"])                     # 1790216929 -> 2026-09-24T
 TS_RX = "2026-09-24T02:28:49.000Z"
 TICK = "20260924T022800Z"
 DAY = "20260924"
-STATE = "SOL: liquidity deep, flow quiet, trend pumping, vol normal"   # liq pinned by test_feed's fixture walk
+STATE = "SOL: liquidity normal, flow quiet, trend pumping, vol normal"   # liq pinned by test_feed's fixture walk
+                                                                            # (h = 2.0, a two-tick spread: v1 read deep)
 SNAP = feed.assemble(META["product"], NOW, _load("book.json"), _load("candles.json"),
                      _load("trades.json"), {"calls": 3, "ms": 600})
 KEY = "unit-test-key-not-real-0000"
@@ -538,7 +539,7 @@ class CycleTest(unittest.TestCase):
         self.assertEqual((row["bid_size"], row["ask_size"]), (SNAP["bid_size"], SNAP["ask_size"]))
         self.assertEqual((row["book_time"], row["feed_age_s"]), (SNAP["book_time"], SNAP["feed_age_s"]))
         self.assertEqual(row["state"], STATE)
-        self.assertEqual(row["adj"], {"liq": "deep", "flow": "quiet", "trend": "pumping", "vol": "normal"})
+        self.assertEqual(row["adj"], {"liq": "normal", "flow": "quiet", "trend": "pumping", "vol": "normal"})
         self.assertEqual(row["rule_c"], "buy")
         self.assertEqual(sorted(row["features"]), sorted(("mid", "spread_bps", "l1_min_usd", "fill1k_bps",
                          "fill1k_short", "vol5_usd", "vol5_p10", "vol5_p90", "ret15_bps", "ret15_sd_bps",

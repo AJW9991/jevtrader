@@ -426,14 +426,17 @@ class TestSnapshot(unittest.TestCase):
 
     def test_fixture_book_walks_to_the_pinned_fill1k(self):
         # the smoke run of the new liq on the recorded book: $1,000 fills at level 1 on both
-        # sides ($23,597 bid / $13,208 ask there), so the cost is the half-spread, 0.87 bps -> deep
+        # sides ($23,597 bid / $13,208 ask there), so the cost is the half-spread, 0.87 bps. v1 read
+        # that deep (EXP["liq"], < 1.0 bps); v2 reads h = 2.0, a two-tick spread, so normal (PREREG-v2 §3)
         from loop import state
         s, _ = snap()
         f = state.features(s)
         self.assertAlmostEqual(f["fill1k_bps"], EXP["fill1k_bps"], places=12)
         self.assertIs(f["fill1k_short"], EXP["fill1k_short"])
         self.assertAlmostEqual(f["fill1k_bps"], 1e4 * (s["ask"] - s["bid"]) / 2 / f["mid"], places=9)
-        self.assertEqual(state.adjectives(f)["liq"], EXP["liq"])
+        self.assertEqual(EXP["liq"], "deep")
+        self.assertAlmostEqual(state.half_ticks(f["fill1k_bps"], f["mid"], "SOL-USD"), 2.0, places=9)
+        self.assertEqual(state.adjectives(f)["liq"], "normal")
 
     def test_assemble_equals_snapshot_and_is_the_cli_fixture_path(self):
         s, _ = snap()

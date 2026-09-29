@@ -26,7 +26,7 @@ TS_RX = "2026-09-24T02:28:49.000Z"
 TICK = "20260924T022800Z"
 NEXT_TICK = "20260924T022900Z"
 DAY = "20260924"
-STATE = "SOL: liquidity deep, flow quiet, trend pumping, vol normal"
+STATE = "SOL: liquidity normal, flow quiet, trend pumping, vol normal"   # the fixture's h is 2.0 (v1 read deep)
 SNAP = feed.assemble(META["product"], NOW, _load("book.json"), _load("candles.json"),
                      _load("trades.json"), {"calls": 3, "ms": 600})
 KEY = "unit-test-key-not-real-0000"
