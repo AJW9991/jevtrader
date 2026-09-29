@@ -1287,6 +1287,99 @@ class V2TickTest(unittest.TestCase):
         self.assertEqual(cycle.tick(dry=True), 0)
         self.assertEqual(self.only_row()["absence"], "lock")
 
+    # -- the one-process mode (PREREG-v2 §2): one loop ticking PRODUCTS in sequence --------------------------------
+    def test_every_product_ticks_each_product_in_order_into_its_own_store(self):
+        eth = self.two_products()
+        os.makedirs(self.data)
+        with open(config.pause("SOL-USD"), "w", encoding="utf-8") as fh:            # PAUSE still per product
+            fh.write("prereg: 3 bad days\n")
+        self.answer()
+        self.assertEqual(cycle.main(["--once", "--every-product"]), 0)
+        self.assertEqual([c.args for c in self.snapshot.call_args_list], [("SOL-USD",), ("ETH-USD",)])
+        sol, (e,) = self.only_row(), self.rows_of(eth.decisions)
+        self.assertEqual((sol["product"], sol["state"], sol["absence"]), ("SOL-USD", STATE, "halt"))
+        self.assertEqual((e["product"], e["state"], e["absence"]), ("ETH-USD", ETH_STATE, None))
+        self.assertEqual((sol["tick_id"], e["tick_id"]), (TICK, TICK))
+        self.assertEqual(self.heartbeat(), TS_RX)
+        with open(eth.heartbeat, encoding="utf-8") as fh:
+            self.assertEqual(fh.read().strip(), TS_RX)
+        self.assertEqual(self.urlopen.call_count, 1)                              # ETH's send; SOL's paused
+        self.assertIsNone(self.sends())
+        with open(eth.sends, encoding="utf-8") as fh:
+            self.assertEqual(len(fh.read().splitlines()), 2)
+
+    def test_every_product_with_jevloop_product_set_is_a_usage_error(self):
+        self.two_products()
+        with mock.patch.dict(os.environ, {config.ENV_PRODUCT: "ETH-USD"}):
+            self.assertEqual(cycle.main(["--once", "--every-product"]), 2)
+        self.assertFalse(os.path.exists(self.data))
+        self.assertIn("--every-product", self.err.getvalue())
+        self.snapshot.assert_not_called()
+
+    def test_the_round_shares_one_watchdog_budget_and_skips_a_product_it_cannot_start(self):
+        # one tick's watchdog is WATCHDOG_S from its start, so it ends before the next minute's fire; the round
+        # keeps that: each product is armed with what is left of WATCHDOG_S from the round's start, and a product
+        # reached with under a second left is not ticked this minute (stderr says so; no row)
+        eth = self.two_products()
+        clock, armed = [NOW], []
+        def alarm(s):
+            if s:
+                armed.append(s)
+            return 0
+        def snap(product=None):
+            clock[0] += 12.4 if product == "SOL-USD" else 0.5                     # SOL's feed took 12.4 s
+            return dict(SNAP, product=product, ts_rx=cycle.iso_ms(clock[0]))
+        self.snapshot.side_effect = snap
+        with mock.patch("time.time", side_effect=lambda: clock[0]), mock.patch("signal.alarm", side_effect=alarm):
+            self.assertEqual(cycle.main(["--dry", "--once", "--every-product"]), 0)
+        self.assertEqual(armed, [cycle.WATCHDOG_S, int(cycle.WATCHDOG_S - 12.4)])
+        self.assertEqual((len(self.rows()), len(self.rows_of(eth.decisions))), (1, 1))
+        clock[0], armed[:] = NOW + 60, []
+        def slow(product=None):
+            clock[0] += 49.5 if product == "SOL-USD" else 0.5
+            return dict(SNAP, product=product, ts_rx=cycle.iso_ms(clock[0]))
+        self.snapshot.side_effect = slow
+        with mock.patch("time.time", side_effect=lambda: clock[0]), mock.patch("signal.alarm", side_effect=alarm):
+            self.assertEqual(cycle.main(["--dry", "--once", "--every-product"]), 0)
+        self.assertEqual(armed, [cycle.WATCHDOG_S])                              # ETH never armed, never ticked
+        self.assertEqual((len(self.rows()), len(self.rows_of(eth.decisions))), (2, 1))
+        self.assertIn("ETH-USD: not ticked this minute", self.err.getvalue())
+
+    def test_every_product_once_fired_early_reads_the_first_products_heartbeat(self):
+        # the round's first product ticks first, so its heartbeat names the minute once the minute's round began
+        eth = self.two_products()
+        os.makedirs(os.path.dirname(eth.heartbeat), exist_ok=True)
+        base = NOW - 49                                                           # 02:28:00
+        for sol_hb, eth_hb, sleeps in (("2026-09-24T02:28:00.100Z", "2026-09-24T02:27:00.100Z", [0.5]),
+                                       ("2026-09-24T02:27:00.100Z", "2026-09-24T02:28:00.100Z", [])):
+            with self.subTest(sol=sol_hb, eth=eth_hb):
+                for path, hb in ((config.HEARTBEAT, sol_hb), (eth.heartbeat, eth_hb)):
+                    with open(path, "w", encoding="utf-8") as fh:
+                        fh.write(hb + "\n")
+                clock, self.sleeps[:] = [base + 59.5], []
+                def sleep(s):
+                    self.sleeps.append(s)
+                    clock[0] += s
+                self.snapshot.side_effect = lambda product=None: dict(SNAP, product=product, ts_rx=cycle.iso_ms(clock[0]))
+                with mock.patch("time.time", side_effect=lambda: clock[0]), mock.patch("time.sleep", side_effect=sleep):
+                    self.assertEqual(cycle.main(["--dry", "--once", "--every-product"]), 0)
+                self.assertEqual(self.sleeps, sleeps)
+
+    def test_every_product_forever_runs_a_round_at_each_boundary(self):
+        eth = self.two_products()
+        clock = {"t": NOW}
+        def sleep(s):
+            self.sleeps.append(s)
+            clock["t"] += s + 1.3
+            if len(self.sleeps) == 3:
+                signal.raise_signal(signal.SIGTERM)
+        self.snapshot.side_effect = lambda product=None: dict(SNAP, product=product, ts_rx=cycle.iso_ms(clock["t"]))
+        with mock.patch("time.time", side_effect=lambda: clock["t"]), mock.patch("time.sleep", side_effect=sleep):
+            self.assertEqual(cycle.main(["--dry", "--forever", "--every-product"]), 0)
+        want = ["20260924T022900Z", "20260924T023000Z"]
+        self.assertEqual([r["tick_id"] for r in self.rows()], want)
+        self.assertEqual([r["tick_id"] for r in self.rows_of(eth.decisions)], want)
+
     # -- HALT and PAUSE -------------------------------------------------------------------------------------
     def test_pause_stops_only_its_own_products_send_and_observation_goes_on(self):
         eth = self.two_products()

@@ -8,9 +8,11 @@ One process ticks one product (PREREG-v2 §2): JEVLOOP_PRODUCT names it (unset:
 SOL-USD, whose store is v1's data/decisions.jsonl, data/sends.tsv, data/loop.lock
 and data/heartbeat; any other product in config.PRODUCTS has the same four under
 data/<PRODUCT>/), and a value outside config.PRODUCTS exits 2 before any directory
-is made. data/HALT stops every product's sends; data/PAUSE.<PRODUCT> stops only this
-product's, with the same absence "halt", and the spend guard, which sums every
-product's decision log, ignores it. May not: compute a position (book.py replays the log), act on a
+is made. --every-product is the one-process mode (PREREG-v2 §2): one process ticks every
+product in config.PRODUCTS in sequence, each into its own store, under one watchdog budget
+(below); JEVLOOP_PRODUCT set beside it is a usage error. data/HALT stops every product's sends;
+data/PAUSE.<PRODUCT> stops only this product's, with the same absence "halt", and the spend
+guard, which sums every product's decision log, ignores it. May not: compute a position (book.py replays the log), act on a
 confidence (rules.py derives columns; report.py compares them), retry the feed
 or the model (feed never retries; jev retries once on its own terms), see the
 key (jev.py names its path in the row, never its value), or open any file when
@@ -55,6 +57,12 @@ watchdog wraps each tick (macOS has no `timeout`): feed is 3 x 10 s and jev is
 row then says so. Past the lock the
 row is written wherever the alarm lands (inside _run's handlers too); the write
 disarms it. In the guards before the lock it costs the row, never the exit code.
+Under --every-product a round keeps the same bound: each product's tick is armed with
+what is left of WATCHDOG_S from the round's start (the stderr line still names
+WATCHDOG_S), and a product reached with less than a second left is not ticked that
+minute (stderr says so; no row), so a round ends before the next minute's fire as one
+tick does. --once's early-fire check reads the first product's heartbeat: it ticks
+first, so its heartbeat names the minute once that minute's round has begun.
 """
 import argparse, fcntl, hashlib, json, math, os, signal, sys, time, traceback
 
@@ -571,7 +579,7 @@ def tick(dry=False, now=None, product=None):
         _unlock(lk)
 
 
-def _guarded_tick(dry, product=None):
+def _guarded_tick(dry, product=None, seconds=None):
     """tick() under the watchdog, armed and disarmed inside one outer try, so that no alarm
     can leave this function (main() would exit 1 with a traceback). An alarm that escapes
     tick() fired in the guards, before the lock, when no row is owed yet: it is reported
@@ -580,7 +588,7 @@ def _guarded_tick(dry, product=None):
     code = 0
     try:
         try:
-            signal.alarm(WATCHDOG_S)
+            signal.alarm(WATCHDOG_S if seconds is None else seconds)   # a round arms what is left of it
             code = tick(dry, product=product)
         except _Watchdog:
             _err(f"watchdog: {WATCHDOG_S} s passed in the guards; no row")
@@ -589,6 +597,23 @@ def _guarded_tick(dry, product=None):
     except _Watchdog:
         pass
     return code
+
+
+def _round(dry, products):
+    """One tick of each product, in order, in this process (--every-product; PREREG-v2 §2's one-process mode).
+    The round shares one watchdog budget, WATCHDOG_S from its start: each product's tick is armed with what is
+    left of it, and a product reached with less than a second left is not ticked this minute (said on stderr,
+    no row). A non-zero code (the path guard) ends the round; so does SIGTERM, as _Stop, up to main()."""
+    start = time.time()
+    for p in products:
+        left = start + WATCHDOG_S - time.time()
+        if left < 1:
+            _err(f"{p}: not ticked this minute: the round's {WATCHDOG_S} s watchdog budget is spent")
+            continue
+        code = _guarded_tick(dry, p, int(left))
+        if code:
+            return code
+    return 0
 
 
 def _this_minute_has_its_row(now, path=None):
@@ -631,17 +656,26 @@ def main(argv=None):
                    help="a tick at every wall-clock minute until SIGTERM")
     ap.add_argument("--dry", action="store_true",
                     help="no ledger row, no send: print the would-be body, log the row as dry")
+    ap.add_argument("--every-product", action="store_true",
+                    help="the one-process mode: tick every product in config.PRODUCTS in sequence (PREREG-v2 §2)")
     a = ap.parse_args(argv)                  # argparse exits 2 on a usage error
     p = forbidden()
     if p:                                    # before a handler, a directory, or a file
         _err(f"refusing to run under {p}; exit {EXIT_GUARD}")
         return EXIT_GUARD
-    try:
-        product = config.loop_product()      # JEVLOOP_PRODUCT, unset: SOL-USD (PREREG-v2 §2)
-    except ValueError as e:                  # before any directory is made
-        _err(f"{e}; exit {EXIT_USAGE}")
-        return EXIT_USAGE
-    beat = config.store(product).heartbeat
+    if a.every_product:
+        if config.ENV_PRODUCT in os.environ:  # one product, or all of them: never both
+            _err(f"{config.ENV_PRODUCT} names one product and --every-product ticks all of them; set one; exit {EXIT_USAGE}")
+            return EXIT_USAGE
+        products = tuple(config.PRODUCTS)
+    else:
+        try:
+            products = (config.loop_product(),)   # JEVLOOP_PRODUCT, unset: SOL-USD (PREREG-v2 §2)
+        except ValueError as e:              # before any directory is made
+            _err(f"{e}; exit {EXIT_USAGE}")
+            return EXIT_USAGE
+    beat = config.store(products[0]).heartbeat   # the first product ticks first
+    run = (lambda: _round(a.dry, products)) if a.every_product else (lambda: _guarded_tick(a.dry, products[0]))
     _SIG["term"] = _SIG["critical"] = False
     old = signal.signal(signal.SIGTERM, _on_term), signal.signal(signal.SIGALRM, _on_alarm)
     try:
@@ -649,10 +683,10 @@ def main(argv=None):
             now = time.time()                # started there, the tick would floor to the minute just done
             if now % config.CADENCE_S > config.CADENCE_S - 2 and _this_minute_has_its_row(now, beat):
                 _sleep_to_boundary(now)      # (only when this minute already has its row: a late fire keeps its minute)
-            return _guarded_tick(a.dry, product)
+            return run()
         while True:                          # aligned first: a tick at :37 would be one odd row
             _sleep_to_boundary()
-            code = _guarded_tick(a.dry, product)
+            code = run()
             if code or _SIG["term"]:
                 return code
     except _Stop:
