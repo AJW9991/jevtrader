@@ -2,12 +2,13 @@
 """bin/promote -- the human apply step, and the ONLY writer of prompts/ (CONTRACT §5), on PREREG-v2 §8's schedule.
 
 Usage:  bin/promote proposals/<date>.json <k> --reason "one line"   k = candidate index, from 0
+        bin/promote --table-only proposals/<date>.json             the CURRENT version's own per-product tables
 
 A person runs this at a terminal. It never runs under launchd, from a plist, a cron, a hook or another script: nothing
 in this repo self-deploys, and a wording no one read before it went live would turn the measurement into the thing it
 measures. It refuses without a tty for that reason, and refuses on a dirty git tree because a promote must be its own
 commit: every row after it names prompt_b_sha and table_sha, and each must point at one committed text. It sends
-nothing: the tables it writes are copied from the proposal night's .table.json.
+nothing, with or without --table-only: the tables it writes are copied from the proposal night's .table.json.
 --repo names the git tree the checks read (default: the checkout this file lives in), --prompts the prompts root and
 --prereg the PREREG-v2.md read; all three exist for tests (which replace subprocess.run for git rather than point --repo
 elsewhere), and a person never passes any: --repo aimed at another tree would defeat the checks.
@@ -35,6 +36,11 @@ product, candidate k's column with prompt_sha the new file's; then CURRENT (CURR
 it every minute). prompts.current(tick_id) follows `replaces` until the activation, so the loop, the digest and the
 policy table keep asking the version active now until then. It prints the diff of the action question, and the commit
 line: the person's reason with the states moved per product.
+
+--table-only <proposal.json> (§8, "v2's own tables"): attended and on a clean tree, no schedule and no seal (it builds
+v2's tables before the draft tag); copies the CURRENT column of the proposal's .table.json into
+prompts/<version CURRENT names>.table.<product>.json for every product under the same 81/81 refusal, refusing unless
+the table's CURRENT sha equals that version file's sha. CURRENT is not touched.
 
 May not: touch data/, send anything, read the key, edit an existing version file, or pick k itself.
 """
@@ -243,17 +249,59 @@ def _checks(a):
         raise RuntimeError("git tree is dirty: commit or stash first, so the promote is its own commit")
 
 
+def table_only(a, root):
+    """--table-only: the CURRENT version's own tables from the proposal night's .table.json (PREREG-v2 §8)."""
+    _checks(a)
+    with open(a.table_only, "rb") as fh:
+        raw = fh.read()
+    doc, _ = vouched(a.table_only, raw)
+    version = prompts.named(root)
+    vsha = prompts.sha(version, root)
+    if doc["current"].get("version") != version or doc["current"].get("sha") != vsha:
+        raise RuntimeError(f"the table's CURRENT is {doc['current'].get('version')} sha {str(doc['current'].get('sha'))[:12]}, "
+                           f"not {version}.json's {vsha[:12]}: a version's table is copied only from a table of that file")
+    files = []
+    for p in config.PRODUCTS:
+        cur, _, models = column(doc, policy_table.CURRENT, p)
+        files.append((p, table_file(version, p, vsha, cur, models)))
+    written = []
+    for p, t in files:
+        path = prompts.table_path(version, p, root)
+        old = prompts.table(version, p, root) if os.path.exists(path) else None
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(t, indent=2, ensure_ascii=False) + "\n")
+        os.replace(tmp, path)
+        new = prompts.table(version, p, root)
+        written.append(f"{os.path.basename(path)} sha {new['sha'][:12]}" + (f" (REPLACED {old['sha'][:12]})" if old else ""))
+    print("promote --table-only: wrote " + "; ".join(written) + f"; model answered {', '.join(sorted({t['model_answered'] for _, t in files}))}."
+          " Nothing sent, CURRENT untouched; commit prompts/ now, on its own")
+    return 0
+
+
 def main(argv=None, now=None):
     ap = argparse.ArgumentParser(prog="promote", description="copy candidate k of a proposal into prompts/v<N+1>.json on "
                                  "PREREG-v2 §8's schedule; run by a person, never under launchd")
-    ap.add_argument("proposal", help="proposals/<date>.json")
-    ap.add_argument("k", type=int, help="candidate index, from 0")
+    ap.add_argument("proposal", nargs="?", help="proposals/<date>.json")
+    ap.add_argument("k", nargs="?", type=int, help="candidate index, from 0")
     ap.add_argument("--reason", default=None, help="the person's reason, one line: it goes into the promote commit")
+    ap.add_argument("--table-only", metavar="PROPOSAL_JSON", default=None,
+                    help="copy the CURRENT version's per-product tables from the proposal's .table.json; sends nothing")
     ap.add_argument("--prompts", default=None, help="prompts root (tests)")
     ap.add_argument("--repo", default=REPO, help="git tree to check (tests)")
     ap.add_argument("--prereg", default=None, help="PREREG-v2.md to read T0_v2 from (tests)")
     a = ap.parse_args(argv)
     root = a.prompts or config.PROMPTS
+    if a.table_only is not None:
+        if a.proposal is not None or a.k is not None or a.reason is not None:
+            ap.error("--table-only takes the proposal json alone")
+        try:
+            return table_only(a, root)
+        except (OSError, ValueError, RuntimeError) as e:           # PromptError is a ValueError
+            print(f"promote: {e}", file=sys.stderr)
+            return 1
+    if a.proposal is None or a.k is None:
+        ap.error("give proposals/<date>.json and k (or --table-only proposals/<date>.json)")
     now = time.time() if now is None else now
     try:
         _checks(a)

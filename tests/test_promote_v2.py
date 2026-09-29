@@ -3,7 +3,7 @@ run on day E - 1, refused when now >= activation - 600 s); T0_v2 read from PRERE
 the prereg-v2-seal tag; a second pending version refused; prompts/v<N>.json with activation_tick and replaces, then
 the per-product tables copied from the proposal night's .table.json under an 81/81 refusal and a CURRENT-sha match,
 then CURRENT; a candidate moving 0 of 81 states on every product refused; the base-token refusal; the reason line with
-the states moved. Promote never sends.
+the states moved; and --table-only, which copies a version's own tables and sends nothing. Promote never sends.
 
 Offline: the proposal night's .md and .table.json are made here by nightly.policy_table with loop.jev.ask mocked;
 git is faked (subprocess.run in the loaded promote) except in PromoteUnfaked, which uses a throwaway repository;
@@ -415,6 +415,60 @@ class Promote(Base):
             code = [l for l in fh.read().splitlines() if not l.lstrip().startswith("#")]
         for name in ("jev.ask", "urlopen", "run_night", "policy_table.run(", "policy_table.main", "policy_table.fill"):
             self.assertEqual([l for l in code if name in l], [], name)
+
+
+class TableOnly(Base):
+    """--table-only <proposal.json>: the CURRENT version's per-product tables, copied from a proposal night's
+    .table.json (PREREG-v2 §8: v2's own tables before the draft tag); attended, sends nothing, no schedule, no seal."""
+
+    def test_copies_currents_column_for_every_product(self):
+        prop = self.night([])                                                   # a proposal with no candidates
+        self.git["rev-parse"] = ("", 1)                                         # no seal tag: not needed here
+        prereg(self.prereg, "________")                                         # nor T0_v2
+        rc, out, err = self.run_promote("--table-only", prop)
+        self.assertEqual(rc, 0, err)
+        for p in PRODUCTS3:
+            t = prompts.table("v2", p, self.root)
+            self.assertEqual(t["answers"], dict(policy_table.states(p)))       # CURRENT answered rule_c everywhere
+            with open(prompts.table_path("v2", p, self.root), encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh)["prompt_sha"], prompts.sha("v2", self.root))
+        self.assertEqual(prompts.named(self.root), "v2")
+        self.assertIn("Nothing sent, CURRENT untouched", out)
+        self.assertNotIn("REPLACED", out)
+        self.sends.assert_not_called()
+        rc, out, _ = self.run_promote("--table-only", prop)                    # the once-only rebuild shows what it replaced
+        self.assertEqual(rc, 0)
+        self.assertIn("REPLACED", out)
+
+    def test_refuses_a_table_whose_current_is_not_the_version_file(self):
+        v1root = pin_versions(self, "v1")
+        prop = self.night([], root=v1root)
+        self.root = pin_versions(self, "v2")
+        rc, _, err = self.run_promote("--table-only", prop)
+        self.assertEqual(rc, 1)
+        self.assertIn(f"the table's CURRENT is v1 sha {prompts.sha('v1', self.root)[:12]}, not v2.json's", err)
+        self.untouched()
+
+    def test_refuses_short_of_81_of_81(self):
+        prop = self.night([], fail=(policy_table.states("ETH-USD")[3][0],))
+        rc, _, err = self.run_promote("--table-only", prop)
+        self.assertEqual(rc, 1)
+        self.assertIn("current answered 80 of 81 states on ETH-USD", err)
+        self.untouched()
+
+    def test_is_attended_on_a_clean_tree_and_takes_nothing_else(self):
+        prop = self.night([])
+        self.attended.return_value = False
+        rc, _, err = self.run_promote("--table-only", prop)
+        self.assertEqual(rc, 1)
+        self.assertIn("no tty", err)
+        self.attended.return_value = True
+        self.git["status"] = ("?? stray\n", 0)
+        rc, _, err = self.run_promote("--table-only", prop)
+        self.assertIn("dirty", err)
+        self.untouched()
+        with mock.patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
+            self.promote.main(["--table-only", prop, "--reason", "r"])
 
 
 class PromoteUnfaked(unittest.TestCase):
