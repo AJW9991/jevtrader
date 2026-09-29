@@ -397,12 +397,16 @@ def _watchdog_absence(row, stage):
 def _table(version, product):
     """The CURRENT version's table for the product (prompts.table), or None when it is absent or
     refused: arm D and table_sha are then null and the tick goes on, A, B and C untouched (a null
-    columns.d is a hold for D only, PREREG-v2 §10's book bullet). A refusal is said on stderr."""
+    columns.d is a hold for D only, PREREG-v2 §10's book bullet). A refusal is said on stderr, and so is
+    any other failure to read it (a RecursionError from a file nested past the decoder's depth, a
+    MemoryError): the table is D's alone, so nothing it does may cost the other arms."""
     try:
         return prompts.table(version, product)
     except ValueError as e:                  # PromptError included
         _err(f"table: {e}; columns.d and table_sha null")
-        return None
+    except Exception as e:                   # not BaseException: the watchdog and SIGTERM still stop the tick
+        _err(f"table: {type(e).__name__}: {e}; columns.d and table_sha null")
+    return None
 
 
 def _run(row, dry, halt=False, where=None, product=None, store=None):

@@ -297,7 +297,7 @@ def table(version, product, root=None):
             doc = json.load(fh)
     except FileNotFoundError:
         return None
-    except (OSError, ValueError) as e:
+    except (OSError, ValueError, RecursionError) as e:   # RecursionError: nested past the decoder's depth
         raise PromptError(f"{p}: {e}") from None
     if not isinstance(doc, dict):
         raise PromptError(f"{p}: top level is not an object")

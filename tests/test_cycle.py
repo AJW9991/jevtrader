@@ -1403,6 +1403,27 @@ class V2TickTest(unittest.TestCase):
         self.assertIsNotNone(row["columns"]["b"])
         self.assertIn("table:", self.err.getvalue())
 
+    def test_a_table_that_breaks_the_parser_or_the_reader_costs_d_only(self):
+        # a refused table costs D only -- whatever the failure: a file nested past the JSON decoder's depth
+        # raised RecursionError, not a ValueError, and the tick lost A, B and C as a guard absence
+        with open(os.path.join(self.prompts_root, "v1.table.SOL-USD.json"), "w", encoding="utf-8") as fh:
+            fh.write("[" * 200000 + "]" * 200000)
+        self.answer()
+        self.assertEqual(cycle.main(["--once"]), 0)
+        row = self.only_row()
+        self.assertEqual((row["absence"], row["table_sha"], row["columns"]["d"]), (None, None, None))
+        self.assertEqual(row["columns"]["a"], rules.for_arm(ANSWERS, "a"))
+        self.assertIn("table:", self.err.getvalue())
+        with mock.patch("time.time", return_value=NOW + 60), \
+                mock.patch.object(prompts, "table", side_effect=MemoryError("a table too big to hold")):
+            self.assertEqual(cycle.main(["--once"]), 0)
+        row = self.rows()[-1]
+        self.assertEqual((row["absence"], row["table_sha"], row["columns"]["d"]), (None, None, None))
+        self.assertIsNotNone(row["columns"]["b"])
+        self.assertIn("MemoryError", self.err.getvalue())
+        with self.assertRaises(prompts.PromptError):                              # and the reader refuses it plainly
+            prompts.table("v1", "SOL-USD")
+
     def test_the_table_and_prompt_b_are_the_versions_this_tick_asks(self):
         # CURRENT names v3, pending until a minute after this tick: the row asks v1 and looks up v1's table
         v3 = {"version": "v3", "frozen": "2026-11-01", "note": "test", "activation_tick": "20260924T022900Z",
