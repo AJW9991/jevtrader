@@ -1180,10 +1180,26 @@ class TrialNight(unittest.TestCase):
         self.saw = os.path.join(self.tmp, "saw")
         os.makedirs(self.saw)
 
-    def _tree(self, model_id=STUB_MODEL):
+    THREE = ("SOL-USD", "ETH-USD", "XRP-USD")
+
+    def _tree(self, model_id=STUB_MODEL, products=THREE, named=None):
+        """A tree copy whose config.PRODUCTS is `products` (stand-ins beside SOL-USD, as tests/fixture_products gives
+        them) and whose PREREG-v2.md §2 names `named` (default: `products`) on its Products line, blanks as given."""
         copy = _live_tree(self, model_id)
         os.makedirs(os.path.join(copy, "tests"))
         shutil.copy(os.path.join(REPO, "tests", "synth.py"), os.path.join(copy, "tests"))
+        from fixture_products import STAND_IN
+        add = [q for q in products if q != "SOL-USD"]
+        with open(os.path.join(copy, "loop", "config.py"), "a", encoding="utf-8") as fh:
+            fh.write(f"\nPRODUCTS = {tuple(products)!r}\n"
+                     f"TICK_P.update({ {q: STAND_IN[q][0] for q in add}!r})\n"
+                     f"LIQ_ATOMS.update({ {q: STAND_IN[q][1] for q in add}!r})\n"
+                     f"LIQ_THIN_FALLBACK.update({ {q: STAND_IN[q][2] for q in add}!r})\n"
+                     "DAILY_SPEND_HALT_USD = 0.25 * len(PRODUCTS)\n")
+        fields = ", ".join(f"`{q}`" for q in (products if named is None else named))
+        with open(os.path.join(copy, "PREREG-v2.md"), "w", encoding="utf-8") as fh:
+            fh.write("# PREREG-v2 (test)\n\n## 2. Products\n\n  Written before the draft tag: Products: "
+                     f"{fields}. `TICK_p`: `<P2>` `________`.\n\n## 3. Next\n")
         return copy
 
     def _stub(self, body):
@@ -1216,12 +1232,16 @@ class TrialNight(unittest.TestCase):
         self.assertRegex(out[2], r" propose claude exit 0 after \d+ s wall clock")
         self.assertRegex(out[3], r" propose claude model claude-stub-1 \(read from the CLI's transcript of this call; requested "
                                  + re.escape(f"--model {STUB_MODEL})") + "$")
-        self.assertEqual(out[4:], ["PASS: claude answered, one model (claude-stub-1), user memory not loaded"])
+        self.assertEqual(out[4], "digest products: SOL-USD ETH-USD XRP-USD (3 of the 3 PREREG-v2 section 2 names)")
+        self.assertEqual(out[5:], ["PASS: claude answered, one model (claude-stub-1), user memory not loaded, "
+                                   "a synthetic log of every product"])
         with open(os.path.join(self.saw, "prompt"), encoding="utf-8") as fh:
             prompt = fh.read()
         self.assertIn("# digest 2026-09-30", prompt)                          # the synthetic log's day, of this tree's SPEC
-        self.assertTrue(re.search(r"\nSOL-USD \| ticks [1-9]\d+, ", prompt), "no SOL-USD summary line in the digest")
-        self.assertEqual(sorted(os.listdir(copy)), ["SPEC.md", "loop", "nightly", "tests"])   # nothing written in the tree
+        for p in self.THREE:                                                   # §8: a synthetic three-product log
+            self.assertTrue(re.search(r"\n" + p + r" \| ticks [1-9]\d+, ", prompt), f"no {p} summary line in the digest")
+        self.assertIn("\npooled over 3 products ", prompt)
+        self.assertEqual(sorted(os.listdir(copy)), ["PREREG-v2.md", "SPEC.md", "loop", "nightly", "tests"])   # nothing written
         self.assertEqual(os.listdir(env["TMPDIR"]), [])                        # the temp root, cwd and config dir are gone
         self.assertNotIn("sekrit-trial-token", r.stdout + r.stderr)
 
@@ -1253,6 +1273,42 @@ class TrialNight(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn(" propose FAIL no slow model id", r.stdout)
         self.assertFalse(os.path.exists(os.path.join(self.saw, "called")))
+
+    def test_it_runs_only_on_the_products_section_2_names(self):
+        # §8: "a synthetic three-product log"; §2: fewer products passing scales every count. Until §2's Products line is
+        # filled and config.PRODUCTS is that set, a run is not §8's trial: FAIL before anything is made or called
+        stub = self._stub('echo called >>"%s/called"\n' % self.saw)
+        for products, named, why in (
+                (("SOL-USD",), ("SOL-USD", "________", "________"),
+                 "PREREG-v2 section 2 does not name the products yet (a blank on its Products line)"),
+                (("SOL-USD",), self.THREE, "config.PRODUCTS is SOL-USD, not SOL-USD ETH-USD XRP-USD (PREREG-v2 section 2)"),
+                (self.THREE, ("SOL-USD", "ETH-USD"),
+                 "config.PRODUCTS is SOL-USD ETH-USD XRP-USD, not SOL-USD ETH-USD (PREREG-v2 section 2)")):
+            r, env = self._run(self._tree(products=products, named=named), stub)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertEqual(r.stdout, f"FAIL: not PREREG-v2 section 8's trial: {why}; nothing made, nothing called\n")
+            self.assertFalse(os.path.exists(os.path.join(self.saw, "called")))
+            self.assertEqual(os.listdir(env["TMPDIR"]), [])
+        # fewer passing (§2): the products named, the rest of the line not a product, and that many logs
+        r, _ = self._run(self._tree(products=("SOL-USD", "ETH-USD"), named=("SOL-USD", "ETH-USD", "none")),
+                         self._stub(self.ANSWER.replace("SAW", self.saw)))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("\ndigest products: SOL-USD ETH-USD (2 of the 2 PREREG-v2 section 2 names)\nPASS: ", r.stdout)
+
+    def test_a_digest_without_every_product_is_a_fail(self):
+        # propose.sh must hand the digest every product's log: a night whose digest lacks one is not the trial §8 asks
+        copy = self._tree()
+        path = os.path.join(copy, "nightly", "digest.py")                     # this copy's digest drops XRP-USD's log
+        with open(path, encoding="utf-8") as fh:
+            src = fh.read()
+        main = '\nif __name__ == "__main__":\n'
+        self.assertEqual(src.count(main), 1)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(src.replace(main, "\n_logs = logs\nlogs = lambda data=None: [(p, q) for p, q in _logs(data) "
+                                       "if p != 'XRP-USD']\n" + main))
+        r, _ = self._run(copy, self._stub(self.ANSWER.replace("SAW", self.saw)))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("\ndigest products: SOL-USD ETH-USD (2 of the 3 PREREG-v2 section 2 names)\nFAIL: ", r.stdout)
 
     def test_the_claude_model_line_must_name_exactly_one_id(self):
         # §8: "`claude model` must log exactly one id". Everything else passes here (exit 0, claude exit 0, the memory

@@ -470,7 +470,10 @@ again, before every send); a 429, three transient failures in a row, or three fa
 night (and every later product's sends); a 401/403 writes `data/HALT`; the night's deadline is 900 s a product.
 `nightly/trial-night.sh` is PREREG-v2 §8's trial night before the draft tag: a real call through propose.sh with
 `--root` a temp dir outside every checkout holding a synthetic three-product log (and data/HALT: no Jev send), printing
-only the exit code and the FAIL, claude exit, claude model and "user memory not loaded" lines, then PASS or FAIL.
+only the exit code and the FAIL, claude exit, claude model and "user memory not loaded" lines, then PASS or FAIL. The
+products are §2's (`dash.read_products_v2`, the Products line): until that line is filled and config.PRODUCTS is its
+set the script prints FAIL and makes and calls nothing, and PASS needs the digest's summary line for every one of them
+(its "digest products" line).
 
 `bin/promote proposals/<date>.json <k> --reason "<one line>"` (PREREG-v2 §8): copies candidate k to
 `prompts/v<N+1>.json` (the other three questions carried from v1 unchanged) with `activation_tick` = T0_v2 + 86,400

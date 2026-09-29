@@ -150,6 +150,29 @@ class PreregV2Line(unittest.TestCase):
             self.skipTest("no prereg-v1 tag in this checkout (a shallow clone)")
         self.assertEqual(hashlib.sha256(blob).hexdigest(), dash.V1_SPEC_SHA)
 
+    def test_the_products_section_2_names(self):
+        # nightly/trial-night.sh runs only on these (PREREG-v2 §8's "three-product log", §2's scaling)
+        path = os.path.join(REPO, "PREREG-v2.md")
+        got = dash.read_products_v2(path)                              # the repository's own: blank (None) or products
+        self.assertTrue(got is None or got[0] == "SOL-USD", got)
+
+        def read(body):
+            with tempfile.TemporaryDirectory() as d:
+                p = os.path.join(d, "PREREG-v2.md")
+                with open(p, "w", encoding="utf-8") as fh:
+                    fh.write("# x\n\n## 1. One\n\nProducts: `BTC-USD`, `ETH-USD`.\n\n## 2. Products\n\n" + body
+                             + "\n\n## 3. Next\n\nProducts: `DOGE-USD`.\n")
+                return dash.read_products_v2(p)
+        line = "  Written before the draft tag: Products: {}. `TICK_p`: `<P2>` `________`, `<P3>` `________`."
+        self.assertIsNone(read(line.format("`SOL-USD`, `________`, `________`")))
+        self.assertIsNone(read(line.format("`SOL-USD`, `ETH-USD`, `________`")))
+        self.assertEqual(read(line.format("`SOL-USD`, `ETH-USD`, `XRP-USD`")), ("SOL-USD", "ETH-USD", "XRP-USD"))
+        self.assertEqual(read(line.format("`SOL-USD`,`XRP-USD`, `none`")), ("SOL-USD", "XRP-USD"))   # §2: fewer passed
+        for bad in ("no line", line.format("`SOL-USD`") + "\n" + line.format("`SOL-USD`")):
+            with self.assertRaises(ValueError, msg=bad):
+                read(bad)
+        self.assertIsNone(dash.read_products_v2(os.path.join(REPO, "no-such-PREREG-v2.md")))
+
 
 if __name__ == "__main__":
     unittest.main()

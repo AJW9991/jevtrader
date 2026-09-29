@@ -26,6 +26,8 @@ PREREG_V2_PATH = os.path.join(config.REPO, "PREREG-v2.md")   # the repository's 
 T0_V2_RE = re.compile(r"T0_v2[ \t]*:[ \t]*`([^`\n]*)`")        # §12's field line: T_first_v2: `...`   T0_v2: `...`   Sealed by: ...
 T0_V2_ANY = re.compile(r"T0_v2[ \t]*:")                        # any field-like mention in §12: each must be T0_V2_RE's form
 BLANK_RE = re.compile(r"_*")                                  # an unfilled field is underscores (or nothing)
+PRODUCTS_V2_RE = re.compile(r"Products:[ \t]*((?:`[^`\n]*`[ \t]*,?[ \t]*)+)")   # §2's line: Products: `SOL-USD`, `...`, `...`
+PRODUCT_ID_RE = re.compile(r"[A-Z0-9]+-[A-Z]+")                 # a filled field that names a product
 TICK_RE = re.compile(r"\d{8}T\d{4}00Z")                        # a filled T0_v2 is a tick_id: a minute boundary (§2)
 FEE_TIERS_RE = re.compile(r"Fee tiers \(30-day band / maker / taker, read UTC `([^`\n]*)`\): `([^`\n]*)`")   # §12's fee-tier field
 FEE_TIERS_ANY = re.compile(r"Fee tiers\b")                     # any mention in §12: each must be FEE_TIERS_RE's form
@@ -111,6 +113,26 @@ def read_t0_v2(prereg=None):
     if not TICK_RE.fullmatch(v):
         raise ValueError(f"PREREG-v2 §12's T0_v2 {v!r} is not a tick_id on a minute boundary (YYYYMMDDTHHMM00Z)")
     return report.tick_epoch(v)
+
+
+def read_products_v2(prereg=None):
+    """The products PREREG-v2.md §2's `Products:` line names, in its order, or None while any of its fields is blank
+    (underscores) or the file is absent. A filled field that is not a product id (§2's fewer-passing case may fill a
+    slot with a word) is not a product. §2 without exactly one such line raises ValueError. Read at call time from
+    `prereg` or the repository's own PREREG-v2.md; nightly/trial-night.sh runs only on this set (§8)."""
+    try:
+        with open(prereg or PREREG_V2_PATH, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return None
+    sec = re.search(r"^## 2\..*?(?=^## |\Z)", text, re.M | re.S)
+    lines = PRODUCTS_V2_RE.findall(sec.group(0) if sec else "")
+    if len(lines) != 1:
+        raise ValueError(f"PREREG-v2 §2 has {len(lines)} `Products:` lines of backticked fields, not one")
+    fields = [f.strip() for f in re.findall(r"`([^`\n]*)`", lines[0])]
+    if any(BLANK_RE.fullmatch(f) for f in fields):
+        return None
+    return tuple(f for f in fields if PRODUCT_ID_RE.fullmatch(f))
 
 
 def v2_spec_sha(spec=None):
