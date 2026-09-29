@@ -447,7 +447,9 @@ nightly/settings.json --output-format text` (`capped.py`: 45 min of AWAKE time, 
 the command runs in a process group of its own, which the cap ends, which ends when the command exits, and to which
 SIGTERM/SIGINT/SIGHUP/SIGQUIT are passed on; the CLI's version, the temp cwd and the config dir are logged); extract
 exactly one fenced ```json block; validate it is `{"candidates": [ {"instructions": str, "criteria":
-{"buy","sell","hold"}} , ... ]}` with 1–3 entries and no digit; write `proposals/<date>.json` (refused, before the
+{"buy","sell","hold"}} , ... ]}` with 1–3 entries; discard, one log line each, a candidate with a digit (PROMPT.md rule
+4) or a product word other than `{BASE}` (rule 9), `policy_table.refused`, keeping the rest (none left: the night
+fails); write `proposals/<date>.json` (refused, before the
 digest and any call, when `proposals/<date>.json` or `.md` exists; `--dry`, the tests' form, needs `--root DIR`
 outside the repo, else a usage error, exit 2). Then `policy_table.py proposals/<date>.json` (PREREG-v2 §8) asks Jev,
 for every product, each candidate AND the CURRENT action question on the product's 81 synthetic state strings

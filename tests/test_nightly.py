@@ -1113,6 +1113,50 @@ class LiveBranch(unittest.TestCase):
         with open(os.path.join(self.tmp, "logs", f"claude-{DAY.isoformat()}.err"), encoding="utf-8") as fh:
             self.assertIn("boom", fh.read())
 
+    def _reply(self, *cands):
+        """A stub claude whose reply is one fenced json block of `cands` ((instructions, buy) pairs)."""
+        body = json.dumps({"candidates": [{"rationale": f"r{i}", "instructions": ins,
+                                           "criteria": {"buy": buy, "sell": "the trend is dumping", "hold": "else"}}
+                                          for i, (ins, buy) in enumerate(cands)]})
+        return self._stub('[ "$1" = --version ] && { echo "9.9.9"; exit 0; }\ncat <<"EOF"\n```json\n' + body
+                          + '\n```\nEOF\n')
+
+    def test_a_candidate_with_a_digit_or_a_product_word_is_discarded_unread_and_the_rest_kept(self):
+        # PROMPT.md rule 4: "A candidate with a digit in it is discarded unread"; rule 9: "one that names a product is
+        # refused". The candidate, not the night: the others are written and scored (a product word used to pass here
+        # and fail policy_table for the whole proposal, the S4 refuter's defect 6; a digit failed the whole reply)
+        good = ("Decide whether to be long {BASE} on strength.", "the trend is pumping")
+        r = self._run(self._reply(("Decide whether to be long ETH on strength.", "the trend is pumping"), good,
+                                  ("Decide whether to be long {BASE}.", "the trend is pumping for 15 minutes")),
+                      HOME=self._home())
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(os.path.join(self.tmp, "logs", "propose.log"), encoding="utf-8") as fh:
+            log = fh.read()
+        self.assertNotIn(" FAIL ", log)
+        self.assertRegex(log, r" propose candidate 0 of the reply discarded unread \(PROMPT\.md rule 9\): .*product word "
+                              r"'ETH'")
+        self.assertIn(" propose candidate 2 of the reply discarded unread (PROMPT.md rule 4): carries a digit", log)
+        self.assertIn("(PREREG-v2 section 1)", log)                           # the log line is ASCII (the C-locale mode)
+        self.assertIn(" propose wrote proposals/2026-09-22.json (1 of the reply's 3 candidates)", log)
+        prop = os.path.join(self.tmp, "proposals", f"{DAY.isoformat()}.json")
+        with open(prop, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        self.assertEqual([(c["rationale"], c["instructions"]) for c in doc["candidates"]], [("r1", good[0])])
+        cands = policy_table.load_candidates(prop)                        # the table can be made from what is kept
+        self.assertEqual([c["qid"] for c in cands], ["cand_0"])
+
+    def test_a_reply_whose_every_candidate_is_discarded_is_invalid(self):
+        r = self._run(self._reply(("Decide whether to be long SOL.", "the trend is pumping"),
+                                  ("Decide whether to be long {BASE}.", "up 2 percent")), HOME=self._home())
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(os.path.join(self.tmp, "logs", "propose.log"), encoding="utf-8") as fh:
+            log = fh.read()
+        self.assertIn(" propose candidate 0 of the reply discarded unread (PROMPT.md rule 9)", log)
+        self.assertIn(" propose candidate 1 of the reply discarded unread (PROMPT.md rule 4): carries a digit", log)
+        self.assertIn("every candidate of the reply was discarded unread", log)
+        self.assertIn(" propose FAIL invalid proposal", log)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "proposals", f"{DAY.isoformat()}.json")))
+
     def test_a_reply_without_one_json_block_is_invalid(self):
         stub = self._stub('echo "no block here"\n')
         r = self._run(stub)

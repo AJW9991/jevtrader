@@ -109,12 +109,25 @@ def parse_candidates(raw, path):
         if not isinstance(cand, dict):
             raise ValueError(f"{path}: candidate {i} is not an object")
         q = prompts.question({**cand, "type": "choice"}, "choice", f"cand_{i}")
-        text = q["instructions"] + "".join(q["criteria"].values())
-        if any(ch.isdigit() for ch in text):
-            raise ValueError(f"{path}: cand_{i} carries a digit; PROMPT.md forbids numbers")
-        prompts.check_words({"action": q}, CANDIDATE_VERSION, f"{path} cand_{i}")
+        why = refused(q, f"{path} cand_{i}")
+        if why is not None:
+            raise ValueError(f"{path}: cand_{i} {why[1]}" if why[0] == 4 else why[1])
         out.append({"qid": f"cand_{i}", "q": q, "rationale": str(cand.get("rationale", ""))})
     return out
+
+
+def refused(q, where="?"):
+    """(PROMPT.md rule, why) when the candidate's wire question `q` may not be read, else None: rule 4, a digit anywhere
+    in its text ("discarded unread"); rule 9, a product word other than {BASE} (PREREG-v2 §1, §8: "refused"). One
+    test for both callers: propose.sh's step 3 discards such a candidate and keeps the others, and parse_candidates
+    refuses a proposal still holding one (a proposal made by hand, or before step 3 discarded them)."""
+    if any(ch.isdigit() for ch in q["instructions"] + "".join(q["criteria"].values())):
+        return 4, "carries a digit; PROMPT.md forbids numbers"
+    try:
+        prompts.check_words({"action": q}, CANDIDATE_VERSION, where)
+    except prompts.PromptError as e:
+        return 9, str(e)
+    return None
 
 
 def current_action(root=None, now_tick=None):

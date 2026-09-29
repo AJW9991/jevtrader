@@ -292,10 +292,16 @@ $(cat "$DIGEST")"
 fi
 
 # 3. exactly one fenced json block -> {"candidates": [1..3 x {instructions, criteria{buy,sell,hold}}]}.
-#    A digit anywhere in a candidate's text fails the whole reply (stricter than PROMPT.md
-#    rule 4, which says the candidate is discarded unread); policy_table.py would refuse it anyway.
-"$PY" -c '
+#    A candidate that carries a digit (PROMPT.md rule 4: "discarded unread") or names a product other than
+#    {BASE} (rule 9: "refused") is discarded, one log line each, and the others are kept and scored: the
+#    test is policy_table.refused, the one policy_table.py applies (it refuses a proposal still holding
+#    one). v1 failed the whole reply on a digit, and a product word passed here and then failed the table
+#    for every candidate (the S4 refuter's defect 6). A shape fault still fails the whole reply, and so
+#    does a reply whose every candidate is discarded. Run from the repo (cd above), so the import is its own.
+NOTES="$("$PY" -c '
 import json, os, re, sys
+from loop import prompts
+from nightly import policy_table
 raw = open(sys.argv[1], encoding="utf-8", errors="replace").read()
 blocks = re.findall(r"^```json[ \t]*\n(.*?)\n```[ \t]*$", raw, re.S | re.M)
 if len(blocks) != 1: sys.exit("expected exactly one fenced json block, found %d" % len(blocks))
@@ -309,9 +315,14 @@ for i, x in enumerate(c):
           and all(isinstance(v, str) and v.strip() for v in x["criteria"].values())
           and isinstance(x.get("rationale", ""), str))
     if not ok: sys.exit("candidate %d: not {instructions: str, criteria: {buy, sell, hold}}" % i)
-    if any(ch.isdigit() for ch in x["instructions"] + "".join(x["criteria"].values())): sys.exit("candidate %d: carries a digit" % i)
+    why = policy_table.refused(prompts.question({**x, "type": "choice"}, "choice", "cand_%d" % i), "cand_%d" % i)
+    if why is not None:
+        say = why[1].replace(chr(167), "section ").encode("ascii", "backslashreplace").decode("ascii")   # the log is ASCII
+        print("candidate %d of the reply discarded unread (PROMPT.md rule %d): %s" % (i, why[0], say), flush=True)
+        continue
     out.append({"rationale": x.get("rationale", ""), "instructions": x["instructions"],
                 "criteria": {k: x["criteria"][k] for k in ("buy", "sell", "hold")}})
+if not out: sys.exit("every candidate of the reply was discarded unread")
 # serialized whole first, written beside the target, then LINKED to the target name: a failure
 # never leaves a truncated json for a table or a promote to read, and a target that appeared
 # meanwhile (a by-hand run beside launchd) is never overwritten: link fails, the night does
@@ -323,8 +334,20 @@ try:
     os.link(tmp, sys.argv[2])
 finally:
     if os.path.exists(tmp): os.unlink(tmp)
-' "$RAW" "$ROOT/proposals/$DATE.json" >>"$LOG" 2>&1 || fail "invalid proposal (see $RAW)"
-log "wrote proposals/$DATE.json"
+print("kept %d of the reply%ss %d candidates" % (len(out), chr(39), len(c)))
+' "$RAW" "$ROOT/proposals/$DATE.json" 2>>"$LOG")"
+rc=$?
+KEPT=""
+while IFS= read -r l; do
+  case "$l" in
+    "kept "*) KEPT="${l#kept }" ;;
+    ?*) log "$l" ;;
+  esac
+done <<NOTES_END
+$NOTES
+NOTES_END
+[ $rc -eq 0 ] || fail "invalid proposal (see $RAW)"
+log "wrote proposals/$DATE.json${KEPT:+ ($KEPT)}"
 
 # 4. the 81-state table. --dry prints the first payload into the log and sends nothing.
 #    data/HALT stops every Jev send (PROTOCOL §3.8), this one included; the spend guard
