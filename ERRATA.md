@@ -78,3 +78,15 @@ From the night a merge of this branch is pulled onto the Mac, the one `claude -p
 from an empty temporary directory, so the repo's CLAUDE.md and the CLI's per-project state no
 longer reach the slow model; `~/.claude/CLAUDE.md` still loads and its sha is logged. That
 date is a change of the treatment's context and belongs in the write-up (HANDOFF.md decision 1).
+
+## v2 deviations (PREREG-v2 §13: fixes between `prereg-v2-draft` and the seal that §13 (c) does not cover)
+
+Each fix is its own commit and one row here, added at the end: the commit (7 to 40 hex digits), what it fixes, and why
+§13 (c) does not cover it. `bin/seal-check` takes each listed commit's diff out of HEAD before it judges the rest, and
+prints it; RESULTS-v2 §0 reproduces it. A deviation that touches `at_cadence`, `replay`/`paired`, inference, the pooling
+or exclusion readers, `rule_c`, the alphabet or its cuts, PROMPT.md v2, the digest or promote's schedule voids the draft
+tag. Rows under this heading are read as deviations until the next heading of its level; any other addition after the
+draft tag goes under a heading of its own.
+
+| Commit | What it fixes | Why outside §13 (c) |
+|---|---|---|
