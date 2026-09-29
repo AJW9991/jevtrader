@@ -6,7 +6,7 @@
 # CI) uses the python3 on PATH. `make PY=... test` overrides either.
 PY ?= $(shell test -x /opt/homebrew/bin/python3 && echo /opt/homebrew/bin/python3 || command -v python3)
 
-.PHONY: test test-mode test-modes dry run report health dash status inference-smoke results backup
+.PHONY: test test-mode test-modes dry run report health dash status inference-smoke results backup quantiles probe probe-summarize
 
 test:
 	$(PY) -m unittest discover -s tests
@@ -74,3 +74,17 @@ results:
 
 backup:
 	bash bin/backup-data
+
+# PREREG-v2's two tools, never part of `test` or of anything the loop runs. `quantiles` and `probe` print their
+# usage only: bin/fill1k-quantiles reads a decision log (features only) and a probe run sends public Coinbase GETs
+# for a whole UTC day, so a person runs either by hand with its arguments. `probe-summarize DIR=...` is offline:
+# it reads a probe directory and prints each criterion per product and the two chosen.
+quantiles:
+	$(PY) bin/fill1k-quantiles --help
+
+probe:
+	$(PY) bin/probe --help
+
+probe-summarize:
+	@test -n "$(DIR)" || { echo "usage: make probe-summarize DIR=<the probe's --out directory>" >&2; exit 2; }
+	$(PY) bin/probe summarize "$(DIR)"
