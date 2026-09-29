@@ -23,7 +23,8 @@ at day 28 on three products.
 
 Every section is one function returning its numbers and its rendered lines from a single
 computation, so a test asserts the number and the text together. The pair table (§4.5) is
-3 pairs x 11 columns, plus PREREG-v2's D - B and D - C at argmax alone (pair_columns), x
+3 pairs x 11 columns, plus PREREG-v2's D - B and D - C at argmax alone (pair_columns; only when a row
+carries columns.d, has_d, so v1's report on the v1 log is unchanged), x
 len(config.FEE_BPS_COLUMNS) fees (6 today: 210 cells, ascending; the
 primary config.FEE_BPS_PRIMARY = 0 bps, gross, is the first and the venue's own taker
 config.FEE_BPS_VENUE = 120 bps, the realistic-cost column, the last); book.paired per cell
@@ -94,6 +95,13 @@ def pair_columns(x, y):
     """The columns a pair is printed at: every rules.COLUMNS, or argmax alone when D is in the pair (its
     table holds the action choice alone, PREREG-v2 §6; book raises on any other column for D)."""
     return (book.D_COLUMN,) if "d" in (x, y) else rules.COLUMNS
+
+
+def has_d(rows):
+    """Whether any row carries a columns.d key (a v2-era row; a null value counts). v1's rows never do, and on
+    them arm D is a forced hold on every tick, so v1's report (`--log`, table) prints D's per-arm lines and the
+    D - B and D - C pairs only when this is true: v1's readers read the v1 log exactly as before (PREREG-v2 §10)."""
+    return any(isinstance(r.get("columns"), dict) and "d" in r["columns"] for r in rows)
 
 
 # ---- small helpers: every rate in the report goes through _pct so n/0 is never a crash ----
@@ -641,7 +649,10 @@ def table(rows, outs, t0=None, last=None):
     """t0: T0 as epoch seconds (the rows are already cut to the sample), or None: blocks are
     then anchored at the first tick of the log. last: the whole log's last tick (epoch), so the
     block count runs to the end of the log (capped at the sample's 2,688) and not just to the
-    last tick in the cut."""
+    last tick in the cut. Arm D's per-arm lines and the D - B and D - C pairs are printed only when a row
+    carries columns.d (has_d): on v1's rows D is a forced hold throughout, and v1's report reads the v1 log
+    exactly as before PREREG-v2 added D. The dict names the arms and pairs it printed."""
+    arms, pairs = (ARMS, PAIRS) if has_d(rows) else (tuple(a for a in ARMS if a != "d"), tuple(p for p in PAIRS if "d" not in p))
     fees = tuple(config.FEE_BPS_COLUMNS)
     if PRIMARY[3] not in fees:
         fees = (PRIMARY[3],) + fees                                  # the primary fee is always a column of the table
@@ -659,7 +670,7 @@ def table(rows, outs, t0=None, last=None):
 
     def arms_at(fee):
         out = {}
-        for arm in ARMS:
+        for arm in arms:
             r = rep(arm, PRIMARY[2], fee)
             out[arm] = {"equity": r["equity"][-1][1] if r["equity"] else 0.0, "trades": len(r["trades"]),
                         "forced_hold": r["forced_hold"]}
@@ -668,7 +679,7 @@ def table(rows, outs, t0=None, last=None):
     def arms_line(what, fee, pa):
         return (f"  per arm at the {what} (column {PRIMARY[2]}, fee {fee:g} bps): "
                 + " | ".join(f"{a.upper()} equity {pa[a]['equity']:.2f} bps, trades {pa[a]['trades']},"
-                             f" forced holds {pa[a]['forced_hold']}" for a in ARMS))
+                             f" forced holds {pa[a]['forced_hold']}" for a in arms))
 
     per_arm, per_arm_venue, lines = arms_at(PRIMARY[3]), arms_at(VENUE_FEE), []
     lines.append(f"  primary fee {PRIMARY[3]:g} bps (config.FEE_BPS_PRIMARY): gross of fees, the H1 cell (PREREG §4):"
@@ -683,7 +694,8 @@ def table(rows, outs, t0=None, last=None):
     cells = {}
     if not answered(rows):
         lines.append("  no answered rows: arms A and B replay as forced holds, so the pair table is omitted")
-        return {"lines": lines, "cells": cells, "per_arm": per_arm, "per_arm_venue": per_arm_venue, "fees": fees}
+        return {"lines": lines, "cells": cells, "per_arm": per_arm, "per_arm_venue": per_arm_venue, "fees": fees,
+                "arms": arms, "pairs": pairs}
     first = min(r["tick_id"] for r in rows)
     anchor = t0 if t0 is not None else tick_epoch(first)
     where = (f"T0 {_iso_minute(t0)} (--t0), replayed from flat at T0" if t0 is not None
@@ -702,7 +714,7 @@ def table(rows, outs, t0=None, last=None):
                  " is PREREG §4's cell, descriptive here; days excluded by stop rule 3 are NOT removed here")
     head = (f"  {'':1} {'column':<9}{'n':>6}{'dis':>6}{'mean_d':>10}{'mean_d|dis':>12}{'hit':>8}{'tr/d x':>8}{'tr/d y':>8}"
             f"  | blocks:{'n':>6}{'dis':>6}{'dis%':>7}{'mean_S':>10}{'mean_S|dis':>12}")
-    for x, y in PAIRS:
+    for x, y in pairs:
         for fee in fees:
             lines.append("")
             lines.append(f"  pair {x.upper()}-{y.upper()}  fee {fee:g} bps"
@@ -729,7 +741,7 @@ def table(rows, outs, t0=None, last=None):
                     f" disagreement blocks {pb['dis']} ({_r(pb['share'])}), mean S_k on them {_f(pb['mean_dis'])}"
                     + (f"; {pb['pre']} ticks before the anchor left out" if pb["pre"] else ""))
     return {"lines": lines, "cells": cells, "per_arm": per_arm, "per_arm_venue": per_arm_venue, "fees": fees,
-            "anchor": anchor, "versions": versions}
+            "arms": arms, "pairs": pairs, "anchor": anchor, "versions": versions}
 
 
 # ---- §4.6 H2: the direction lean against the 15-minute return (PREREG §5) -------------------

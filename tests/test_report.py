@@ -282,7 +282,7 @@ class Synthetic(unittest.TestCase):
     def test_pair_table_primary_cell_by_hand(self):
         t = report.table(self.rows, self.outs)
         self.assertEqual(t["fees"], config.FEE_BPS_COLUMNS)
-        self.assertEqual(len(t["cells"]), (3 * len(rules.COLUMNS) + 2) * len(config.FEE_BPS_COLUMNS))   # + D - B, D - C at argmax
+        self.assertEqual(len(t["cells"]), 3 * len(rules.COLUMNS) * len(config.FEE_BPS_COLUMNS))   # v1 rows: no D (has_d)
         # 2026-09-24, decided by Alex: the primary is 0 bps, gross. The same hand arithmetic is
         # run at the venue's 120 bps too, so the fee terms below are still exercised with a
         # non-zero constant now that the primary's own fee term is 0.
@@ -332,15 +332,40 @@ class Synthetic(unittest.TestCase):
             self.assertAlmostEqual(per["c"]["equity"], c10 + c22, places=9)
             self.assertEqual(per["c"]["trades"], 2)                    # a fee never changes a decision
 
+    def test_arm_d_is_printed_only_on_rows_that_carry_columns_d(self):
+        # PREREG-v2 §10: v1's readers read the v1 log exactly as before. On v1 rows (no columns.d key) D is a forced
+        # hold on every tick, so its per-arm lines and D - B / D - C would be noise; they print when a row carries
+        # columns.d (a v2-era row, null included). 2026-09-29 refuter: v1's report on the v1 log grew 48 lines.
+        self.assertFalse(report.has_d(self.rows))
+        for text in (self.text, "\n".join(report.table(self.rows, self.outs)["lines"])):
+            self.assertNotIn("pair D-", text)
+            self.assertNotIn("| D equity", text)
+        t = report.table(self.rows, self.outs)
+        self.assertEqual((t["arms"], t["pairs"]), (("a", "b", "c"), report.PAIRS[:3]))
+        self.assertEqual(set(t["per_arm"]), {"a", "b", "c"})
+        v2 = [dict(r, columns=dict(r["columns"], d=(r["columns"].get("a") or {}).get("argmax")))
+              if isinstance(r.get("columns"), dict) else r for r in self.rows]
+        self.assertTrue(report.has_d(v2))
+        t2 = report.table(v2, outcomes.join(v2))
+        self.assertEqual((t2["arms"], t2["pairs"]), (report.ARMS, report.PAIRS))
+        self.assertEqual(len(t2["cells"]), (3 * len(rules.COLUMNS) + 2) * len(config.FEE_BPS_COLUMNS))   # + D - B, D - C at argmax
+        text2 = "\n".join(t2["lines"]) + "\n"
+        self.assertIn("pair D-B  fee 0 bps\n", text2)
+        self.assertIn("pair D-C  fee 0 bps\n", text2)
+        self.assertIn("| D equity", text2)
+        # one row with a null columns.d is enough: the log is v2's
+        one = [dict(self.rows[0], columns=dict(self.rows[0]["columns"] or {}, d=None))] + list(self.rows[1:])
+        self.assertTrue(report.has_d(one))
+        self.assertFalse(report.has_d([dict(r, columns=None) for r in self.rows[:3]] + [{"tick_id": "x"}]))
+
     def test_pair_table_renders_every_cell_once_with_one_primary(self):
         lines = report.table(self.rows, self.outs)["lines"]
         cells = [l for l in lines if l.startswith("  * ") or l.startswith("    ")]
         cells = [l for l in cells if l.split()[1 if l.startswith("  * ") else 0] in rules.COLUMNS]
-        self.assertEqual(len(cells), sum(len(report.pair_columns(x, y)) for x, y in report.PAIRS) * len(config.FEE_BPS_COLUMNS))
-        self.assertEqual(len(cells), (3 * len(rules.COLUMNS) + 2) * len(config.FEE_BPS_COLUMNS))   # D - B and D - C at argmax only
+        self.assertEqual(len(cells), len(report.PAIRS[:3]) * len(rules.COLUMNS) * len(config.FEE_BPS_COLUMNS))   # v1 rows: no D
         self.assertEqual(report.PAIRS[3:], (("d", "b"), ("d", "c")))                # PREREG-v2 §10: report.PAIRS gains them
         self.assertEqual([report.pair_columns(x, y) for x, y in report.PAIRS], [rules.COLUMNS] * 3 + [("argmax",)] * 2)
-        self.assertIn("pair D-B  fee 0 bps\n", "\n".join(lines) + "\n")
+        self.assertNotIn("pair D-", "\n".join(lines))                              # ... printed on rows that carry columns.d only
         self.assertEqual(sum(l.startswith("  * argmax") for l in cells), 1)
         self.assertEqual(sum("[* primary]" in l for l in lines), 1)
         # 2026-09-24, decided by Alex: the primary IS the 0 bps gross column (it used to be the
@@ -352,7 +377,7 @@ class Synthetic(unittest.TestCase):
         self.assertEqual(config.FEE_BPS_COLUMNS[0], config.FEE_BPS_PRIMARY)
         self.assertIn(config.FEE_BPS_VENUE, config.FEE_BPS_COLUMNS)
         self.assertIn(f"pair B-C  fee {config.FEE_BPS_VENUE:g} bps  [venue fee]\n", "\n".join(lines) + "\n")
-        self.assertEqual(sum("[venue fee]" in l for l in lines), len(report.PAIRS))
+        self.assertEqual(sum("[venue fee]" in l for l in lines), len(report.PAIRS[:3]))   # v1 rows: A, B and C's pairs
         text = "\n".join(lines)
         self.assertIn(f"primary fee 0 bps (config.FEE_BPS_PRIMARY): gross of fees", text)
         # review, 2026-09-24: gross of fees is NOT free of turnover -- a round trip still pays the
@@ -363,7 +388,7 @@ class Synthetic(unittest.TestCase):
         self.assertIn(config.FEE_BPS_VENUE_SOURCE, text)                 # UNVERIFIED, beside the table
         self.assertTrue(config.FEE_BPS_VENUE_SOURCE.startswith("UNVERIFIED"))
         self.assertFalse(hasattr(config, "FEE_BPS_PRIMARY_SOURCE"))      # moved: the primary has no source, it is 0
-        for x, y in report.PAIRS:
+        for x, y in report.PAIRS[:3]:                                    # v1 rows: A, B and C's pairs (has_d)
             for fee in config.FEE_BPS_COLUMNS:
                 self.assertIn(f"pair {x.upper()}-{y.upper()}  fee {fee:g} bps", "\n".join(lines))
         star = next(l for l in cells if l.startswith("  * "))

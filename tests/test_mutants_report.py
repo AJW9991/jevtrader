@@ -168,12 +168,16 @@ class PairTable(unittest.TestCase):
         cls.tb = report.table(cls.rows, cls.outs)
 
     def test_every_cell_is_book_paired_on_its_own_column(self):
-        # module docstring: d_t is book.paired's own expression, one replay per (arm, column, fee) (CONTRACT §4.5)
-        for x, y in report.PAIRS:
-            for fee in (config.FEE_BPS_PRIMARY, config.FEE_BPS_VENUE):
-                for col in report.pair_columns(x, y):
-                    self.assertEqual(dict(self.tb["cells"][(x, y, col, fee)]["all"]["d"]),
-                                     dict(book.paired(self.rows, self.outs, x, y, col, fee)), (x, y, col, fee))
+        # module docstring: d_t is book.paired's own expression, one replay per (arm, column, fee) (CONTRACT §4.5);
+        # the v1 fixture prints A, B and C's pairs, and the same rows with a columns.d (A's argmax) add D's two
+        v2 = [dict(r, columns=dict(r["columns"], d=(r["columns"].get("a") or {}).get("argmax"))) for r in self.rows]
+        for rows, tb, pairs in ((self.rows, self.tb, report.PAIRS[:3]), (v2, report.table(v2, outcomes.join(v2)), report.PAIRS)):
+            self.assertEqual(tb["pairs"], pairs)
+            for x, y in pairs:
+                for fee in (config.FEE_BPS_PRIMARY, config.FEE_BPS_VENUE):
+                    for col in report.pair_columns(x, y):
+                        self.assertEqual(dict(tb["cells"][(x, y, col, fee)]["all"]["d"]),
+                                         dict(book.paired(rows, outcomes.join(rows), x, y, col, fee)), (x, y, col, fee))
 
     def test_the_legend_counts_trades_per_1440_ticks(self):
         # CONTRACT §4.5 trades/day each side; TICKS_PER_DAY: trades/day is per 1440 ticks
@@ -197,8 +201,8 @@ class PairTable(unittest.TestCase):
         # module docstring: an empty log still prints; every arm starts flat (PREREG §3: nothing held is 0.0)
         tb = report.table([], {})
         for per in (tb["per_arm"], tb["per_arm_venue"]):
-            self.assertEqual({a: (per[a]["equity"], per[a]["trades"]) for a in report.ARMS},
-                             {a: (0.0, 0) for a in report.ARMS})
+            self.assertEqual({a: (per[a]["equity"], per[a]["trades"]) for a in tb["arms"]},
+                             {a: (0.0, 0) for a in ("a", "b", "c")})
 
     def test_ticks_before_the_anchor_are_counted_out_and_fill_no_block(self):
         # _blocks docstring: a tick before the anchor is counted in `pre` and left out; n = the block of
