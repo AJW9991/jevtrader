@@ -449,8 +449,9 @@ treatment's context versus v1 is recorded for the write-up (ERRATA.md's preceden
 - **The slow model, pinned:** `claude -p --model <id>`, where id is the one on the `claude model`
   line of `logs/propose.log` from the run of 2026-09-29 08:30Z; if that line is `unrecorded`,
   lists more than one id, or is missing, the first later v1 night whose line is exactly one id.
-  Written here with the night it came from, before the draft tag: **id `________` (night
-  `________`).** If the id is refused on the trial night (before the draft tag), one substitute
+  Written here with the night it came from, before the draft tag: **id `claude-sonnet-5` (night
+  2026-09-29 08:30Z; the log's line reads `claude model claude-sonnet-5 (read from the CLI's transcript of
+  this call, which names no model)`).** If the id is refused on the trial night (before the draft tag), one substitute
   is allowed by this rule alone and written here before the draft tag: the latest v1 night before
   the draft tag whose line names exactly one id. From the draft tag on there is no substitute: a
   refusal at the switch, in the shakedown or on any later night fails that night like any failed
@@ -751,3 +752,7 @@ Each entry: date, author, what changed, and what the author had read (digest inc
   2026-09-28 21:34Z (3,467 rows with adjectives), the earlier 3,908 was an ad-hoc count and its explanation
   was wrong; §3 — the tool's output quoted line for line as it prints it. Read since the doc tag: the tool
   build's reports (code and tests), nothing of the live log beyond the features-only tool's output.
+- 2026-09-29 ~20:05Z, Claude (Fable 5.1): §8 — the pinned slow-model id filled from the 2026-09-29 08:30Z
+  night's `claude model` line (`claude-sonnet-5`), exactly one id, the rule's first case. Read since the last
+  entry: logs/propose.log's lines for that night and the two header lines of proposals/2026-09-28.md (`proposal
+  written by`, `model answered`); no rationale, no digest, no transcript.

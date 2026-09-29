@@ -50,6 +50,16 @@ nothing is pending there; its record of what the branch changed is kept below un
   its header and, per candidate, the "where it changes CURRENT's answer" block. On the 09-27 stall:
   tonight's call is the first without the repo as its cwd (no git status, no commit subjects, no repo
   CLAUDE.md in its context), so a stall tonight would rule the repo context out altogether.
+- **Night of 2026-09-29 08:30Z (the first under the pulled code), recorded 2026-09-29 20:05Z** against the
+  bullet above, from logs/propose.log alone (the proposal's rationale was not read: PREREG-v2's header rule):
+  `claude cwd .../jevloop-claude.8HFLVa (empty); user memory ~/.claude/CLAUDE.md sha256 46b9c7b01623; cli
+  2.1.261 (Claude Code)` — matched; `claude exit 0 after 44 s` — no stall (the 09-27 hang did not recur on the
+  first empty-cwd night; one night says little); `claude model claude-sonnet-5 (read from the CLI's transcript
+  of this call, which names no model)` — recorded as the log prints it; `proposals/2026-09-28.{json,md}` written,
+  81/81 answered, the table's header reads `proposal written by: claude-sonnet-5`; dash rebuilt (5,723 rows, 0
+  skipped). Decision 1's context change dates from this night; decision 4 (recorded, not pinned) is in force.
+  PREREG-v2 §8 takes `claude-sonnet-5` as the pinned id (§14). The 04:21-local one-shot that was to do this never
+  fired (the session was not idle); done by hand.
 - Added this session: ERRATA.md SPEC §10 row for the **verified venue fee: 90 bps taker** (Alex,
   in-account, 2026-09-27 ~22:55Z; tier Intro, maker 0.50 %); `config.FEE_BPS_VENUE` stays 120
   through the sample (the digest prints pnl at it; the treatment). `AGENTS.md -> CLAUDE.md`.
