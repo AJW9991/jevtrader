@@ -3,7 +3,7 @@ clock), run over the recorded fixtures (one row per candidate, the row's shape, 
 the day's end, the hourly line), volume's file, and summarize on a directory this test writes (one
 product passing, one failing volume, one failing occupancy). Offline: feed._get is replaced and
 urlopen raises, so no test opens a socket."""
-import importlib.machinery, importlib.util, io, json, os, re, shutil, signal, subprocess, sys, tempfile, unittest
+import fcntl, importlib.machinery, importlib.util, io, json, os, re, shutil, signal, subprocess, sys, tempfile, unittest
 from unittest import mock
 
 from loop import feed
@@ -243,6 +243,50 @@ class Harness(unittest.TestCase):
         for bad in (lambda: t.assertIn("x", "y"), lambda: t.assertEqual([1], [2]), lambda: t.assertIs(True, False)):
             with self.assertRaises(AssertionError):
                 bad()
+
+
+class OneAtATime(Offline):
+    """The rate is one request a second overall: a second run or volume, into any DIR, is refused while
+    one is running (both flock bin/probe itself, read-only)."""
+    def hold(self):
+        fd = os.open(TOOL, os.O_RDONLY)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fd
+
+    def test_a_second_run_or_volume_is_refused_and_creates_nothing(self):
+        self.assertEqual(os.path.realpath(probe.LOCK_PATH), os.path.realpath(TOOL))
+        fd = self.hold()
+        try:
+            for cmd in (["run", "--day", DAY, "--max-minutes", "1", "--every", "1"], ["volume"]):
+                out = os.path.join(self.tmp, cmd[0])
+                code, err = self.main(cmd + ["--out", out], Clock(T_FIX))
+                self.assertEqual(code, 2, cmd)
+                self.assertIn("holds the lock", err)
+                self.assertFalse(os.path.exists(out))
+            self.assertEqual(self.calls, [])
+        finally:
+            os.close(fd)
+        out = os.path.join(self.tmp, "after")
+        self.refuse = lambda url: "http-503 /product_book"
+        self.assertEqual(self.main(["run", "--day", DAY, "--out", out, "--max-minutes", "1", "--every", "1"],
+                                   Clock(T_FIX))[0], 0)
+
+    def test_a_run_holds_the_lock_while_it_requests_and_frees_it_after(self):
+        seen = []
+
+        def try_lock(url):
+            try:
+                os.close(self.hold())
+                seen.append("free")
+            except BlockingIOError:
+                seen.append("held")
+        self.hook = try_lock
+        out = os.path.join(self.tmp, "out")
+        code, err = self.main(["run", "--day", DAY, "--out", out, "--candidates", "ETH-USD", "--max-minutes", "1",
+                               "--every", "1"], Clock(T_FIX))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(seen, ["held"] * 3)
+        os.close(self.hold())                                # free again once main returned
 
 
 class Pacing(unittest.TestCase):

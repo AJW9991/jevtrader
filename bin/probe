@@ -28,8 +28,11 @@ criterion with the failing value, and the first two passing products in candidat
 
 Rate: this process never starts two requests less than MIN_GAP_S = 1 s apart. feed.snapshot sends
 its three GETs back to back, so the probe routes each of them through its pacer by wrapping
-feed._get in this process only (the loop's own processes never import this file); run and volume
-are not meant to run at the same time. Six candidates are 18 GETs a minute, ~18 s of the 60.
+feed._get in this process only (the loop's own processes never import this file). So that the
+rate holds overall and not per process, one run or volume at a time: each holds an exclusive
+flock on this file itself (LOCK_PATH, opened read-only: no lock file is written) for its whole
+life, and a second run or volume, into any DIR, is refused (exit 2) before it creates anything.
+Six candidates are 18 GETs a minute, ~18 s of the 60.
 Writes only DIR/<product>.jsonl, DIR/run.json and DIR/volume.json, each opened without following
 a symlink and written only when it is a regular file with one link (a file in DIR that is a symlink
 or a hard link to somewhere else is refused, exit 3, and nothing is written through it). DIR is refused (exit 3, before
@@ -38,7 +41,7 @@ prefix of loop/config.py, or under any directory named data or logs (PREREG-v2 Â
 any data/ or logs/). Never imports the loop's send path
 (its jev and cycle modules); nothing here sends to Jev or reads a key. Exit 2 on a usage error.
 """
-import argparse, collections, contextlib, datetime as dt, importlib.machinery, importlib.util, json, math, os, re
+import argparse, collections, contextlib, datetime as dt, fcntl, importlib.machinery, importlib.util, json, math, os, re
 import signal, stat, statistics, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -57,6 +60,7 @@ STABLECOINS = frozenset({"USDT", "USDC", "DAI", "PYUSD", "EURC", "GUSD", "USDP",
                          "USDS", "RLUSD", "BUSD", "LUSD", "FRAX", "USDE"})   # a base here fails "no stablecoin"
 # ---- the probe's own ---------------------------------------------------------------------------
 MIN_GAP_S = 1.0                     # never two requests less than this apart, whatever the endpoint
+LOCK_PATH = os.path.abspath(__file__)   # run and volume flock this file (read-only): one of them at a time
 LIVE_CHECKOUT = "/Users/alexanderward/Projects/jev-paper-loop"
 FORBIDDEN = (LIVE_CHECKOUT,) + tuple(config.FORBIDDEN_PREFIXES)
 FORBIDDEN_NAMES = ("data", "logs")  # no path component of DIR, typed or resolved, is one of these (any case)
@@ -202,6 +206,18 @@ def paced_feed(pacer):
         yield
     finally:
         feed._get = real
+
+
+def take_lock():
+    """The open descriptor that holds the exclusive flock on LOCK_PATH, or None when another process
+    holds it. The lock goes with the descriptor: closed, or the process gone, it is free."""
+    fd = os.open(LOCK_PATH, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        return None
+    return fd
 
 
 # ---- one row -------------------------------------------------------------------------------------
@@ -621,15 +637,21 @@ def main(argv=None, wall=time.time, mono=time.monotonic, sleep=time.sleep, out=N
     s.add_argument("--candidates", type=_candidates, default=DEFAULT_CANDIDATES,
                    help="the order when DIR has no run.json")
     args = ap.parse_args(argv)
+    if args.cmd == "summarize":
+        return summarize(args, out, err)
+    lock = take_lock()
+    if lock is None:
+        err.write(f"probe: another bin/probe run or volume holds the lock on {LOCK_PATH}; refusing\n")
+        return 2
     try:
         if args.cmd == "run":
             return run(args, wall, mono, sleep, err)
-        if args.cmd == "volume":
-            return volume(args, wall, mono, sleep, err)
+        return volume(args, wall, mono, sleep, err)
     except Refused as e:
         err.write(f"probe: refusing to write: {e}\n")
         return 3
-    return summarize(args, out, err)
+    finally:
+        os.close(lock)
 
 
 if __name__ == "__main__":
