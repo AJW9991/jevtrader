@@ -6,7 +6,7 @@ the Mac and in CI the day it is made, not at day 28. A deliberate change (an err
 prereg-v2 after the sample) updates the pin here in the same commit, and its message says why.
 
 Not pinned: prompts/CURRENT and any prompt file after v2 (bin/promote writes those, and no test
-depends on what CURRENT names); the digest's content (its own golden test in test_nightly);
+depends on what CURRENT names); the digest's content (its own golden test, tests/test_digest_v2.py);
 PROTOCOL.md (Alex's signed carve-out, not an input of the measurement); the spend guard's dollar
 figures, the venue fee and the fee columns FEE_BPS_COLUMNS beside the 0 bps primary (a spending
 decision and descriptive report columns, none in a row's meaning; FEE_BPS_PRIMARY, the H1 cell,

@@ -2,7 +2,7 @@
 # nightly/propose.sh -- the slow model's one call a night, wrapped so nothing it does
 # can reach prompts/, the key, or a tool.
 #
-# May: build the digest (nightly/digest.py), hand PROMPT.md + digest to `claude -p`
+# May: build the digest (nightly/digest.py, every product's log), hand PROMPT.md + digest to `claude -p`
 # with NO tools (--tools "" is the contract's belt; --restricted --strict-mcp-config
 # and nightly/settings.json are the braces: no MCP server, no user settings, and a
 # deny list on the secrets and the sibling repos even if a tool ever appeared), keep
@@ -186,10 +186,11 @@ print("blank" if m == "" else "id:" + m if isinstance(m, str) and re.fullmatch(s
   esac
 fi
 
-# 1. digest: exit 4 = the day has no rows, so there is nothing for the model to read.
+# 1. digest (PREREG-v2 §8): every product's log, each where config.store puts it under $ROOT/data (--data, as the dash
+#    reads them); exit 4 = no product's log has a row of this tree's SPEC that day, so there is nothing to read.
 DIGEST="$ROOT/data/digest-$DATE.md"
 "$PY" -m nightly.digest --date "$DATE" ${PROMPTS_ROOT:+--prompts "$PROMPTS_ROOT"} \
-  --log "$ROOT/data/decisions.jsonl" --out "$DIGEST" >>"$LOG" 2>&1
+  --data "$ROOT/data" --out "$DIGEST" >>"$LOG" 2>&1
 rc=$?
 if [ $rc -eq 4 ]; then
   [ $DRY -eq 1 ] || { log "no ticks on $DATE; nothing to propose"; exit 0; }

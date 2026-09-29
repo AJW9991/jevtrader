@@ -1,5 +1,4 @@
-"""nightly: the digest lists the right arm-B disagreements in the right order and
-leaks no feature; the policy table enumerates 81 digit-free states and sends nothing
+"""nightly: (the v2 digest's own tests are tests/test_digest_v2.py) the policy table enumerates 81 digit-free states and sends nothing
 in --dry; promote refuses on a dirty tree and carries v1's three nouls byte for byte;
 propose.sh --dry turns the fixture reply into a proposals json. Offline: loop.jev.ask
 is mocked wherever the table is run, subprocess.run is mocked for git, and every
@@ -32,7 +31,8 @@ def _answer(choice, conf):
 
 def _row(minute, mid, b=None, absence=None):
     """A CONTRACT §2 row at T0 + minute. b = (choice, confidence) for b_action; a_action
-    is always hold. absence rows carry null answers and a null mid."""
+    is always hold. absence rows carry null answers and a null mid. Every row carries this tree's
+    spec sha and asks v1 as prompt_b (the pinned CURRENT), so the v2 digest reads it as arm B's."""
     d = T0 + datetime.timedelta(minutes=minute)
     answers = None if absence or b is None else {
         "a_action": _answer("hold", 0.9), "b_action": _answer(*b), "skip": NOUL, "up15": NOUL, "down15": NOUL}
@@ -40,6 +40,7 @@ def _row(minute, mid, b=None, absence=None):
             "venue": "coinbase", "product": "SOL-USD", "cadence_s": 60, "horizon_s": 900,
             "bid": None if mid is None else mid - 0.01, "ask": None if mid is None else mid + 0.01,
             "mid": mid, "features": {"ret15_z": 1.7, "rv_ratio": 0.9}, "adj": ADJ, "state": STATE,
+            "spec_sha": digest.tree_spec_sha(), "prompt_a": "v2", "prompt_b": "v1",
             "answers": answers, "rule_c": "buy",
             "columns": {"a": rules.for_arm(answers, "a"), "b": rules.for_arm(answers, "b")},
             "absence": absence}
@@ -102,7 +103,7 @@ def _sh_env(tc, tmp=None, **extra):
            "JEVLOOP_PY": sys.executable, **{v: "" for v in PROXY_VARS}, "NO_PROXY": "*", "no_proxy": "*",
            "TMPDIR": tc.enterContext(tempfile.TemporaryDirectory(dir="/tmp"))}
     if "JEVLOOP_PROMPTS" not in extra:
-        env["JEVLOOP_PROMPTS"] = pin_v1(tc)
+        env["JEVLOOP_PROMPTS"] = pin_v1(tc, frozen_a=True)          # v2.json too: the digest names arm A's sha
     env.update(extra)
     if tmp is not None and not os.access("/usr/bin/caffeinate", os.X_OK):
         stub = os.path.join(tmp, "caffeinate")
@@ -205,191 +206,6 @@ def _pids(path, n, within=10.0):
     raise AssertionError(f"{path}: fewer than {n} pids after {within} s")
 
 
-def _table_rows(text):
-    """[(choice, confidence, label)] of the disagreement table, file order."""
-    out = []
-    for line in text.splitlines():
-        if line.startswith("| SOL:"):
-            cells = [c.strip() for c in line.strip("|").split("|")]
-            out.append((cells[1], float(cells[2]), cells[4]))
-    return out
-
-
-class DigestTest(unittest.TestCase):
-    def setUp(self):
-        self.tmp = self.enterContext(tempfile.TemporaryDirectory())
-        self.log = os.path.join(self.tmp, "data", "decisions.jsonl")
-        _write_log(self.log, synthetic_log())
-        pin_v1(self)                                                 # the digest quotes CURRENT: pin it to v1
-
-    def test_disagreement_rows_and_order(self):
-        text, n = digest.build(DAY, self.log)
-        self.assertEqual(n, 41)
-        self.assertEqual(_table_rows(text), [("buy", 0.95, "down"), ("sell", 0.90, "up"), ("sell", 0.86, "up")])
-        self.assertIn("B disagreements 3", text)
-        self.assertIn("3 of 3 shown", text)
-
-    def test_rows_of_a_superseded_wording_are_not_arm_b_on_current(self):
-        rows = synthetic_log()
-        rows[0]["prompt_b"], rows[1]["prompt_b"] = "v2", "v2"            # the two most confident listed rows answered v2
-        rows[5]["prompt_b"] = "v1"                                       # CURRENT is pinned to v1: this one stays
-        _write_log(self.log, rows)
-        text, n = digest.build(DAY, self.log)
-        self.assertEqual(n, 41)
-        self.assertEqual(_table_rows(text), [("sell", 0.86, "up")])
-        self.assertIn("B disagreements 1 | prompt_b v1 1, v2 2 (arm B is read from the v1 rows only; the other rows answered a superseded wording)", text)
-        self.assertEqual(digest.versions(rows), {"v1": 1, "v2": 2})
-        self.assertEqual(len(digest.on_current(rows, "v1")), 39)
-
-    def test_never_features_never_the_log(self):
-        text, _ = digest.build(DAY, self.log)
-        self.assertNotIn("features", text)
-        self.assertNotIn("ret15_z", text)
-        self.assertNotIn("1.7", text)                     # the feature value planted in every row
-        self.assertNotIn("tick_id", text)                 # no raw row
-        self.assertNotIn("Bearer", text)
-
-    def test_current_question_verbatim_and_both_shas(self):
-        text, _ = digest.build(DAY, self.log)
-        v1 = prompts.load("v1")
-        self.assertIn(v1["action"]["instructions"], text)
-        for k in ("buy", "sell", "hold"):
-            self.assertIn(v1["action"]["criteria"][k], text)
-        self.assertIn(f"prompt_a v1 {prompts.sha('v1')}", text)
-        self.assertIn(f"prompt_b {prompts.current()} {prompts.sha(prompts.current())}", text)
-
-    def test_summary_line_counts(self):
-        text, _ = digest.build(DAY, self.log)
-        line = text.splitlines()[2]
-        self.assertTrue(line.startswith("2026-09-22 | ticks 41, answered 40, absence feed:1"))
-        self.assertIn("outcomes joined 25/40", line)      # minutes 0..24 resolve inside the 41-row log (6 is unpriced)
-        self.assertIn("trend dumping 0% flat 0% pumping 100%", line)
-        # 2026-09-24, decided by Alex: PnL per arm twice, labelled -- at 0 bps (H1, direction)
-        # and at the venue's own taker fee (the realistic cost)
-        self.assertIn(f"column argmax, paper PnL at {config.FEE_BPS_PRIMARY:g} bps (direction) / at "
-                      f"{config.FEE_BPS_VENUE:g} bps (venue fee): A 0 trades +0.0 / +0.0 bps", line)
-        self.assertIn("paper PnL at 0 bps (direction) / at 120 bps (venue fee)", line)
-        # a trade is a FILL (book.replay "trades"), not a round trip: B opens at 0, closes at 1,
-        # opens again at 2 (buy 0.99), holds through 3-4 and closes at 5 (sell 0.86); the
-        # sell at 30 finds it flat and is a no-op. Four fills, two round trips.
-        self.assertIn("B 4 trades", line)
-        self.assertIn("C 1 trades", line)                 # rule_c buy at minute 0, then held long
-        self.assertIn("B disagreements 3", line)
-
-    def test_summary_pnl_at_both_fees(self):
-        # the trade count is the same at both fees (a fee never changes a decision); the net
-        # figure is the gross one minus each fill's fee. C: one fill, the open at minute 0 at
-        # ask 100.01 on $1,000, fee exactly FEE_BPS_VENUE bps of notional.
-        day = [r for r in digest.outcomes.load(self.log, []) if r["tick_id"].startswith("20260922")]
-        gross, net = digest.arms(day, config.FEE_BPS_PRIMARY), digest.arms(day, config.FEE_BPS_VENUE)
-        for arm in ("a", "b", "c"):
-            self.assertEqual(gross[arm][0], net[arm][0], arm)
-        self.assertEqual(gross["c"][0], 1)
-        self.assertAlmostEqual(gross["c"][1] - net["c"][1], config.FEE_BPS_VENUE, places=9)
-        self.assertEqual(gross["b"][0], 4)
-        self.assertGreater(gross["b"][1] - net["b"][1], 3.9 * config.FEE_BPS_VENUE)   # four fills, ~120 each
-        line = digest.build(DAY, self.log)[0].splitlines()[2]
-        self.assertIn(f"C 1 trades {gross['c'][1]:+.1f} / {net['c'][1]:+.1f} bps", line)
-        self.assertIn(f"B 4 trades {gross['b'][1]:+.1f} / {net['b'][1]:+.1f} bps", line)
-
-    def test_cap_at_25(self):
-        # forty buys at 0.9 on a mid that falls 0.1 a minute: every t+15 is ~-150 bps, so
-        # all forty are disagreements and exactly DISAGREE_MAX = 25 are listed. (The earlier
-        # form set the mid at t AND at t+15 to 99.0, so those buys were flat, not wrong,
-        # and only 2 rows could ever be listed: the fixture, not the cap, was under test.)
-        rows = [_row(m, 100.0 - 0.1 * m, ("buy", 0.9) if m < 40 else ("hold", 0.6)) for m in range(60)]
-        _write_log(self.log, rows)
-        text, _ = digest.build(DAY, self.log)
-        self.assertEqual(len(_table_rows(text)), digest.DISAGREE_MAX)
-        self.assertEqual(digest.DISAGREE_MAX, 25)
-        self.assertIn("25 of 40 shown", text)
-        self.assertIn("B disagreements 40", text)
-
-    def test_other_days_are_excluded_but_join_across_midnight(self):
-        rows = synthetic_log()
-        late = datetime.datetime(2026, 9, 22, 23, 50, 0, tzinfo=datetime.timezone.utc)
-        for i in range(20):                               # 23:50 .. 00:09 next day; the 23:50 buy resolves at 00:05
-            d = late + datetime.timedelta(minutes=i)
-            r = _row(0, 100.0 if i < 15 else 99.5, ("buy", 0.93) if i == 0 else ("hold", 0.6))
-            r["tick_id"], r["ts_rx"] = d.strftime("%Y%m%dT%H%M00Z"), _iso(d)
-            rows.append(r)
-        _write_log(self.log, rows)
-        text, n = digest.build(DAY, self.log)
-        self.assertEqual(n, 41 + 10)                      # the 10 next-day rows are not the day's
-        self.assertEqual(_table_rows(text)[0], ("buy", 0.95, "down"))
-        self.assertIn(("buy", 0.93, "down"), _table_rows(text))
-
-    def test_a_parse_row_with_a_list_or_dict_choice_neither_crashes_nor_changes_the_digest(self):
-        # cycle keeps the answers of a jev/parse row (a wrong-typed field); a b_action choice that is a
-        # list or dict made the digest raise TypeError (unhashable) and that date never got a proposal.
-        # Such a row is not a disagreement; every other byte of the digest is what it was without it.
-        base, _ = digest.build(DAY, self.log)
-        for bad in (["buy"], {"x": "buy"}):
-            rows = synthetic_log()
-            odd = dict(rows[7], absence="jev", columns={"a": None, "b": None})
-            odd["answers"] = dict(odd["answers"], b_action={"choice": bad, "confidence": 0.95,
-                                                             "probabilities": {"buy": 0.95, "sell": 0.025, "hold": 0.025}})
-            rows[7] = odd
-            _write_log(self.log, rows)
-            text, n = digest.build(DAY, self.log)
-            self.assertEqual(_table_rows(text), [("buy", 0.95, "down"), ("sell", 0.90, "up"), ("sell", 0.86, "up")], bad)
-            self.assertIn("B disagreements 3", text)
-            out = os.path.join(self.tmp, "d.md")
-            with redirect_stdout(io.StringIO()):
-                self.assertEqual(digest.main(["--date", "2026-09-22", "--log", self.log, "--out", out]), 0)
-        _write_log(self.log, synthetic_log())
-        self.assertEqual(digest.build(DAY, self.log)[0], base)                       # the clean day is byte-identical
-
-    def test_a_confidence_past_a_floats_range_neither_crashes_nor_changes_the_digest(self):
-        # the same kind of jev/parse row as a list choice: an integer confidence of 10**400 passed the
-        # >= 0.85 filter and float() raised OverflowError, so that date never got a proposal
-        rows = synthetic_log()
-        odd = dict(rows[0], absence="jev", columns={"a": None, "b": None})    # minute 0: a buy the next 15 min contradicts
-        odd["answers"] = dict(odd["answers"], b_action={"choice": "buy", "confidence": 10 ** 400,
-                                                         "probabilities": {"buy": 1.0, "sell": 0.0, "hold": 0.0}})
-        rows[0] = odd
-        _write_log(self.log, rows)
-        text, _ = digest.build(DAY, self.log)                                  # reaches float(): raised before the guard
-        self.assertEqual(_table_rows(text), [("sell", 0.90, "up"), ("sell", 0.86, "up")])
-        out = os.path.join(self.tmp, "d.md")
-        with redirect_stdout(io.StringIO()):
-            self.assertEqual(digest.main(["--date", "2026-09-22", "--log", self.log, "--out", out]), 0)
-
-    def test_the_policy_table_formats_a_confidence_past_a_floats_range(self):
-        self.assertEqual(policy_table._cell(("buy", 10 ** 400)), ("buy", "?"))
-        self.assertEqual(policy_table._cell(("sell", 0.8765)), ("sell", "0.88"))
-        self.assertEqual(policy_table._cell(("hold", True)), ("hold", "-"))
-
-    def test_the_digest_of_the_fixture_day_is_the_bytes_main_wrote(self):
-        # the digest's content is the treatment (CLAUDE.md): every byte of it must stay what the code on
-        # main (09e867f) produced for the same log and the same CURRENT. The sha was taken by running
-        # main's own nightly/digest.py on synthetic_log() with prompts pinned to v1, 2026-09-28; a change
-        # to the digest's text, order or numbers on this day turns this red.
-        text, n = digest.build(DAY, self.log)
-        self.assertEqual(n, 41)
-        self.assertEqual(hashlib.sha256(text.encode()).hexdigest(), "6201884e4235a5b271aab78714c0779a1c627f289633bb20dcf293a62835b679")
-
-    def test_main_writes_file_and_day_zero_exits_4(self):
-        out = os.path.join(self.tmp, "digest.md")
-        with redirect_stdout(io.StringIO()):
-            rc = digest.main(["--date", "2026-09-22", "--log", self.log, "--out", out])
-        self.assertEqual(rc, 0)
-        with open(out, encoding="utf-8") as fh:
-            self.assertIn("B disagreements 3", fh.read())
-        with redirect_stdout(io.StringIO()):
-            rc = digest.main(["--date", "2026-09-22", "--log", os.path.join(self.tmp, "none.jsonl"), "--out", out])
-        self.assertEqual(rc, digest.EXIT_EMPTY)
-        with open(out, encoding="utf-8") as fh:
-            text = fh.read()
-        self.assertIn("ticks 0", text)
-        self.assertIn("(none)", text)
-        self.assertNotIn("features", text)
-
-    def test_yesterday_is_the_previous_utc_day(self):
-        now = datetime.datetime(2026, 9, 23, 0, 5, 0, tzinfo=datetime.timezone.utc)
-        self.assertEqual(digest.yesterday(now), "2026-09-22")
-
-
 CAND = {"rationale": "test", "instructions": "Decide whether to be long for the next quarter of an hour.",
         "criteria": {"buy": "the trend is pumping and liquidity is deep", "sell": "the trend is dumping",
                      "hold": "anything else"}}
@@ -418,6 +234,11 @@ class PolicyTableTest(unittest.TestCase):
         self.assertTrue(config.JEV_URL.startswith("http://127.0.0.1:9/"), config.JEV_URL)
         with self.assertRaises(Reached):
             urllib.request.urlopen(config.JEV_URL)
+
+    def test_the_policy_table_formats_a_confidence_past_a_floats_range(self):
+        self.assertEqual(policy_table._cell(("buy", 10 ** 400)), ("buy", "?"))
+        self.assertEqual(policy_table._cell(("sell", 0.8765)), ("sell", "0.88"))
+        self.assertEqual(policy_table._cell(("hold", True)), ("hold", "-"))
 
     def test_81_distinct_digit_free_states(self):
         st = policy_table.states()
@@ -1032,7 +853,8 @@ class ProposeDryTest(unittest.TestCase):
         with open(os.path.join(tmp, "data", "digest-2026-09-22.md"), encoding="utf-8") as fh:
             dig = fh.read()
         self.assertIn(f"prompt_b v1 {prompts.sha('v1')}", dig)
-        self.assertIn(prompts.load("v1")["action"]["instructions"], dig)
+        self.assertIn(prompts.load("v1")["action"]["instructions"].replace("SOL", "{BASE}"), dig)
+        self.assertIn("B disagreements 3", dig)                                             # the fixture's rows were read
         self.assertFalse(os.path.exists(os.path.join(tmp, "proposals", "2026-09-22.md")))   # dry writes no table
         # no ledger row: jev and the table write only config.SENDS, which --root never moves, so the
         # dry night's no-send is held by "dry: 81 payloads, 0 sent" above and, in process, by
@@ -1258,7 +1080,7 @@ class LiveBranch(unittest.TestCase):
             fh.write(self.TOKEN + "\n")
         self.saw = os.path.join(self.tmp, "saw")                         # what the stub saw: argv, cwd, token
         os.makedirs(self.saw)
-        self.prompts = pin_v1(self)                                      # the digest in the prompt quotes v1
+        self.prompts = pin_v1(self, frozen_a=True)                       # the digest in the prompt quotes v1
         self.repo = _live_tree(self)                                     # a copy whose slow model id is STUB_MODEL
 
     def _stub(self, body):
