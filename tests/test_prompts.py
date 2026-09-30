@@ -56,11 +56,12 @@ class PromptsTest(unittest.TestCase):
             fh.write("v3\n")
         with mock.patch.object(config, "PROMPTS", root):
             self._check_live()                                                     # passes: refused for SOL, v2 builds
-            v3["action"]["instructions"] += " Unlike ETH."                         # another product word: still fails
+            # v1's bin/promote refused digits only, so a v1 promotion may name another product too; it failed here and
+            # stopped the switch at step (4) with v1 running, although step (8) names v2 in its place (2026-09-29 lens-3)
+            v3["action"]["instructions"] += " Unlike ETH."
             with open(os.path.join(root, "v3.json"), "w", encoding="utf-8") as fh:
                 json.dump(v3, fh, ensure_ascii=False)
-            with self.assertRaises(prompts.PromptError):
-                self._check_live()
+            self._check_live()
             v3["action"]["instructions"] = prompts.load("v2")["action"]["instructions"]
             v3.update(activation_tick="20261101T214000Z", replaces="v2")          # v2's bin/promote wrote it: fails
             with open(os.path.join(root, "v3.json"), "w", encoding="utf-8") as fh:
@@ -85,8 +86,9 @@ class PromptsTest(unittest.TestCase):
     @staticmethod
     def _v1_era(name):
         """CURRENT names a file v1's bin/promote wrote before the switch: v3 or later, none of the activation keys
-        v2's bin/promote always writes (PREREG-v2 §8), refused by v2's loader, and sound under v1's own rule
-        (SOL its only product word, as in v2.json). Anything else the loader refuses is not this."""
+        v2's bin/promote always writes (PREREG-v2 §8), and refused by v2's loader for its product words (the loader
+        refuses nothing else in a file that parses as an object): v1's bin/promote refused digits only, so the words
+        may be SOL or any other product. Switch step (8) names v2 in its place. Anything else is not this."""
         if prompts.placeholder(name) != prompts.BASE_TOKEN:
             return False
         with open(os.path.join(config.PROMPTS, name + ".json"), encoding="utf-8") as fh:
@@ -96,8 +98,9 @@ class PromptsTest(unittest.TestCase):
         try:
             prompts.load(name)
             return False
-        except prompts.PromptError:
-            prompts.check_words(doc, "v2", name)                                   # raises unless SOL is its only word
+        except prompts.PromptError as e:
+            if "product word" not in str(e):                                         # check_words' refusal, nothing else
+                raise
             return True
 
     # --- CONTRACT §6: sha is stable ---------------------------------------------
