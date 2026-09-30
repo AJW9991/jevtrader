@@ -531,6 +531,13 @@ cd ~/Projects/jev-paper-loop && if [ -e data/exclusions.tsv ]; then git add RESU
 cd ~/Projects/jev-paper-loop && git tag -a results-v1 -m "v1's result (PREREG.md), committed" HEAD && git push origin results-v1
 ```
 
+v1's result and cells are reproduced later from this tag (PREREG-v2 §10), whose readers have no PREREG-v2 withholding:
+from a checkout of `results-v1` read only v1's window, `python3 -m loop.report --sample --log <the live SOL log>` and
+`python3 -m loop.inference --sample --log <the live SOL log> --out <a new file>` (both cut to [PREREG.md §11's T0, +28 d)).
+Never `loop.report --log <a log>` without `--sample` there once v2 runs: v1's withholding lifted at 2026-10-23 21:40Z
+and it would print §4-§7 over v2's sample rows (PREREG-v2 §10: no reader prints them before T0_v2 + 28 d). This tree's
+own readers withhold them whatever the flags.
+
 (4) In the worktree: merge `main`, the suite there, and the ancestry, or stop with v1 running:
 
 ```bash

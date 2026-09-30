@@ -213,6 +213,16 @@ class SwitchGit(unittest.TestCase):
         self.assertIn("committed", text[text.index("(8a)"):text.index("(8b)")])
         self.assertIn("HANDOFF.md lines of switch steps (8) and (8a) are committed", subsection("10.6"))
 
+    def test_v1_is_read_again_from_results_v1_with_sample_only(self):
+        # PREREG-v2 §10: v1's cells "are reproduced from results-v1", whose readers have no PREREG-v2 withholding: a
+        # `loop.report --log` there without --sample printed §4-§7 over v2's sample rows once v1's withholding lifted
+        # (2026-09-29 lens-2 review). STEPS names the two reads that cut to v1's window, after the tag is made.
+        text = subsection("10.5")
+        after = " ".join(text[text.index("git tag -a results-v1"):text.index("(4) In the worktree")].split())
+        self.assertIn("`python3 -m loop.report --sample --log <the live SOL log>`", after)
+        self.assertIn("`python3 -m loop.inference --sample --log <the live SOL log> --out <a new file>`", after)
+        self.assertIn("Never `loop.report --log <a log>` without `--sample` there once v2 runs", after)
+
 
 class ShakedownModel(Stores):
     """10.5 (11a): the Jev version that answered the first shakedown rows against the pinned tables'."""
