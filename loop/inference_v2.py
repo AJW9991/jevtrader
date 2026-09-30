@@ -245,8 +245,13 @@ def seal(repo=None):
     """§10's inference bullet and §13: {"ok", "why" (the first failure, None when ok), "lines" (§0's seal lines)}. ok when
     the annotated tag prereg-v2-seal exists (`git rev-parse -q --verify refs/tags/prereg-v2-seal^{tag}`), is an ancestor
     of HEAD (`git merge-base --is-ancestor`), and `bin/seal-check --since prereg-v2-seal` (run in `repo`, its output
-    printed verbatim) exits 0; §0 also prints `git diff -U0 prereg-v2-seal HEAD` verbatim (§13). bin/seal-check is
-    another stage's tool: absent or not executable, the check fails. Reads no log."""
+    printed verbatim) exits 0; §0 also prints `git diff -U0 prereg-v2-seal HEAD` verbatim (§13). Before --since, §0
+    prints `bin/seal-check --at prereg-v2-seal` verbatim: the seal's own verdict replayed on the sealed commit, which is
+    what §13 has RESULTS-v2 §0 print of the seal (the full -U0 diff from the draft tag, seal-check's verdict, the --stat
+    of the excluded paths, each listed deviation's diff, and the T0_v2 re-derivation if there was one); it is printed,
+    not a gate (§13 gates make results on --since alone), and its verdict line is repeated after it. bin/seal-check is
+    another stage's tool: absent or not executable, the check fails. The tool reads the logs for T_first_v2 (§2) and
+    nothing else of them; this function opens no log."""
     repo = config.REPO if repo is None else repo
     lines, why = [], None
     try:
@@ -266,6 +271,13 @@ def seal(repo=None):
             why = why or "bin/seal-check is not in this tree (PREREG-v2 §10 builds it in the draft tree)"
             lines.append(f"  bin/seal-check --since {SEAL_TAG}: NOT RUN: {tool} is absent or not executable")
         else:
+            a = subprocess.run([tool, "--at", SEAL_TAG], cwd=repo, capture_output=True, text=True, encoding="utf-8",
+                               errors="replace", timeout=SEAL_CHECK_TIMEOUT_S)
+            lines.append(f"  bin/seal-check --at {SEAL_TAG} (the seal's verdict replayed on the sealed commit, PREREG-v2 §13; printed,"
+                         f" not a gate): exit {a.returncode}, its output verbatim:")
+            out = (a.stdout + a.stderr).splitlines()
+            lines += [f"    | {l}" for l in out]
+            lines.append(f"  the seal's verdict, replayed: {'PASS' if a.returncode == 0 else 'FAIL'} (exit {a.returncode})")
             r = subprocess.run([tool, "--since", SEAL_TAG], cwd=repo, capture_output=True, text=True, encoding="utf-8",
                                errors="replace", timeout=SEAL_CHECK_TIMEOUT_S)
             if r.returncode != 0:
@@ -286,8 +298,7 @@ def seal(repo=None):
 
 
 def seal_lines(sealed, no_seal):
-    """§0's seal lines: main's check (seal()), NO_SEAL=1 when given (§13: the override is recorded), and what §0 does not
-    print yet."""
+    """§0's seal lines: main's check (seal()) and NO_SEAL=1 when given (§13: the override is recorded)."""
     if sealed is None:
         lines = ["  seal: NOT CHECKED: run() was called without main's seal check (a test, never the result)"]
     else:
@@ -296,8 +307,6 @@ def seal_lines(sealed, no_seal):
         lines.append("  NO_SEAL=1 given (make results NO_SEAL=1, --no-seal): " +
                      ("the seal check passed; nothing was overridden" if sealed is not None and sealed["ok"] else
                       f"the seal check FAILED and was overridden: {sealed['why'] if sealed else 'not checked'}"))
-    lines.append("  not printed here yet (§13): the draft tag's -U0 diff to the seal with the --stat of its excluded paths, and"
-                 " the T0_v2 re-derivations")
     return lines
 
 

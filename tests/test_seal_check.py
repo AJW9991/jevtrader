@@ -262,6 +262,10 @@ class Seal(Scratch):
                       " not re-derived", text)
         self.assertIn("(§2) the seal at 2026-10-25T00:00:00Z is in [T_first_v2, T0_v2) (§2)", text)
         self.assertIn("(§2) PASS: T0_v2 from T_first_v2, the seal inside [T_first_v2, T0_v2) and T_first_v2 from the logs", text)
+        self.assertIn("(c) the paths it excludes, `git diff --stat refs/tags/prereg-v2-draft HEAD -- RESULTS.md HANDOFF.md"
+                      " proposals data/exclusions.tsv` (§13), verbatim:", text)
+        for excluded in ("RESULTS.md", "HANDOFF.md", "proposals/2026-10-01.md", "data/exclusions.tsv"):
+            self.assertTrue(any(l.startswith(f"    |  {excluded} ") for l in text.splitlines()), excluded)
 
         self.assertIn("(e) PASS: `make test` exited 0", text)
         self.assertNotIn("NOTE", text)
@@ -466,6 +470,26 @@ class SealTimes(Scratch):
         self.assertPasses()                                                                   # the latest of the firsts
         self.assertEqual(SC.log_paths(self.repo, self.products),
                          {p: os.path.join(self.repo, os.path.relpath(config.store(p).decisions, config.REPO)) for p in self.products})
+
+    def test_at_replays_the_seals_verdict_on_the_tag(self):
+        self.filled()
+        with mock.patch.dict(os.environ, {"GIT_COMMITTER_DATE": "2026-10-25T01:00:00Z"}):
+            self.git("tag", "-a", "prereg-v2-seal", "-m", "sealed")
+        self.write("prompts/v3.json", "{}\n")                              # the block's promote commits come after
+        self.write("prompts/CURRENT", "v3\n")
+        self.write("HANDOFF.md", "notes\n")
+        self.commit("after the seal")
+        self.write("loop/code.py", "an uncommitted edit\n")                 # the working tree is not what --at judges
+        with mock.patch.object(SC, "_now", lambda: epoch("2026-12-01T00:00:00Z")):   # nor the clock: the tag's date is
+            text = self.assertPasses("--at", "prereg-v2-seal")
+        for line in ("(a) PASS: refs/tags/prereg-v2-draft is an ancestor of prereg-v2-seal", "(b) NOT RUN: --at judges",
+                     "(c) PASS", "(d) PASS: prompts/CURRENT names v2", "(§12) PASS", "(§2) the seal at 2026-10-25T01:00:00Z is in",
+                     "(§2) PASS", "(e) NOT RUN: --at judges a commit", "seal-check: PASS (--at prereg-v2-seal)"):
+            self.assertIn(line, text)
+        self.assertNotIn("prompts/v3.json", text)
+        with mock.patch.dict(os.environ, {"GIT_COMMITTER_DATE": "2026-10-26T00:00:00Z"}):
+            self.git("tag", "-a", "prereg-v2-late", "-m", "a tag made after T0_v2", "prereg-v2-seal^{commit}")
+        self.assertFails("--at", "prereg-v2-late", says=["(§2) FAIL: the seal at 2026-10-26T00:00:00Z is not in"], failed="§2")
 
 
 class Rebuild(Scratch):
@@ -913,6 +937,8 @@ class CommandLine(unittest.TestCase):
         x = inference_v2.seal(repo)
         self.assertEqual((x["ok"], x["why"]), (True, None), "\n".join(x["lines"]))
         self.assertIn("    | seal-check: PASS (--since prereg-v2-seal)", x["lines"])
+        self.assertIn("    | seal-check: FAIL (--at prereg-v2-seal): a, §12 failed", x["lines"])    # no draft tag here: printed,
+        self.assertIn("  the seal's verdict, replayed: FAIL (exit 1)", x["lines"])                # not a gate (§13 gates on --since)
         with open(os.path.join(repo, "loop", "config.py"), "a", encoding="utf-8") as fh:
             fh.write("# an edit\n")
         x = inference_v2.seal(repo)

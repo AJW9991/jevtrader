@@ -5,6 +5,10 @@
     bin/seal-check --draft         before `git tag -a prereg-v2-draft` on the build branch (§13's draft command)
     bin/seal-check --since TAG     v2's `make results` (loop/inference_v2.py runs it with prereg-v2-seal): §13's allowlist
                                    from the seal until T0_v2 + 28 d
+    bin/seal-check --at REV        the seal's verdict replayed on the commit REV names (v2's make results runs it with
+                                   prereg-v2-seal and RESULTS-v2 §0 prints it, §13): (a), (c), (d), (§12) and (§2) on
+                                   REV's tree, the seal's time REV's tagger date; (b) and (e) judged the working tree
+                                   at the seal and are not run
 
 Exit 0 when every check passes, 1 when one fails (each check on its own line, PASS or FAIL, then the verdict), 2 on a
 usage error or when git cannot answer. It checks the git tree this file lives in (as bin/promote does) and writes
@@ -57,6 +61,8 @@ The seal (no flag) exits 0 only when all of §13's five hold:
     first live row (mode live, absence null) carrying the sha of HEAD's SPEC.md, read from the tree's data/ in
     config.store's layout (loop.dash.first_v2_rows, STEPS §10.6's rule; a product with no such row fails). Not one of
     (a)-(e) either: without it a stale, past or mistyped T0_v2 passed and moved every reader's window (2026-09-29 review);
+    (c) also prints `git diff --stat` of the paths it excludes (RESULTS.md, HANDOFF.md, proposals, data/exclusions.tsv),
+    which §13 has RESULTS-v2 §0 print beside the full diff;
 (e) `make test` exits 0 in the tree (its last lines are printed). NOT RUN when (a)-(d), (§12) or (§2) already failed:
     the verdict is FAIL either way, and the suite takes minutes. (c) is NOT RUN without a draft tag on HEAD.
 
@@ -213,12 +219,12 @@ def _blank(v):
 
 
 # ---- (c): the listed deviations, taken out in a temporary index -------------------------------------------------------
-def deviations(repo, errata_text):
+def deviations(repo, errata_text, rev="HEAD"):
     """(the commits ERRATA.md's "v2 deviations" table names, full shas, newest first; refusals). A row whose first cell
     is not a commit, a commit that is not in DRAFT_TAG..HEAD, and a merge commit are refused. DRAFT_TAG..HEAD, not the
     tag's descendants: from the draft tag until switch step (6) main takes a fix only as a listed deviation (§13), and
     such a commit, merged at switch step (4), is one HEAD reaches and the tag does not, with no tag below it."""
-    order = _text(_git(repo, "rev-list", "--topo-order", f"{DRAFT_TAG}..HEAD").stdout).split()
+    order = _text(_git(repo, "rev-list", "--topo-order", f"{DRAFT_TAG}..{rev}").stdout).split()
     listed, bad, depth = [], [], None
     for line in errata_text.splitlines():
         h = re.match(r"^(#{1,6}) ", line)
@@ -253,15 +259,15 @@ def deviations(repo, errata_text):
     return sorted(listed, key=order.index), bad
 
 
-def without(repo, commits):
-    """(HEAD's tree with each commit's diff applied in reverse, newest first; refusals). Built in a temporary index:
+def without(repo, commits, rev="HEAD"):
+    """(`rev`'s tree with each commit's diff applied in reverse, newest first; refusals). Built in a temporary index:
     neither the tree nor the repository's index is touched."""
     if not commits:
-        return _text(_git(repo, "rev-parse", "HEAD^{tree}").stdout).strip(), []
+        return _text(_git(repo, "rev-parse", f"{rev}^{{tree}}").stdout).strip(), []
     bad = []
     with tempfile.TemporaryDirectory() as d:
         env = dict(os.environ, GIT_INDEX_FILE=os.path.join(d, "index"))
-        _git(repo, "read-tree", "HEAD", env=env)
+        _git(repo, "read-tree", rev, env=env)
         for c in commits:
             patch = _git(repo, "diff", "--binary", "--full-index", "--no-renames", "--no-color", "--no-ext-diff",
                          "--no-textconv", f"{c}^", c, *PATHSPEC).stdout
@@ -283,14 +289,14 @@ def changed(repo, a, b=None, pathspec=PATHSPEC):
 
 
 # ---- (c): the file-by-file rules ----------------------------------------------------------------------------------------
-def tables(repo, tree, products, paths):
+def tables(repo, tree, products, paths, rev="HEAD"):
     """§8's once-only rebuild of v2's tables: (refusals, {"changed": [p], "models": {model}, "shas": {p: sha}})."""
     names = {p: f"prompts/v2.table.{p}.json" for p in products}
     info = {"changed": [p for p in products if names[p] in paths], "models": set(), "shas": {}}
     bad = []
     if not info["changed"]:
         return bad, info
-    commits = _text(_git(repo, "rev-list", f"{DRAFT_TAG}..HEAD", "--", *names.values()).stdout).split()
+    commits = _text(_git(repo, "rev-list", f"{DRAFT_TAG}..{rev}", "--", *names.values()).stdout).split()
     if len(commits) != 1:
         bad.append(f"prompts/v2.table.*.json: changed by {len(commits)} commits after prereg-v2-draft "
                    f"({', '.join(c[:12] for c in commits) or 'none on HEAD'}): §8 rebuilds them once, in one commit")
@@ -499,19 +505,33 @@ def times(repo, rev, read, sealed_at, products):
     return bad, lines
 
 
+def seal_time(repo, at):
+    """When the seal was made, for --at: the tagger date of the annotated tag `at` names, else its commit's committer
+    date."""
+    r = _git(repo, "cat-file", "-t", at, check=False)
+    if _text(r.stdout).strip() == "tag":
+        for line in _text(_git(repo, "cat-file", "tag", at).stdout).splitlines():
+            m = re.match(r"^tagger .* (\d+) [+-]\d{4}$", line)
+            if m:
+                return int(m.group(1))
+            if not line:
+                break
+    return int(_text(_git(repo, "log", "-1", "--format=%ct", f"{at}^{{commit}}").stdout).strip())
+
+
 def current_name(repo, rev):
     text = blob(repo, rev, CURRENT)
     names = [l.strip() for l in (text or "").splitlines() if l.strip()]
     return names[0] if len(names) == 1 else None
 
 
-def judge(repo, tree, products):
-    """§13 (c) on DRAFT_TAG -> tree: the refusals, one line each."""
+def judge(repo, tree, products, rev="HEAD"):
+    """§13 (c) on DRAFT_TAG -> tree (`rev`'s, the listed deviations taken out): the refusals, one line each."""
     names = changed(repo, DRAFT_TAG, tree)
     paths = {p for _, p in names}
-    bad, info = tables(repo, tree, products, paths)
+    bad, info = tables(repo, tree, products, paths, rev)
     table_paths = {f"prompts/v2.table.{p}.json" for p in products}
-    cur = current_name(repo, "HEAD")
+    cur = current_name(repo, rev)
     for status, path in names:
         d = _text(_git(repo, *DIFF, DRAFT_TAG, tree, "--", path).stdout)
         if path == PREREG:
@@ -581,28 +601,39 @@ def _verbatim(out, title, diff):
         _say(out, "    (empty)")
 
 
-def seal(repo, products, out):
+def seal(repo, products, out, at=None):
+    """§13's (a)-(e) and the seal's own two (§12, §2) on HEAD and the working tree; with `at` (--at REV) the same
+    judgement replayed on the commit REV names, as v2's make results prints it in RESULTS-v2 §0: (b) and (e), which
+    judged the working tree at the seal, are not run, (d) reads REV's prompts/CURRENT, and the seal's time is REV's
+    tagger date (an annotated tag) or its commit's committer date."""
     fails = []
+    rev = "HEAD" if at is None else _text(_git(repo, "rev-parse", "--verify", f"{at}^{{commit}}").stdout).strip()
+    name = "HEAD" if at is None else at
 
     def verdict(tag, ok, text):
         _say(out, f"({tag}) {'PASS' if ok else 'FAIL'}: {text}")
         if not ok:
             fails.append(tag)
 
-    r = _git(repo, "merge-base", "--is-ancestor", DRAFT_TAG, "HEAD", check=False)
-    verdict("a", r.returncode == 0, f"{DRAFT_TAG} is an ancestor of HEAD" if r.returncode == 0 else
-            f"`git merge-base --is-ancestor {DRAFT_TAG} HEAD` exited {r.returncode}"
+    r = _git(repo, "merge-base", "--is-ancestor", DRAFT_TAG, rev, check=False)
+    verdict("a", r.returncode == 0, f"{DRAFT_TAG} is an ancestor of {name}" if r.returncode == 0 else
+            f"`git merge-base --is-ancestor {DRAFT_TAG} {name}` exited {r.returncode}"
             + (f": {_text(r.stderr).strip()}" if r.stderr.strip() else ""))
-    st = _text(_git(repo, "status", "--porcelain").stdout)
-    verdict("b", not st.strip(), "`git status --porcelain` is empty" if not st.strip() else
-            f"`git status --porcelain` lists {len(st.splitlines())}: " + "; ".join(l.strip() for l in st.splitlines()[:5]))
-    if "a" in fails:
-        _say(out, "(c) NOT RUN: there is no draft tag on HEAD to diff from")
+    if at is None:
+        st = _text(_git(repo, "status", "--porcelain").stdout)
+        verdict("b", not st.strip(), "`git status --porcelain` is empty" if not st.strip() else
+                f"`git status --porcelain` lists {len(st.splitlines())}: " + "; ".join(l.strip() for l in st.splitlines()[:5]))
     else:
-        cmd = f"git diff -U0 {DRAFT_TAG} HEAD -- . " + " ".join(f"':(exclude){p}'" for p in EXCLUDED)
+        _say(out, f"(b) NOT RUN: --at judges the commit {at} names ({rev}), not a working tree; the seal ran it on its own")
+    if "a" in fails:
+        _say(out, f"(c) NOT RUN: there is no draft tag on {name} to diff from")
+    else:
+        cmd = f"git diff -U0 {DRAFT_TAG} {name} -- . " + " ".join(f"':(exclude){p}'" for p in EXCLUDED)
         _verbatim(out, f"(c) `{cmd}` (renames off), verbatim:",
-                  _text(_git(repo, *DIFF, DRAFT_TAG, "HEAD", *PATHSPEC).stdout))
-        listed, bad = deviations(repo, blob(repo, "HEAD", ERRATA) or "")
+                  _text(_git(repo, *DIFF, DRAFT_TAG, rev, *PATHSPEC).stdout))
+        _verbatim(out, f"(c) the paths it excludes, `git diff --stat {DRAFT_TAG} {name} -- {' '.join(EXCLUDED)}` (§13), verbatim:",
+                  _text(_git(repo, "diff", "--stat", "--no-color", "--no-renames", DRAFT_TAG, rev, "--", *EXCLUDED).stdout))
+        listed, bad = deviations(repo, blob(repo, rev, ERRATA) or "", rev)
         for c in listed:
             _verbatim(out, f"(c) listed deviation {c} (ERRATA.md's v2 deviations table), taken out before the judgement:",
                       _text(_git(repo, "show", "-U0", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames",
@@ -611,21 +642,24 @@ def seal(repo, products, out):
                 if path in VOIDING:
                     _say(out, f"(c) READ: the listed deviation {c[:12]} touches {path}, which holds {VOIDING[path]}: a "
                               "deviation touching those voids the draft tag (§13), which a file alone cannot show")
-        tree, more = without(repo, listed)
+        tree, more = without(repo, listed, rev)
         bad += more
         if not more:
-            bad += judge(repo, tree, products)
+            bad += judge(repo, tree, products, rev)
         verdict("c", not bad, f"every hunk is one §13 (c) allows ({len(listed)} listed deviation(s) taken out)" if not bad
                 else f"{len(bad)} hunk(s) or file(s) §13 (c) does not allow:")
         for b in bad:
             _say(out, "    " + b)
-    try:
-        name = prompts.named(os.path.join(repo, "prompts"))
-    except prompts.PromptError as e:
-        name, why = None, str(e)
-    verdict("d", name == "v2", "prompts/CURRENT names v2" if name == "v2" else
-            f"prompts/CURRENT names {name!r}, not v2" if name else f"prompts/CURRENT cannot be read: {why}")
-    why, read = section12_unfilled(blob(repo, "HEAD", PREREG) or "")
+    if at is None:
+        try:
+            cur = prompts.named(os.path.join(repo, "prompts"))
+        except prompts.PromptError as e:
+            cur, why = None, str(e)
+    else:
+        cur, why = current_name(repo, rev), f"{CURRENT} in {at} names no one version"
+    verdict("d", cur == "v2", "prompts/CURRENT names v2" if cur == "v2" else
+            f"prompts/CURRENT names {cur!r}, not v2" if cur else f"prompts/CURRENT cannot be read: {why}")
+    why, read = section12_unfilled(blob(repo, rev, PREREG) or "")
     tf, t0 = read.get("T_first_v2"), read.get("T0_v2")
     verdict("§12", not why, f"{PREREG} §12 is filled: no {BLANK} left, T_first_v2 {_tick(tf) if tf is not None else '?'},"
             f" T0_v2 {_tick(t0) if t0 is not None else '?'} and "
@@ -634,12 +668,14 @@ def seal(repo, products, out):
     if tf is None or t0 is None:
         _say(out, "(§2) NOT RUN: §12's T_first_v2 or T0_v2 is not read (above)")
     else:
-        bad2, lines2 = times(repo, "HEAD", read, _now(), products)
+        bad2, lines2 = times(repo, rev, read, _now() if at is None else seal_time(repo, at), products)
         for line in lines2:
             _say(out, "(§2) " + line)
         verdict("§2", not bad2, "T0_v2 from T_first_v2, the seal inside [T_first_v2, T0_v2) and T_first_v2 from the logs"
                 if not bad2 else "; ".join(bad2))
-    if fails:
+    if at is not None:
+        _say(out, "(e) NOT RUN: --at judges a commit; the seal ran `make test` on its own tree")
+    elif fails:
         _say(out, f"(e) NOT RUN: ({'), ('.join(fails)}) failed already, and the suite takes minutes")
     else:
         env = {k: v for k, v in os.environ.items() if not k.startswith("MAKE")}
@@ -776,6 +812,7 @@ def main(argv=None, repo=None, out=None):
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--draft", action="store_true", help="the draft tag's preconditions")
     g.add_argument("--since", metavar="TAG", help="the post-seal allowlist from TAG to the files on disk")
+    g.add_argument("--at", metavar="REV", help="the seal's verdict replayed on the commit REV names (RESULTS-v2 §0)")
     a = ap.parse_args(argv)
     repo = REPO if repo is None else repo
     if out is None:
@@ -785,13 +822,13 @@ def main(argv=None, repo=None, out=None):
         except (AttributeError, ValueError):
             pass
     products = tuple(config.PRODUCTS)
-    mode = "--draft" if a.draft else f"--since {a.since}" if a.since else "the seal, (a)-(e)"
+    mode = "--draft" if a.draft else f"--since {a.since}" if a.since else f"--at {a.at}" if a.at else "the seal, (a)-(e)"
     try:
         head = _text(_git(repo, "rev-parse", "HEAD").stdout).strip()
         _say(out, f"seal-check (PREREG-v2 §13), {mode}, in {repo} at HEAD {head}, products {', '.join(products)}, "
                   f"{datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}")
         fails = draft(repo, products, out) if a.draft else since(repo, a.since, products, out) if a.since else \
-            seal(repo, products, out)
+            seal(repo, products, out, a.at)
     except (GitError, OSError) as e:
         _say(out, f"seal-check: FAIL: git could not answer: {e}")
         return 2

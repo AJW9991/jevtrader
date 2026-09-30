@@ -650,7 +650,7 @@ class SealCheck(unittest.TestCase):
         os.makedirs(os.path.join(self.repo, "bin"), exist_ok=True)
         path = os.path.join(self.repo, "bin", "seal-check")
         with open(path, "w", encoding="utf-8") as fh:
-            fh.write(f"#!/bin/sh\necho \"$0 $*\" > \"$(dirname \"$0\")/../argv.txt\"\necho '{say}'\nexit {code}\n")
+            fh.write(f"#!/bin/sh\necho \"$0 $*\" >> \"$(dirname \"$0\")/../argv.txt\"\nprintf '%s (%s)\\n' '{say}' \"$1\"\nexit {code}\n")
         os.chmod(path, 0o755)
 
     def test_no_annotated_tag_fails(self):
@@ -680,17 +680,27 @@ class SealCheck(unittest.TestCase):
         self.tool(1, "seal-check: 1 hunk outside the allowlist: stray.txt")
         x = inference_v2.seal(self.repo)
         self.assertEqual((x["ok"], x["why"]), (False, "bin/seal-check --since prereg-v2-seal exited 1"))
-        self.assertIn("    | seal-check: 1 hunk outside the allowlist: stray.txt", x["lines"])
+        self.assertIn("    | seal-check: 1 hunk outside the allowlist: stray.txt (--since)", x["lines"])
+        self.assertIn("  the seal's verdict, replayed: FAIL (exit 1)", x["lines"])       # printed, not a gate: --since is
+        os.remove(os.path.join(self.repo, "argv.txt"))
         self.tool(0)
         x = inference_v2.seal(self.repo)
         self.assertEqual((x["ok"], x["why"]), (True, None))
         with open(os.path.join(self.repo, "argv.txt"), encoding="utf-8") as fh:
-            self.assertEqual(fh.read().split()[1:], ["--since", "prereg-v2-seal"])
+            self.assertEqual([l.split()[1:] for l in fh.read().splitlines()], [["--at", "prereg-v2-seal"], ["--since", "prereg-v2-seal"]])
         text = "\n".join(x["lines"])
         head2 = self.git("rev-parse", "HEAD")
         self.assertIn(f"  seal: annotated tag prereg-v2-seal {tag} (commit {commit}), an ancestor of HEAD {head2}", text)
+        # §13: RESULTS-v2 §0 prints the seal's -U0 diff from the draft tag, seal-check's verdict, the --stat of the excluded
+        # paths, the listed deviations' diffs and the T0_v2 re-derivations: bin/seal-check --at prints them (2026-09-29
+        # lens-5 review: §0 said "not printed here yet")
+        self.assertIn("  bin/seal-check --at prereg-v2-seal (the seal's verdict replayed on the sealed commit, PREREG-v2 §13;"
+                      " printed, not a gate): exit 0, its output verbatim:\n"
+                      "    | seal-check: since prereg-v2-seal: every hunk is on the allowlist (--at)\n"
+                      "  the seal's verdict, replayed: PASS (exit 0)", text)
         self.assertIn("  bin/seal-check --since prereg-v2-seal: exit 0, its output verbatim:\n"
-                      "    | seal-check: since prereg-v2-seal: every hunk is on the allowlist", text)
+                      "    | seal-check: since prereg-v2-seal: every hunk is on the allowlist (--since)", text)
+        self.assertNotIn("not printed here yet", "\n".join(inference_v2.seal_lines(x, False)))
         self.assertIn("  git diff -U0 prereg-v2-seal HEAD (PREREG-v2 §13), verbatim:\n", text)
         self.assertIn("\n    | +two\n", text)
         self.assertIn("\n    | +++ b/stray.txt\n", text)
@@ -754,6 +764,7 @@ class Main(unittest.TestCase):
         self.assertIn("one value, as §13 requires\n", self.text)                         # SHA is also this tree's (pinned)
         self.assertIn("\n  seal: <a passing seal check, the fixture's>\n", self.text)
         self.assertNotIn("NO_SEAL", self.text)
+
         self.assertIn("H1 B - C, argmax, 0 bps, c = 900 s, seed 20261023, one-sided alpha 1/40, bound sorted[4]", self.text)
         self.assertIn("F4 B - A, argmax, 0 bps, c = 900 s, seed 20261027, one-sided alpha 1/160, bound sorted[1]", self.text)
         self.assertIn("fee columns 0, 2, 10, 25, 50, 90 bps (§6)", self.text)                  # PREREG-v2 §6's, whatever config's are
