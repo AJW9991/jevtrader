@@ -696,7 +696,9 @@ cd ~/Projects/jev-paper-loop && bin/seal-check && git tag -a prereg-v2-seal -m "
 ```
 
 `bin/seal-check` prints the whole `-U0` diff from the draft tag and each check, (a)-(e); (e) is `make test`, a few
-minutes. A fix it refuses that §13 (c) does not cover is its own commit and one row added at the end of ERRATA.md: under
+minutes. Its (§2) reads T_first_v2 from the logs again, by the rule above (`loop.dash.first_v2_rows`), and refuses a
+§12 whose T_first_v2 is not the logs', whose T0_v2 is not T_first_v2 + 86,400 s (or a re-derivation, below), or a seal
+made outside [T_first_v2, T0_v2). A fix it refuses that §13 (c) does not cover is its own commit and one row added at the end of ERRATA.md: under
 the v2 deviations table while that is the file's end, else under a new `## v2 deviations (continued)` heading with the
 table's header row. Not sealed before T0_v2: the block has not started; T0_v2 is re-derived at sealing from the commit
 time of the fix that lets `bin/seal-check` pass (§13). No seal by 2026-11-06: RESULTS.md records v2 as not run.

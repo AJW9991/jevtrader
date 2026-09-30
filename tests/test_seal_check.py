@@ -2,7 +2,7 @@
 draft tag and --since after the seal, each check passing and failing on its own. The tool is loaded in process so a
 test's three products (fixture_products) apply; a few runs go through its command line and through inference_v2.seal,
 which runs it the way v2's make results does. No test runs it on this repository (its (e) runs `make test`)."""
-import importlib.machinery, importlib.util, io, json, os, shutil, subprocess, sys, tempfile, unittest
+import calendar, hashlib, importlib.machinery, importlib.util, io, json, os, shutil, subprocess, sys, tempfile, time, unittest
 from unittest import mock
 
 from loop import config, inference_v2, prompts, state
@@ -74,6 +74,10 @@ ERRATA = """# ERRATA (a test's copy)
 |---|---|---|
 """
 PIN = "a" * 64
+SPEC = "# SPEC v2 (a test's copy)\n"
+SPEC_SHA = hashlib.sha256(SPEC.encode()).hexdigest()
+IGNORE = "data/*\n!data/exclusions.tsv\n!data/exclusions-v2.tsv\n!data/looks.tsv\n"   # the repository's own data/ rules
+SEALED_AT = "2026-10-25T00:00:00Z"                    # the seal's clock in these tests: inside [T_first_v2, T0_v2) below
 GETS_OK = {"book": "ok", "candles": "ok", "ticker": "ok"}
 
 
@@ -84,6 +88,12 @@ def probe_rows(day="2026-09-30", minutes=1440, transport=0):
     return "".join(json.dumps({"tick_id": f"{d}T{i // 60:02d}{i % 60:02d}00Z", "ok": i >= transport,
                                "gets": dict(GETS_OK, ticker="http-503") if i < transport else GETS_OK}) + "\n"
                    for i in range(minutes))
+
+
+def epoch(stamp):
+    """'2026-10-25T00:00:00Z' or a tick_id -> epoch seconds."""
+    fmt = "%Y%m%dT%H%M%SZ" if "-" not in stamp else "%Y-%m-%dT%H:%M:%SZ"
+    return calendar.timegm(time.strptime(stamp, fmt))
 
 
 def frozen(prereg=PIN, table=PIN, spec="b" * 64):
@@ -124,7 +134,10 @@ class Scratch(unittest.TestCase):
         self.write("loop/code.py", "X = 1\nY = 2\nZ = 3\n")
         self.write("loop/book.py", "def at_cadence():\n    return 1\n")
         self.write("Makefile", "test:\n\t@exit $${SEALTEST_EXIT:-0}\n")
+        self.write("SPEC.md", SPEC)
+        self.write(".gitignore", IGNORE)
         self.commit("base")
+        self.enterContext(mock.patch.object(SC, "_now", lambda: epoch(SEALED_AT)))
         self.git("tag", "-a", "prereg-v2-doc", "-m", "doc")
         self.git("tag", "-a", "prereg-v2-draft", "-m", "draft")
 
@@ -168,13 +181,29 @@ class Scratch(unittest.TestCase):
         self.fill()
         return self.commit("§12 filled")
 
-    def fill(self, fee=None, rebuild="no", seal=("20261024T213000Z", "20261025T213100Z", "Alex", "2026-10-25")):
+    def logs(self, first, sha=SPEC_SHA):
+        """Each product's decision log in the repository's data/ (ignored, as the real one is): before its first v2 live row
+        at first[p] (a tick_id; None: none), a v1 row, a dry row and an absence row carrying the v2 sha; then live rows."""
+        for p, tick in first.items():
+            name = "data/decisions.jsonl" if p == config.PRODUCT else f"data/{p}/decisions.jsonl"
+            t = epoch(tick or "20261024T000000Z")
+            at = lambda s: time.strftime("%Y%m%dT%H%M00Z", time.gmtime(s))
+            rows = [{"tick_id": at(t - 7200), "mode": "live", "absence": None, "spec_sha": "v1-" + "0" * 61},
+                    {"tick_id": at(t - 120), "mode": "dry", "absence": None, "spec_sha": sha},
+                    {"tick_id": at(t - 60), "mode": "live", "absence": "halt", "spec_sha": sha}]
+            if tick is not None:
+                rows += [{"tick_id": at(t + 60 * i), "mode": "live", "absence": None, "spec_sha": sha} for i in range(3)]
+            self.write(name, "".join(json.dumps(r) + "\n" for r in rows))
+
+    def fill(self, fee=None, rebuild="no", seal=("20261024T213000Z", "20261025T213000Z", "Alex", "2026-10-25"), logs=True):
         fee = fee or ("2026-10-24T09:00Z", "$0-$10K / 0.60 % / 1.20 %; $10K+ / 0.40 % / 0.80 %")
         self.replace("PREREG-v2.md", FEE_LINE, f"Fee tiers (30-day band / maker / taker, read UTC `{fee[0]}`): `{fee[1]}`")
         if rebuild is not None:
             self.replace("PREREG-v2.md", REBUILD, f"Tables rebuilt at the switch: `{rebuild}`")
         a, b, c, d = seal
         self.replace("PREREG-v2.md", SEAL_LINE, f"T_first_v2: `{a}`   T0_v2: `{b}`   Sealed by: `{c}`   on: `{d}`")
+        if logs:                                                 # every product's first v2 live row at T_first_v2
+            self.logs({p: a for p in self.products})
 
     # ---- the tool ----
     def check(self, *argv):
@@ -223,12 +252,17 @@ class Seal(Scratch):
             self.assertIn(f"({tag}) PASS", text)
         self.assertIn("(c) `git diff -U0 refs/tags/prereg-v2-draft HEAD -- . ':(exclude)RESULTS.md' ':(exclude)HANDOFF.md'"
                       " ':(exclude)proposals' ':(exclude)data/exclusions.tsv'` (renames off), verbatim:", text)
-        self.assertIn("    | +T_first_v2: `20261024T213000Z`   T0_v2: `20261025T213100Z`   Sealed by: `Alex`   on: `2026-10-25`", text)
+        self.assertIn("    | +T_first_v2: `20261024T213000Z`   T0_v2: `20261025T213000Z`   Sealed by: `Alex`   on: `2026-10-25`", text)
         self.assertIn("    | +++ b/prompts/v3.json", text)
         for excluded in ("RESULTS.md", "HANDOFF.md", "proposals/2026-10-01.md", "data/exclusions.tsv"):
             self.assertNotIn(f"+++ b/{excluded}", text)
-        self.assertIn("(§12) PASS: PREREG-v2.md §12 is filled: no ________ left, T0_v2 20261025T213100Z and 2 fee tier(s)"
-                      " read as loop.dash reads them", text)
+        self.assertIn("(§12) PASS: PREREG-v2.md §12 is filled: no ________ left, T_first_v2 20261024T213000Z, T0_v2"
+                      " 20261025T213000Z and 2 fee tier(s) read as loop.dash reads them", text)
+        self.assertIn("(§2) T0_v2 20261025T213000Z is the first minute boundary >= T_first_v2 20261024T213000Z + 86,400 s:"
+                      " not re-derived", text)
+        self.assertIn("(§2) the seal at 2026-10-25T00:00:00Z is in [T_first_v2, T0_v2) (§2)", text)
+        self.assertIn("(§2) PASS: T0_v2 from T_first_v2, the seal inside [T_first_v2, T0_v2) and T_first_v2 from the logs", text)
+
         self.assertIn("(e) PASS: `make test` exited 0", text)
         self.assertNotIn("NOTE", text)
 
@@ -372,6 +406,68 @@ class Seal(Scratch):
         self.assertFails(says=["prompts/v2.table.BTC-USD.json: added after prereg-v2-draft"])
 
 
+class SealTimes(Scratch):
+    """§2 and §13 on §12's T_first_v2 and T0_v2 (2026-09-29 lens-5 review: any T0_v2 and T_first_v2 passed, a past
+    one, one before T_first_v2, one a day late): T0_v2 is the first minute boundary >= T_first_v2 + 86,400 s or a
+    re-derivation from a commit made after that boundary passed unsealed; the seal falls in [T_first_v2, T0_v2); and
+    T_first_v2 is the logs' latest first live row carrying the tree's SPEC sha (STEPS §10.6's rule)."""
+
+    def sealed(self, tf, t0, logs=True):
+        self.fill(seal=(tf, t0, "Alex", "2026-10-25"), logs=logs)
+        self.commit("§12 filled")
+
+    def test_a_t0_v2_that_is_not_t_first_v2_plus_a_day_fails(self):
+        for tf, t0, says in (("20250101T000000Z", "20250101T000000Z", "is before 20250102T000000Z"),
+                             ("20261024T213000Z", "20261024T203000Z", "T0_v2 20261024T203000Z is before 20261025T213000Z"),
+                             ("20261024T213000Z", "20261025T212900Z", "is before 20261025T213000Z"),
+                             ("20261024T213000Z", "20261025T213100Z", "is neither 20261025T213000Z")):
+            with self.subTest(t0=t0):
+                self.git("reset", "-q", "--hard", "prereg-v2-draft")
+                self.sealed(tf, t0)
+                self.assertFails(says=["(§2) FAIL: ", says], failed="§2")
+
+    def test_a_seal_outside_t_first_v2_to_t0_v2_fails(self):
+        self.sealed("20261024T213000Z", "20261025T213000Z")
+        for now in ("2026-10-25T21:30:00Z", "2026-11-02T00:00:00Z", "2026-10-24T21:29:59Z"):
+            with self.subTest(now=now), mock.patch.object(SC, "_now", lambda: epoch(now)):
+                self.assertFails(says=[f"(§2) FAIL: the seal at {now} is not in [T_first_v2 20261024T213000Z, T0_v2"
+                                       " 20261025T213000Z)"], failed="§2")
+
+    def test_a_re_derived_t0_v2_passes_from_the_commit_that_let_the_check_pass(self):
+        # not sealed before 20261025T213000Z: a fix committed at 2026-10-25T21:45:10Z re-derives T0_v2 as 20261026T214600Z
+        self.fill(seal=("20261024T213000Z", "20261026T214600Z", "Alex", "2026-10-26"))
+        with mock.patch.dict(os.environ, {"GIT_COMMITTER_DATE": "2026-10-25T21:45:10Z"}):
+            fix = self.commit("the fix that lets seal-check pass, and §12 re-derived")
+        with mock.patch.object(SC, "_now", lambda: epoch("2026-10-26T00:00:00Z")):
+            text = self.assertPasses()
+        self.assertIn(f"(§2) T0_v2 RE-DERIVED (§13; RESULTS-v2 §0 lists it): the seal was not made before 20261025T213000Z"
+                      f" (T_first_v2 20261024T213000Z + 86,400 s); T0_v2 20261026T214600Z is the first minute boundary >= commit"
+                      f" {fix[:12]}'s time 2026-10-25T21:45:10Z + 86,400 s", text)
+        # a commit made before the first T0_v2 passed re-derives nothing
+        self.git("reset", "-q", "--hard", "prereg-v2-draft")
+        self.fill(seal=("20261024T213000Z", "20261026T212000Z", "Alex", "2026-10-26"))
+        with mock.patch.dict(os.environ, {"GIT_COMMITTER_DATE": "2026-10-25T21:19:30Z"}):
+            self.commit("committed before 20261025T213000Z")
+        with mock.patch.object(SC, "_now", lambda: epoch("2026-10-26T00:00:00Z")):
+            self.assertFails(says=["(§2) FAIL: T0_v2 20261026T212000Z is neither 20261025T213000Z"], failed="§2")
+
+    def test_t_first_v2_is_the_logs(self):
+        self.sealed("20261024T213000Z", "20261025T213000Z", logs=False)
+        self.logs({p: "20261024T213000Z" for p in self.products[:2]} | {self.products[2]: "20261024T213100Z"})
+        self.assertFails(says=["(§2) FAIL: §12's T_first_v2 20261024T213000Z is not the logs' 20261024T213100Z (each product's"
+                               f" first live row carrying SPEC.md's sha {SPEC_SHA[:12]}...: {self.products[0]} 20261024T213000Z,"],
+                         failed="§2")
+        self.logs({self.products[0]: "20261024T212000Z", self.products[1]: None, self.products[2]: "20261024T213000Z"})
+        self.assertFails(says=["(§2) FAIL: no live row carrying SPEC.md's sha", f"{self.products[1]}'s log"
+                               f" data/{self.products[1]}/decisions.jsonl"], failed="§2")    # a dry or halt row is not live
+        self.logs({p: "20261024T213000Z" for p in self.products}, sha="c" * 64)              # another SPEC's rows
+        self.assertFails(says=["(§2) FAIL: no live row carrying SPEC.md's sha"], failed="§2")
+        self.logs({p: "20261024T212000Z" if p == self.products[1] else "20261024T213000Z" for p in self.products})
+        self.assertPasses()                                                                   # the latest of the firsts
+        self.assertEqual(SC.log_paths(self.repo, self.products),
+                         {p: os.path.join(self.repo, os.path.relpath(config.store(p).decisions, config.REPO)) for p in self.products})
+
+
 class Rebuild(Scratch):
     """§8's once-only rebuild at the switch: every product's table, one commit, another Jev version, §12's line."""
 
@@ -509,7 +605,8 @@ class Deviations(Scratch):
         fix = self.commit("a deviation in the text, the schedule and the readers")
         self.write("ERRATA.md", ERRATA + f"| {fix[:10]} | x | y |\n")
         self.commit("listed")
-        text = self.assertPasses()
+        self.logs({p: "20261024T213000Z" for p in self.products}, sha=hashlib.sha256(b"a changed spec\n").hexdigest())
+        text = self.assertPasses()                               # (§2): the rows the changed SPEC's sha names
         for path, holds in (("PREREG-v2.md", "the text that defines every one of them"), ("SPEC.md", "the alphabet and its cuts"),
                             ("loop/prompts.py", "current and activation"), ("loop/report.py", "days_table"),
                             ("loop/outcomes.py", "the t + h join")):

@@ -15,7 +15,7 @@ or confidence number can appear by accident; tests/test_dash.py holds every `rep
 in this file to an allowlist.
 Standard library only; the page carries no script and loads nothing from the network, so
 it can be opened from a file and shared without reaching for anything."""
-import argparse, collections, datetime, decimal, glob, hashlib, html, math, os, re, sys
+import argparse, collections, datetime, decimal, glob, hashlib, html, json, math, os, re, sys
 
 from . import config, exclusions_v2, outcomes, prompts, report, state
 
@@ -25,6 +25,8 @@ PREREG_PATH = os.path.join(config.REPO, "PREREG.md")   # the repository's PREREG
 PREREG_V2_PATH = os.path.join(config.REPO, "PREREG-v2.md")   # the repository's PREREG-v2, read at call time (tests pin a fixture)
 T0_V2_RE = re.compile(r"T0_v2[ \t]*:[ \t]*`([^`\n]*)`")        # §12's field line: T_first_v2: `...`   T0_v2: `...`   Sealed by: ...
 T0_V2_ANY = re.compile(r"T0_v2[ \t]*:")                        # any field-like mention in §12: each must be T0_V2_RE's form
+T_FIRST_V2_RE = re.compile(r"T_first_v2[ \t]*:[ \t]*`([^`\n]*)`")   # the same line's T_first_v2 (§2: the latest first v2 live row)
+T_FIRST_V2_ANY = re.compile(r"T_first_v2[ \t]*:")
 BLANK_RE = re.compile(r"_*")                                  # an unfilled field is underscores (or nothing)
 PRODUCTS_V2_RE = re.compile(r"Products:[ \t]*((?:`[^`\n]*`[ \t]*,?[ \t]*)+)")   # §2's line: Products: `SOL-USD`, `...`, `...`
 PRODUCT_ID_RE = re.compile(r"[A-Z0-9]+-[A-Z]+")                 # a filled field that names a product
@@ -88,13 +90,9 @@ def read_t0(prereg=None):
     return report.tick_epoch(m.group(1)) if m else None
 
 
-def read_t0_v2(prereg=None):
-    """PREREG-v2.md §12's T0_v2 as epoch seconds, or None while the field is blank (underscores) or the file or
-    the field is absent. A filled field that is not a tick_id on a minute boundary ('20261024T220000Z') raises
-    ValueError: a malformed seal must be loud, never read as unsealed. So does a field-like `T0_v2:` in §12 whose
-    value is not in backticks, and a second such field; spaces or tabs around the colon and inside the backticks
-    are only spacing and are read. Read at call time from `prereg` or the
-    repository's own PREREG-v2.md (PREREG_V2_PATH), whatever a reader's --prereg or --t0 say (§9.5)."""
+def _s12_tick(name, field_re, any_re, prereg):
+    """One tick_id field of PREREG-v2.md §12 (read_t0_v2's rules, for `name`): epoch seconds, None while blank or absent,
+    ValueError when malformed."""
     try:
         with open(prereg or PREREG_V2_PATH, encoding="utf-8") as fh:
             text = fh.read()
@@ -102,17 +100,65 @@ def read_t0_v2(prereg=None):
         return None
     sec = re.search(r"^## 12\..*?(?=^## |\Z)", text, re.M | re.S)          # §12 only: the field is filled there
     body = sec.group(0) if sec else ""
-    found, fields = T0_V2_ANY.findall(body), T0_V2_RE.findall(body)
+    found, fields = any_re.findall(body), field_re.findall(body)
     if len(found) != len(fields) or len(fields) > 1:        # a field without its backticks, or two fields: never "blank"
-        bad = [l.strip() for l in body.splitlines() if T0_V2_ANY.search(l)]
-        raise ValueError(f"PREREG-v2 §12's T0_v2 field is not one `T0_v2: `YYYYMMDDTHHMM00Z`` (or blank underscores): {bad!r}")
-    m = T0_V2_RE.search(body)
+        bad = [l.strip() for l in body.splitlines() if any_re.search(l)]
+        raise ValueError(f"PREREG-v2 §12's {name} field is not one `{name}: `YYYYMMDDTHHMM00Z`` (or blank underscores): {bad!r}")
+    m = field_re.search(body)
     if m is None or BLANK_RE.fullmatch(m.group(1).strip()):
         return None
     v = m.group(1).strip()
     if not TICK_RE.fullmatch(v):
-        raise ValueError(f"PREREG-v2 §12's T0_v2 {v!r} is not a tick_id on a minute boundary (YYYYMMDDTHHMM00Z)")
+        raise ValueError(f"PREREG-v2 §12's {name} {v!r} is not a tick_id on a minute boundary (YYYYMMDDTHHMM00Z)")
     return report.tick_epoch(v)
+
+
+def read_t0_v2(prereg=None):
+    """PREREG-v2.md §12's T0_v2 as epoch seconds, or None while the field is blank (underscores) or the file or
+    the field is absent. A filled field that is not a tick_id on a minute boundary ('20261024T220000Z') raises
+    ValueError: a malformed seal must be loud, never read as unsealed. So does a field-like `T0_v2:` in §12 whose
+    value is not in backticks, and a second such field; spaces or tabs around the colon and inside the backticks
+    are only spacing and are read. Read at call time from `prereg` or the
+    repository's own PREREG-v2.md (PREREG_V2_PATH), whatever a reader's --prereg or --t0 say (§9.5)."""
+    return _s12_tick("T0_v2", T0_V2_RE, T0_V2_ANY, prereg)
+
+
+def read_t_first_v2(prereg=None):
+    """PREREG-v2.md §12's T_first_v2 as epoch seconds, read as read_t0_v2 reads T0_v2 (None while blank or absent,
+    ValueError when malformed): a row's tick_id, so a minute boundary (§2: the latest, over products, of each
+    product's first live row carrying the draft tree's spec_sha). bin/seal-check holds T0_v2 to it (§2, §13)."""
+    return _s12_tick("T_first_v2", T_FIRST_V2_RE, T_FIRST_V2_ANY, prereg)
+
+
+def first_v2_rows(paths, sha):
+    """§2's T_first_v2 from the logs: {product: the least tick_id (epoch) of its live rows (mode "live", absence null)
+    carrying spec_sha `sha`, or None when it has none or its log is absent}, for paths {product: its decision log}.
+    Reads each row's tick_id, mode, absence and spec_sha only, nothing an answer or an outcome holds; a line that is
+    not a JSON object is skipped. T_first_v2 is the latest of the values when none is None (STEPS §10.6; bin/seal-check)."""
+    first = {}
+    for p, path in paths.items():
+        best = None
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    if sha not in line:
+                        continue
+                    try:
+                        r = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not (isinstance(r, dict) and r.get("spec_sha") == sha and r.get("mode") == "live"
+                            and r.get("absence") is None and isinstance(r.get("tick_id"), str)):
+                        continue
+                    try:
+                        t = report.tick_epoch(r["tick_id"])
+                    except ValueError:
+                        continue
+                    best = t if best is None else min(best, t)
+        except OSError:
+            best = None
+        first[p] = best
+    return first
 
 
 def read_products_v2(prereg=None):

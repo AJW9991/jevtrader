@@ -49,8 +49,16 @@ The seal (no flag) exits 0 only when all of §13's five hold:
     (a)-(e), but the seal's own precondition: the header has prereg-v2-seal made "once §12's fields are filled, tagged
     only after bin/seal-check exits 0", §13 seals "once §12 is filled", and after the tag --since refuses any edit of
     PREREG-v2.md, so a field left blank or unreadable at the seal could never be filled;
-(e) `make test` exits 0 in the tree (its last lines are printed). NOT RUN when (a)-(d) or (§12) already failed: the
-    verdict is FAIL either way, and the suite takes minutes. (c) is NOT RUN without a draft tag on HEAD.
+(§2) once §12's T_first_v2 and T0_v2 are read: T0_v2 is the first minute boundary >= T_first_v2 + 86,400 s (§2), or a
+    re-derivation (§13: the seal was not made before that boundary, and T0_v2 is the first minute boundary >= the commit
+    time of the fix that lets bin/seal-check pass + 86,400 s: a commit in prereg-v2-draft..HEAD made at or after the
+    first boundary must give it; it is printed as RE-DERIVED); the seal, now, falls in [T_first_v2, T0_v2) (§2, §13:
+    before the first v2 sample row); and T_first_v2 is the logs': the latest, over config.PRODUCTS, of each product's
+    first live row (mode live, absence null) carrying the sha of HEAD's SPEC.md, read from the tree's data/ in
+    config.store's layout (loop.dash.first_v2_rows, STEPS §10.6's rule; a product with no such row fails). Not one of
+    (a)-(e) either: without it a stale, past or mistyped T0_v2 passed and moved every reader's window (2026-09-29 review);
+(e) `make test` exits 0 in the tree (its last lines are printed). NOT RUN when (a)-(d), (§12) or (§2) already failed:
+    the verdict is FAIL either way, and the suite takes minutes. (c) is NOT RUN without a draft tag on HEAD.
 
 --draft exits 0 only when all of §13's three hold:
 - no ________ remains in PREREG-v2.md outside §12, nor the other unwritten forms its pre-tag fields take (§1's `__` of 81
@@ -75,7 +83,7 @@ allowlist: prompts/v<N>.json and prompts/v<N>.table.<p>.json with N >= 3 and p i
 sealed), prompts/CURRENT, HANDOFF.md, proposals/, data/exclusions-v2.tsv and data/looks.tsv. Untracked files are named on
 a NOTE line and not judged (RESULTS-v2.md is one until it is committed).
 """
-import argparse, datetime, importlib.machinery, importlib.util, json, os, re, subprocess, sys, tempfile, time
+import argparse, datetime, hashlib, importlib.machinery, importlib.util, json, os, re, subprocess, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -121,6 +129,13 @@ VOIDING = {                                 # §13: a deviation touching what th
 }
 MAKE_TIMEOUT_S = 3600
 TAIL_LINES = 4
+DAY_S = 86400
+
+
+def _now():
+    """The seal's clock (epoch seconds): the time the seal is judged at, which §2 puts in [T_first_v2, T0_v2)."""
+    return time.time()
+
 
 
 class GitError(RuntimeError):
@@ -379,8 +394,8 @@ def judge_frozen(hs, products):
 
 
 def section12_unfilled(text):
-    """Why §12 of `text` (PREREG-v2.md) is not filled, one reason a line; empty when it is: no ________ left, and T0_v2
-    and the fee tiers read by loop.dash's readers (None there is a blank or a missing field; ValueError a malformed one).
+    """Why §12 of `text` (PREREG-v2.md) is not filled, one reason a line; empty when it is: no ________ left, and
+    T_first_v2, T0_v2 and the fee tiers read by loop.dash's readers (None there is a blank or a missing field; ValueError a malformed one).
     Returns (reasons, what was read)."""
     why, n = [], section(text, 12).count(BLANK)
     if n:
@@ -391,7 +406,8 @@ def section12_unfilled(text):
         path = os.path.join(d, PREREG)
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(text)
-        for name, reader in (("T0_v2", dash.read_t0_v2), ("fee tiers", dash.read_fee_tiers)):
+        for name, reader in (("T_first_v2", dash.read_t_first_v2), ("T0_v2", dash.read_t0_v2),
+                             ("fee tiers", dash.read_fee_tiers)):
             try:
                 read[name] = reader(path)
             except ValueError as e:
@@ -400,6 +416,87 @@ def section12_unfilled(text):
             if read[name] is None:
                 why.append(f"{PREREG} §12's {name} is blank or absent, as loop.dash reads it")
     return why, read
+
+
+def _tick(epoch):
+    return time.strftime("%Y%m%dT%H%M00Z", time.gmtime(epoch))
+
+
+def _stamp(epoch):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
+
+
+def _minute_up(epoch):
+    """The first minute boundary at or after `epoch` (§2's T0_v2 rule, §13's re-derivation)."""
+    return int(-(-epoch // 60) * 60)
+
+
+def log_paths(repo, products):
+    """Each product's decision log in `repo` in config.store's layout (data/decisions.jsonl for config.PRODUCT,
+    data/<PRODUCT>/decisions.jsonl for the others): the logs of the tree checked, not of the code's own tree."""
+    return {p: os.path.join(repo, "data", "decisions.jsonl") if p == config.PRODUCT else
+            os.path.join(repo, "data", p, "decisions.jsonl") for p in products}
+
+
+def times(repo, rev, read, sealed_at, products):
+    """§2 and §13 on §12's two times, once both read: (refusals, lines). T0_v2 is the first minute boundary >= T_first_v2
+    + 86,400 s, or a re-derivation (§13: the seal was not made before that; T0_v2 is then the first minute boundary >=
+    the commit time of the fix that lets bin/seal-check pass + 86,400 s, which a commit in prereg-v2-draft..rev made at or
+    after the first T0_v2 must give); the seal, made at `sealed_at`, falls in [T_first_v2, T0_v2); and T_first_v2 is the
+    logs': the latest, over products, of each product's first live row carrying the sha of `rev`'s SPEC.md (§2; read
+    from `repo`'s data/, as STEPS §10.6 computes it)."""
+    tf, t0 = read.get("T_first_v2"), read.get("T0_v2")
+    if tf is None or t0 is None:
+        return [], []
+    bad, lines = [], []
+    first = _minute_up(tf + DAY_S)
+    if t0 == first:
+        lines.append(f"T0_v2 {_tick(t0)} is the first minute boundary >= T_first_v2 {_tick(tf)} + 86,400 s: not re-derived")
+    elif t0 < first:
+        bad.append(f"T0_v2 {_tick(t0)} is before {_tick(first)}, the first minute boundary >= T_first_v2 {_tick(tf)} + 86,400 s (§2)")
+    else:
+        found = None
+        for line in _text(_git(repo, "log", "--format=%H %ct", f"{DRAFT_TAG}..{rev}", check=False).stdout).splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[1].isdigit():
+                ct = int(parts[1])
+                if ct >= first and _minute_up(ct + DAY_S) == t0:
+                    found = (parts[0], ct)
+                    break
+        if found is None:
+            bad.append(f"T0_v2 {_tick(t0)} is neither {_tick(first)} (the first minute boundary >= T_first_v2 {_tick(tf)} +"
+                       " 86,400 s, §2) nor a re-derivation (§13: the first minute boundary >= the commit time + 86,400 s of a"
+                       f" commit in prereg-v2-draft..{rev} made at or after {_tick(first)})")
+        else:
+            lines.append(f"T0_v2 RE-DERIVED (§13; RESULTS-v2 §0 lists it): the seal was not made before {_tick(first)} (T_first_v2"
+                         f" {_tick(tf)} + 86,400 s); T0_v2 {_tick(t0)} is the first minute boundary >= commit"
+                         f" {found[0][:12]}'s time {_stamp(found[1])} + 86,400 s")
+    if not tf <= sealed_at < t0:
+        bad.append(f"the seal at {_stamp(sealed_at)} is not in [T_first_v2 {_tick(tf)}, T0_v2 {_tick(t0)}) (§2, §13: sealed before"
+                   " the first v2 sample row)")
+    else:
+        lines.append(f"the seal at {_stamp(sealed_at)} is in [T_first_v2, T0_v2) (§2)")
+    spec = _git(repo, "cat-file", "blob", f"{rev}:SPEC.md", check=False)
+    if spec.returncode != 0:
+        bad.append(f"SPEC.md is not in {rev}: T_first_v2 cannot be read from the logs (§2: the draft tree's spec_sha)")
+        return bad, lines
+    sha = hashlib.sha256(spec.stdout).hexdigest()
+    paths = log_paths(repo, products)
+    first_rows = dash.first_v2_rows(paths, sha)
+    none = [p for p in products if first_rows[p] is None]
+    if none:
+        bad.append("no live row carrying SPEC.md's sha " + sha[:12] + "... in " + ", ".join(
+            f"{p}'s log {os.path.relpath(paths[p], repo)}" for p in none) + ": T_first_v2 cannot be read from the logs (§2)")
+    else:
+        latest = max(first_rows.values())
+        who = ", ".join(f"{p} {_tick(first_rows[p])}" for p in products)
+        if latest != tf:
+            bad.append(f"§12's T_first_v2 {_tick(tf)} is not the logs' {_tick(latest)} (each product's first live row carrying"
+                       f" SPEC.md's sha {sha[:12]}...: {who}; §2: the latest of them)")
+        else:
+            lines.append(f"T_first_v2 {_tick(tf)} is the logs' (each product's first live row carrying SPEC.md's sha"
+                         f" {sha[:12]}...: {who})")
+    return bad, lines
 
 
 def current_name(repo, rev):
@@ -529,11 +626,19 @@ def seal(repo, products, out):
     verdict("d", name == "v2", "prompts/CURRENT names v2" if name == "v2" else
             f"prompts/CURRENT names {name!r}, not v2" if name else f"prompts/CURRENT cannot be read: {why}")
     why, read = section12_unfilled(blob(repo, "HEAD", PREREG) or "")
-    t0 = read.get("T0_v2")
-    verdict("§12", not why, f"{PREREG} §12 is filled: no {BLANK} left, T0_v2 "
-            f"{time.strftime('%Y%m%dT%H%M00Z', time.gmtime(t0)) if t0 is not None else '?'} and "
+    tf, t0 = read.get("T_first_v2"), read.get("T0_v2")
+    verdict("§12", not why, f"{PREREG} §12 is filled: no {BLANK} left, T_first_v2 {_tick(tf) if tf is not None else '?'},"
+            f" T0_v2 {_tick(t0) if t0 is not None else '?'} and "
             f"{len((read.get('fee tiers') or {}).get('tiers', []))} fee tier(s) read as loop.dash reads them" if not why
             else "; ".join(why))
+    if tf is None or t0 is None:
+        _say(out, "(§2) NOT RUN: §12's T_first_v2 or T0_v2 is not read (above)")
+    else:
+        bad2, lines2 = times(repo, "HEAD", read, _now(), products)
+        for line in lines2:
+            _say(out, "(§2) " + line)
+        verdict("§2", not bad2, "T0_v2 from T_first_v2, the seal inside [T_first_v2, T0_v2) and T_first_v2 from the logs"
+                if not bad2 else "; ".join(bad2))
     if fails:
         _say(out, f"(e) NOT RUN: ({'), ('.join(fails)}) failed already, and the suite takes minutes")
     else:

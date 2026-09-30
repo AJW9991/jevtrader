@@ -41,6 +41,27 @@ class PreregV2Line(unittest.TestCase):
         self.assertEqual(len(dash.T0_V2_RE.findall(sec)), 1)
         dash.read_t0_v2(path)                                          # blank (None) or a tick_id; never a raise
 
+    def test_t_first_v2_reads_as_t0_v2_reads(self):
+        # bin/seal-check holds T0_v2 to it (§2, §13): the repository's blank line reads None, a tick_id reads, and
+        # anything else filled in is loud (2026-09-29 lens-5 review: T_first_v2 was never parsed at all)
+        path = os.path.join(REPO, "PREREG-v2.md")
+        with open(path, encoding="utf-8") as fh:
+            sec = fh.read().split("\n## 12.", 1)[1].split("\n## 13.", 1)[0]
+        self.assertEqual(len(dash.T_FIRST_V2_RE.findall(sec)), 1)
+        dash.read_t_first_v2(path)
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "PREREG-v2.md")
+            for field, want in (("________", None), ("20261023T220000Z", dash.report.tick_epoch("20261023T220000Z")),
+                                ("2026-10-23T22:00Z", ValueError), ("20261023T220030Z", ValueError)):
+                with open(p, "w", encoding="utf-8") as fh:
+                    fh.write(text_v2("20261024T220000Z").replace("T_first_v2: `20261023T220000Z`", f"T_first_v2: `{field}`"))
+                if want is ValueError:
+                    with self.assertRaises(ValueError, msg=field):
+                        dash.read_t_first_v2(p)
+                else:
+                    self.assertEqual(dash.read_t_first_v2(p), want)
+                    self.assertEqual(dash.read_t0_v2(p), dash.report.tick_epoch("20261024T220000Z"))   # the other field
+
     def _read(self, t0_field):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "PREREG-v2.md")
