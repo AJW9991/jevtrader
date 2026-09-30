@@ -45,7 +45,7 @@ FILES = {                                            # sha256 of the bytes on di
                                                  # --settings, the 45-min cap, CLAUDE_CONFIG_DIR, --model
     "nightly/settings.json": "0a6ed21f0bad3058900388daca799fa0b49bb6c10ddfc34d9f6c7111d7f0cfe5",   # the call's permissions (§8)
     "nightly/capped.py": "9bf29eaed255592606ae96a79f50234a7795eba83d1bca7bd7c7347141b34bbc",   # the cap on awake time (§8)
-    "nightly/policy_table.py": "d54fa8bdbfc9d3f8005703ee934c9c3b4562330c8a058898e68564357c0a84d2",   # candidate scoring (§8)
+    "nightly/policy_table.py": "5c43a491164cdce2717646898dc07565c135eff596e9ec357b0a86c5d4b646fb",   # candidate scoring (§8)
     "prompts/v1.json": "207ed69be0ce6cb8d22ac81519a4db6845ab92d643c2772f150cabfe9efe57a0",
     "prompts/v2.json": "dcc848e5ad1452bede8631cf0d2f9801175070746ced883857e86366ec4a8ab4",
 }

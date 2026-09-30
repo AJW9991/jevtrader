@@ -168,7 +168,10 @@ def run_night(jobs, ask=None, deadline_s=None, clock=time.monotonic):
     each send, never mid-send (jev.py's own timeout bounds a send). A fatal kind (no key, no ledger, a 429, key rejected
     -- which also writes data/HALT), MAX_TRANSIENT_RUN transient failures in a row, MAX_OTHER_RUN other failures in a
     row, or MAX_ERROR_RUN failures of any kind in a row stop the sending; so does data/HALT, checked before every send
-    (error kind "halt"). A stop carries over to every later product; the remaining rows carry the kind that stopped it."""
+    (error kind "halt"). A stop carries over to every later product; the remaining rows carry the kind that stopped it.
+    A reply whose choice for any question is not buy, sell or hold (jev._parse lets a null through) is that state's
+    error "parse", a non-transient failure like any other: the state is unanswered, the table INCOMPLETE, and --fill
+    asks it again (2026-09-29 review: it was stored as answered, so --fill skipped it and bin/promote refused at 80/81)."""
     ask = ask or jev.ask                 # resolved at call time so tests can patch loop.jev.ask
     deadline_s = DEADLINE_S * len(jobs) if deadline_s is None else deadline_s
     t0, stop, streak, other, errors = clock(), None, 0, 0, 0
@@ -186,8 +189,11 @@ def run_night(jobs, ask=None, deadline_s=None, clock=time.monotonic):
             else:
                 try:
                     r = ask(s, qs)
-                    row["answers"] = {qid: (r["answers"][qid].get("choice"), r["answers"][qid].get("confidence"))
-                                      for qid in qs}
+                    answers = {qid: (r["answers"][qid].get("choice"), r["answers"][qid].get("confidence")) for qid in qs}
+                    off = sorted(q for q, (c, _) in answers.items() if c not in prompts.TABLE_ANSWERS)
+                    if off:                          # jev._parse passes a null choice; a table holds buy, sell or hold only
+                        raise jev.JevError("parse", f"{', '.join(off)}: choice {answers[off[0]][0]!r} is not buy, sell or hold")
+                    row["answers"] = answers
                     row["model"] = r.get("model")
                     streak = other = errors = 0
                 except jev.JevError as e:

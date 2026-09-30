@@ -311,6 +311,35 @@ class Fill(unittest.TestCase):
         doc, sha = policy_table.read_table(self.tj)
         self.assertEqual(policy_table.vouched_sha(self.md), sha)
 
+    def test_a_choice_outside_the_alphabet_is_unanswered_and_filled(self):
+        # PREREG-v2 §8: "An unanswered state is re-sent only by --fill". A null (or any other) choice that jev._parse
+        # passed was stored as answered: the night said 243/243 with errors 0, --fill sent nothing, and bin/promote then
+        # refused the candidate at 80 of 81 (2026-09-29 lens-4 review)
+        t = PolicyTableV2("test_dry_counts_every_products_payloads")
+        t.setUp()
+        self.addCleanup(t.doCleanups)
+        bad = policy_table.states("ETH-USD")[10][0]
+
+        def night(s, qs, **kw):
+            r = t._reply(s, qs)
+            if s == bad:
+                r["answers"]["cand_0"] = {"choice": None, "probabilities": None, "confidence": None}
+            return r
+        t.ask.side_effect = night
+        rc, md, tj = t._night()
+        self.assertEqual(rc, policy_table.EXIT_INCOMPLETE)
+        with open(md, encoding="utf-8") as fh:
+            self.assertIn("requests: 243, answered: 242, errors: 1 -- INCOMPLETE", fh.read())
+        doc, _ = policy_table.read_table(tj)
+        row = next(r for r in doc["products"]["ETH-USD"]["rows"] if r["state"] == bad)
+        self.assertEqual((row["answers"], row["error"]), (None, "parse"))
+        t.ask.reset_mock()
+        t.ask.side_effect = t._reply
+        with mock.patch.object(policy_table, "_attended", return_value=True):
+            rc, out, _ = t._main("--fill", tj)
+        self.assertEqual((rc, out), (0, f"{tj}\tfilled 1, unanswered 0\n"))
+        self.assertEqual([c.args[0] for c in t.ask.call_args_list], [bad])
+
     def test_fill_and_a_proposal_are_one_or_the_other(self):
         with mock.patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit) as cm:
             policy_table.main([self.t.prop, "--fill", self.tj])
