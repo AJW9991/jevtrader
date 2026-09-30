@@ -46,12 +46,14 @@ run:
 report:
 	$(PY) -m loop.report
 
-# The day-14 health look: `python3 -m loop.report --health --sample`, sections 1-3 per product and
-# pooled, T0_v2 read from PREREG-v2.md §12 (PREREG-v2 §9.5; `make report --health` never worked:
-# make takes the flag as its own). v1's look, T0 from PREREG.md §11:
+# The day-14 health look: `python3 -m loop.report --health --pre-sample --sample`, sections 1-3 per product and
+# pooled, first over the rows before PREREG-v2's sample (from v1's end, PREREG.md §11's T0 + 28 d, up to T0_v2: the v1
+# stream through the switch and the shakedown, which PREREG-v2 §2 has reported here), then over the sample, T0_v2 read
+# from PREREG-v2.md §12 (PREREG-v2 §9.5); while §12 is blank, every row from v1's end and a line that there is no sample
+# yet (`make report --health` never worked: make takes the flag as its own). v1's look, T0 from PREREG.md §11:
 # `python3 -m loop.report --log data/decisions.jsonl --health --sample`.
 health:
-	$(PY) -m loop.report --health --sample
+	$(PY) -m loop.report --health --pre-sample --sample
 
 # health only (report §1-§3 + the nightly's synthetic tables) as one HTML file, data/dash.html, over every product's
 # store (config.PRODUCTS), with HALT and each PAUSE.<PRODUCT> from data/ (PREREG-v2 §2)

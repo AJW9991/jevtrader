@@ -52,7 +52,7 @@ class MakeTargets(unittest.TestCase):
     def test_the_morning_targets_read_every_store(self):
         # PREREG-v2 §2, §10: health, status and dash pass no --log, so each reader takes its default, every product's
         # store in config.PRODUCTS (v2's results target is held in tests/test_inference_v2.py)
-        for target, want in (("health", "-m loop.report --health --sample"), ("status", "-m loop.status"),
+        for target, want in (("health", "-m loop.report --health --pre-sample --sample"), ("status", "-m loop.status"),
                              ("dash", "-m loop.dash")):
             r = _make("-n", target)
             self.assertEqual(r.returncode, 0, r.stderr)

@@ -1622,6 +1622,11 @@ def main(argv=None, now=None):
                     help=f"sections 1-{HEALTH_N} only (the day-14 look): no H1, H2 or confidence number")
     ap.add_argument("--sample", action="store_true",
                     help="--t0 read from the sealed text: PREREG.md §11 with --log, PREREG-v2.md §12's T0_v2 without it")
+    ap.add_argument("--pre-sample", action="store_true",
+                    help="PREREG-v2's report on the rows before its sample, every product's store: tick_id from v1's sample end"
+                         " (PREREG.md §11's T0 + 28 d) up to T0_v2 (every later row while PREREG-v2.md §12 is blank), no day"
+                         " judged; with --sample, that report and then the sample's (make health: PREREG-v2 §2 has the v1"
+                         " stream's rows between v1's end and T0_v2 reported there)")
     ap.add_argument("--prereg", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--unblind", action="store_true",
                     help=f"print sections {HEALTH_N + 1}-{len(TITLES)} on sample rows before the sample has ended (a look: it is"
@@ -1645,6 +1650,9 @@ def main(argv=None, now=None):
     except ValueError as e:                                          # a malformed seal: withheld as if blank, and said
         t0_v2, v2_bad = None, str(e)
     v2_sha = dash.v2_spec_sha()
+    no_sample = False
+    if args.pre_sample and (args.log is not None or args.t0):
+        ap.error("--pre-sample reads every product's store before PREREG-v2's sample; do not pass --log or --t0 with it")
     if args.sample:
         if args.t0:
             ap.error("--sample reads T0 from the sealed text; do not pass --t0 with it")
@@ -1654,26 +1662,41 @@ def main(argv=None, now=None):
                 ap.error("--sample: PREREG.md §11 is not sealed (no T0 line)")
             t0 = sealed
         else:
-            if t0_v2 is None:
+            if t0_v2 is None and not args.pre_sample:
                 ap.error("--sample: PREREG-v2.md §12's T0_v2 is " + (v2_bad or "blank (not sealed)"))
-            t0 = t0_v2
+            t0, no_sample = t0_v2, t0_v2 is None                     # with --pre-sample, said after the rows before it
     clock = datetime.datetime.now(datetime.timezone.utc).timestamp() if now is None else now
-    stores = []
-    for product, log in ([(None, args.log)] if args.log is not None else [(p, config.store(p).decisions) for p in config.PRODUCTS]):
-        rows, bad = [], []
-        missing = not os.path.exists(log)                            # load() raises on a missing file: day zero is not an error
-        if not missing:
-            rows = outcomes.load(log, bad)
-        outs = outcomes.join(rows)                                   # over the whole log: forward only, t+h may follow the cut
-        last = max((tick_epoch(r["tick_id"]) for r in rows), default=None)   # the sample's last day closes on rows after the cut
-        reached = last_reached(rows, clock)                          # §1's days close on the last row stamped at or before the clock
-        if since:
-            rows = [r for r in rows if r["tick_id"][:8] >= since]     # tick_id is YYYYMMDDTHHMM00Z; the first 8 chars are the day
-        if t0 is not None:
-            rows = in_sample(rows, t0)                               # cut BEFORE any replay: every arm starts flat at T0
-        stores.append({"product": product, "log": log, "missing": missing, "rows": rows, "bad": bad, "outs": outs,
-                       "last": last, "reached": reached})
-    every = [r for s in stores for r in s["rows"]]
+    passes = []                                                      # (t0, (lo, hi) or None): each a report over every store
+    if args.pre_sample:
+        passes.append((None, (sealed_repo + SAMPLE_DAYS * 86400 if sealed_repo is not None else None, t0_v2)))
+    if (not args.pre_sample or args.sample) and not no_sample:
+        passes.append((t0, None))
+    loaded = {}
+
+    def load_stores(t0, window):
+        out = []
+        for product, log in ([(None, args.log)] if args.log is not None else [(p, config.store(p).decisions) for p in config.PRODUCTS]):
+            if log not in loaded:
+                rows, bad = [], []
+                missing = not os.path.exists(log)                    # load() raises on a missing file: day zero is not an error
+                if not missing:
+                    rows = outcomes.load(log, bad)
+                loaded[log] = (rows, bad, missing, outcomes.join(rows))   # the join over the whole log: t+h may follow the cut
+            rows, bad, missing, outs = loaded[log]
+            last = max((tick_epoch(r["tick_id"]) for r in rows), default=None)   # the sample's last day closes on rows after the cut
+            reached = last_reached(rows, clock)                      # §1's days close on the last row stamped at or before the clock
+            if since:
+                rows = [r for r in rows if r["tick_id"][:8] >= since]     # tick_id is YYYYMMDDTHHMM00Z; the first 8 chars are the day
+            if t0 is not None:
+                rows = in_sample(rows, t0)                           # cut BEFORE any replay: every arm starts flat at T0
+            if window is not None:
+                lo, hi = window
+                rows = [r for r in rows if (lo is None or tick_epoch(r["tick_id"]) >= lo) and (hi is None or tick_epoch(r["tick_id"]) < hi)]
+            out.append({"product": product, "log": log, "missing": missing, "rows": rows, "bad": bad, "outs": outs,
+                        "last": last, "reached": reached})
+        return out
+    runs = [(t0_p, window, load_stores(t0_p, window)) for t0_p, window in passes]
+    every = [r for _, _, stores in runs for s in stores for r in s["rows"]]
     health_only = args.health
     w1 = w2 = None
     if not health_only:
@@ -1702,7 +1725,7 @@ def main(argv=None, now=None):
     if v2_bad:
         sys.stderr.write(f"report: {v2_bad}; withheld as if blank\n")
     if args.log is not None:
-        s = stores[0]
+        s = runs[0][2][0]
         text = render(s["rows"], s["bad"], args.log, args.since, s["missing"], t0, s["outs"], health_only, s["last"], w1, clock, s["reached"])
         if w2 is not None:
             head, _, rest = text.partition("\n")
@@ -1715,21 +1738,41 @@ def main(argv=None, now=None):
         listed["set"], listed["lines"] = exclusions_v2.read()
     except (ValueError, OSError) as e:
         listed["error"] = str(e)
-    withheld = []
-    if w1 is not None:
-        withheld.append(f"sections {HEALTH_N + 1}-{len(TITLES)} WITHHELD until {_iso_minute(w1)}: these rows are in v1's sealed sample"
-                        " and nobody reads H1, H2, the pairs or the calibration before day 28 (CLAUDE.md, PREREG §8.4)")
-    if w2 is not None:
-        withheld.append(withheld_v2_line(w2))
+    def withheld_lines(rows):
+        """The WITHHELD lines of one report's rows (none after --unblind or with --health, as above)."""
+        out = []
+        if w1 is None and w2 is None:
+            return out
+        a, b = withheld_until(rows, sealed_repo, now), withheld_v2(rows, t0_v2, v2_sha, now)
+        if a is not None:
+            out.append(f"sections {HEALTH_N + 1}-{len(TITLES)} WITHHELD until {_iso_minute(a)}: these rows are in v1's sealed sample"
+                       " and nobody reads H1, H2, the pairs or the calibration before day 28 (CLAUDE.md, PREREG §8.4)")
+        if b is not None:
+            out.append(withheld_v2_line(b))
+        return out
     tiers = None
     if not health_only:
         try:
             tiers = dash.read_fee_tiers()                            # PREREG-v2 §12's fee-tier table, the repository's (§6.2, §10)
         except ValueError as e:                                      # malformed: said in §5, ERRATA's reading stands in
             tiers = {"error": str(e)}
-    for s in stores:
-        s["last"] = s["reached"] if s["reached"] is not None else s["last"]
-    sys.stdout.write(render_v2(stores, t0, args.since, health_only, withheld, clock, listed, tiers)["text"])
+    texts = []
+    for t0_p, window, stores in runs:
+        for s in stores:
+            s["last"] = s["reached"] if s["reached"] is not None else s["last"]
+        text = render_v2(stores, t0_p, args.since, health_only, withheld_lines([r for s in stores for r in s["rows"]]), clock,
+                         listed, tiers)["text"]
+        if window is not None:
+            lo, hi = window
+            text = (f"== the rows before PREREG-v2's sample (PREREG-v2 §2: the v1 stream after v1's sample, the switch and the"
+                    f" shakedown): tick_id from {_iso_minute(lo) + ' (v1: PREREG.md §11 T0 + ' + str(SAMPLE_DAYS) + ' d)' if lo is not None else 'the first row'}"
+                    f" up to {'T0_v2 ' + _iso_minute(hi) + ' (PREREG-v2.md §12)' if hi is not None else 'the last row (PREREG-v2.md §12 T0_v2 blank)'}\n" + text)
+        elif args.pre_sample:
+            text = f"== PREREG-v2's sample [T0_v2 {_iso_minute(t0_p)}, T0_v2 + {SAMPLE_DAYS} d) (PREREG-v2.md §12)\n" + text
+        texts.append(text)
+    if no_sample:
+        texts.append("== PREREG-v2's sample: none yet: PREREG-v2.md §12's T0_v2 is " + (v2_bad or "blank (not sealed)") + "\n")
+    sys.stdout.write("\n".join(texts))
     return 0
 
 

@@ -452,8 +452,9 @@ Print, plain text, in this order:
    the answer matched it; nearly every answer is hold, correct only when
    |ret_h| < 5 bps).
 `--health` prints §1–§3 only and neither computes nor prints §4–§7: PREREG
-§8.4's day-14 look is `python3 -m loop.report --health --t0 <T0>` (`make health` is
-`--health --sample`, T0 read from PREREG §11). Since 2026-09-28 a run without
+§8.4's day-14 look is `python3 -m loop.report --health --t0 <T0>` (v1's `make health` was
+`--health --sample`, T0 read from PREREG §11; in this tree `make health` is PREREG-v2's,
+`--health --pre-sample --sample`: the rows from v1's end to T0_v2, then the v2 sample). Since 2026-09-28 a run without
 `--health` on rows of the sealed sample prints §1–§3 and a WITHHELD line until
 T0 + 28 d (2026-10-23 21:40Z); the T0 for that is read from the repo's own PREREG.md
 whatever `--prereg` says; `--unblind` prints §4–§7 and says so on stderr.

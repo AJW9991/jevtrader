@@ -2,7 +2,7 @@
 through book.at_cadence, the recomputed stop rule 3, arm D's agreement, gap_blocks, and the withholding of §9.5,
 which reads T0_v2 from PREREG-v2.md §12 whatever the flags say. Offline: synthetic logs (tests/synth.py) and
 hand-built rows in temp directories; the live data/, HALT and looks.tsv are never touched."""
-import contextlib, datetime, io, os, tempfile, unittest
+import contextlib, datetime, io, json, os, tempfile, unittest
 from unittest import mock
 
 import synth
@@ -677,6 +677,83 @@ class V1InferenceWithholdsV2(unittest.TestCase):
         # after the v2 sample has ended nothing is withheld
         code, out, err = self._run("2026-09-27T22:00", T0S, END)
         self.assertEqual(code, 0, err)
+
+
+class MakeHealth(unittest.TestCase):
+    """PREREG-v2 §2: the v1 stream's rows between v1's end (2026-10-23 21:40Z) and T0_v2 "are logged and reported by
+    `make health`", which §9.5 also makes the day-14 look (report §1-§3 per product and pooled over the sample).
+    `make health` is `loop.report --health --pre-sample --sample`: the rows before the sample first, [v1's T0 + 28 d,
+    T0_v2), then the sample's; while §12 is blank, every row from v1's end and a line that there is no sample yet, exit 0
+    (2026-09-29 lens-3 review: `report --health --sample` dropped every row before T0_v2 and exited 2 while blank)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.products = add_products(cls)
+        pin_prereg(cls)                                                   # v1's §11: its sample ended 2026-10-23T21:40Z
+        cls.data = cls.enterClassContext(tempfile.TemporaryDirectory())
+        cls.enterClassContext(mock.patch.object(config, "DATA", cls.data))
+        cls.enterClassContext(mock.patch.object(config, "DECISIONS", os.path.join(cls.data, "decisions.jsonl")))
+        cls.enterClassContext(mock.patch.object(config, "HALT", os.path.join(cls.data, "HALT")))
+        logs = synth.generate_products(3, cls.products, t0=T0S, days=1.0, pre_hours=26.5, cadence_s=300, era="v2")
+        paths = synth.write_products(cls.data, logs)
+        cls.ticks = {}
+        for p, path in paths.items():
+            with open(path, encoding="utf-8") as fh:
+                cls.ticks[p] = [report.tick_epoch(json.loads(l)["tick_id"]) for l in fh if l.strip()]
+        cls.v1_end = report.tick_epoch("20261023T214000Z")
+
+    def _run(self, argv, t0_v2):
+        with contextlib.ExitStack() as st:
+            pin_prereg_v2(st, t0_v2, synth._spec_sha())
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = report.main(argv, now=T0 + 86400 + 3600)
+        return code, out.getvalue(), err.getvalue()
+
+    def _n(self, p, lo, hi=None):
+        return sum(1 for t in self.ticks[p] if t >= lo and (hi is None or t < hi))
+
+    def test_the_makefile_target(self):
+        with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Makefile"), encoding="utf-8") as fh:
+            make = fh.read()
+        recipe = make.split("\nhealth:\n", 1)[1].split("\n\n", 1)[0]
+        self.assertEqual(recipe.strip(), "$(PY) -m loop.report --health --pre-sample --sample")
+
+    def test_the_rows_before_the_sample_then_the_sample(self):
+        self.assertTrue(min(self.ticks["SOL-USD"]) < self.v1_end)              # the log starts inside v1's sample
+        code, out, err = self._run(["--health", "--pre-sample", "--sample"], T0S)
+        self.assertEqual((code, err), (0, ""))
+        pre, _, samp = out.partition("== PREREG-v2's sample [T0_v2 2026-10-24T22:00Z, T0_v2 + 28 d)")
+        self.assertTrue(pre.startswith("== the rows before PREREG-v2's sample (PREREG-v2 §2: the v1 stream after v1's sample, the"
+                                       " switch and the shakedown): tick_id from 2026-10-23T21:40Z (v1: PREREG.md §11 T0 + 28 d)"
+                                       " up to T0_v2 2026-10-24T22:00Z (PREREG-v2.md §12)\n"), pre[:300])
+        for p in self.products:
+            self.assertIn(f"  {p}: {config.store(p).decisions}, {self._n(p, self.v1_end, T0)} rows,", pre)
+            self.assertIn(f"  {p}: {config.store(p).decisions}, {self._n(p, T0)} rows,", samp)
+        for part in (pre, samp):
+            self.assertIn("health only", part)
+            self.assertNotIn(report.TITLES_V2[3], part)
+
+    def test_while_section_12_is_blank_every_row_from_v1s_end_and_no_sample_yet(self):
+        code, out, err = self._run(["--health", "--pre-sample", "--sample"], None)
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("up to the last row (PREREG-v2.md §12 T0_v2 blank)", out)
+        for p in self.products:
+            self.assertIn(f"  {p}: {config.store(p).decisions}, {self._n(p, self.v1_end)} rows,", out)
+        self.assertTrue(out.endswith("== PREREG-v2's sample: none yet: PREREG-v2.md §12's T0_v2 is blank (not sealed)\n"), out[-300:])
+        with self.assertRaises(SystemExit) as cm:                              # --sample alone still needs §12
+            self._run(["--health", "--sample"], None)
+        self.assertEqual(cm.exception.code, 2)
+        with self.assertRaises(SystemExit):
+            self._run(["--pre-sample", "--t0", T0S], T0S)
+
+    def test_without_health_the_withholding_holds_on_each_part(self):
+        code, out, err = self._run(["--pre-sample", "--sample"], T0S)
+        self.assertEqual(code, 0)
+        pre, _, samp = out.partition("== PREREG-v2's sample")
+        self.assertNotIn("WITHHELD", pre)                                      # shakedown rows are not the sample
+        self.assertIn("sections 4-7 WITHHELD until 2026-11-21T22:00Z", samp)
+        self.assertNotIn(report.TITLES_V2[3], out)
 
 
 if __name__ == "__main__":
