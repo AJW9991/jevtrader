@@ -123,6 +123,19 @@ the worktree, sleeping until 00:00:30Z 09-30, then one row per candidate per min
 workflow in the worktree** (tick → readers → inference → nightly → tools → docs+pins → whole-branch verify),
 each stage built, refuted and fixed; its choices land in §14 and its commits on branch `prereg-v2` (pushed by
 the Mac session; CI runs on every push). Alex's disclosure and probe-approval blanks are filled (§14).
+**Build done 2026-09-30 ~03:40Z** (24 Opus agents, 20 h): 1,237 tests on branch `prereg-v2` (pushed at
+30035a8; since then a merge of main with the pin moved, and §14's build-readings entry at a00c42b). Every stage was
+built, refuted and fixed; five verifiers then read the whole branch (statistics matched an independent
+transcription to 1e-9; no lookahead; v1 untouched except the fee columns, now stated). The build's readings
+are in PREREG-v2 §14 (2026-09-30 entry); `PREREG-v2.md` is edited on the branch from now on (§13 (0)), the
+pin moving in the same commit. **main took 0898b74** (1a8ef75, between ticks, no loop code): the v1 `make
+results` guard (refuses without the draft tag; `NO_V2=1` overrides and is recorded), `bin/results-v1`, and
+ERRATA's empty "v2 deviations" table. **Probe D = 2026-09-30 is running** (started 00:00:30Z): ETH, XRP, AVAX,
+ADA answer every minute; DOGE-USD and LINK-USD fail every minute on the feed's own rule (a 120 s gap inside
+the last 300 candles: thin books have empty minutes), so criterion (1) drops them, as designed. Remaining
+before the draft tag: 10-01 `bin/probe volume --day 2026-09-30` + `summarize` → §2/§3 products, TICK_p,
+atoms, config, pins; v2 tables (81 sends per product, attended; `--table-only`); the trial night; `bin/seal-check
+--draft`; the draft tag. Then nothing until 10-09 (`make health`) and 10-23.
 
 ## Approved 2026-09-28 ("approved for recommended on all")
 - The nightly model is recorded, not pinned: decision 4.
