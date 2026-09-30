@@ -290,6 +290,14 @@ class OneProcess(Stores):
         in_block = next(b for b in blocks if "launchctl bootstrap" in b)
         self.assertLess(out_block.index("python3 - <<'EOF'"), out_block.index("launchctl bootout"))
         self.assertIn('OUT=$(date -u +%H%M)', out_block[out_block.index("launchctl bootout"):])
+        # a wait that fails (its python exits non-zero) skips every bootout; `; OUT=...` then still printed "loops out" and
+        # set OUT, and the next block bootstrapped the one-process plist beside the running loops (2026-09-29 lens-5 review)
+        tail = out_block[out_block.index("; done") + len("; done"):out_block.index("OUT=$(date -u +%H%M)")]
+        self.assertEqual(tail, " && ")
+        first = out_block.split("\n", 1)[0]
+        line = "false" + re.sub(r"\$\(python3 -c '[^']*'\)", "", first[first.index(" && for l in"):]).replace("launchctl", "echo")
+        r = subprocess.run(["bash", "-c", line], capture_output=True, text=True, timeout=30)
+        self.assertEqual((r.stdout, r.returncode != 0), ("", True), line)
         self.assertLess(in_block.index('until [ "$(date -u +%H%M)" != "$OUT" ]; do sleep 1; done'),
                         in_block.index("launchctl bootstrap"))
         wait = heredoc(out_block)

@@ -740,7 +740,7 @@ RunAtLoad, comes in a later minute than their bootout (in the same minute it wou
 each product a second row for it):
 
 ```bash
-cd ~/Projects/jev-paper-loop && python3 - <<'EOF' && for l in com.alexward.jevloop.loop $(python3 -c 'from loop import config; print(*["com.alexward.jevloop.loop." + p for p in config.PRODUCTS if p != config.PRODUCT])'); do launchctl bootout gui/$(id -u)/$l; launchctl disable gui/$(id -u)/$l; done; OUT=$(date -u +%H%M) && echo "loops out at $OUT"
+cd ~/Projects/jev-paper-loop && python3 - <<'EOF' && for l in com.alexward.jevloop.loop $(python3 -c 'from loop import config; print(*["com.alexward.jevloop.loop." + p for p in config.PRODUCTS if p != config.PRODUCT])'); do launchctl bootout gui/$(id -u)/$l; launchctl disable gui/$(id -u)/$l; done && OUT=$(date -u +%H%M) && echo "loops out at $OUT"
 import datetime, time
 from loop import config
 while True:                                                   # this minute's row is written for every product
@@ -763,9 +763,10 @@ EOF
 cd ~/Projects/jev-paper-loop && until [ "$(date -u +%H%M)" != "$OUT" ]; do sleep 1; done; plutil -lint launchd/one-process/com.alexward.jevloop.loop.every-product.plist && cp launchd/one-process/com.alexward.jevloop.loop.every-product.plist ~/Library/LaunchAgents/ && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.alexward.jevloop.loop.every-product.plist
 ```
 
-Back: `launchctl bootout gui/$(id -u)/com.alexward.jevloop.loop.every-product`, remove its file from
-`~/Library/LaunchAgents`, then `launchctl enable` and `launchctl bootstrap` each loop plist. Its log is
-`logs/loop-launchd-every-product.log`.
+Back: `launchctl bootout gui/$(id -u)/com.alexward.jevloop.loop.every-product` once its heartbeats name the current
+minute, remove its file from `~/Library/LaunchAgents`, then, in a later minute than that bootout (the same rule as
+above: in the same minute each loop, loading with RunAtLoad, would tick that minute again), `launchctl enable` and
+`launchctl bootstrap` each loop plist. Its log is `logs/loop-launchd-every-product.log`.
 
 ---
 
