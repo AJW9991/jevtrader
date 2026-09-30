@@ -208,7 +208,8 @@ def read_fee_tiers(prereg=None):
     one): rows joined by `;`, each `[name:] $LOW-$HIGH / maker / taker` or `[name:] $LOW+ / maker / taker`, an amount
     with an optional $, commas and K, M or B, each fee a number with its unit, `%` or `bps`. Anything else filled in
     (a fee without its unit, a row it cannot read, a read time without a table or the reverse, the field without its
-    backticks) raises ValueError: a malformed table must be loud, never read as blank. Read at call time from `prereg`
+    backticks, bands that do not start at $0, leave a gap or an overlap, or end closed) raises ValueError: a malformed
+    table must be loud, never read as blank. Read at call time from `prereg`
     or the repository's own PREREG-v2.md (PREREG_V2_PATH), as read_t0_v2 reads T0_v2."""
     try:
         with open(prereg or PREREG_V2_PATH, encoding="utf-8") as fh:
@@ -239,6 +240,17 @@ def read_fee_tiers(prereg=None):
                for k, u in (("maker", "mu"), ("taker", "tu"))}
         tiers.append({"name": m.group("name"), "band": re.sub(r"\s+", "", m.group("band")), "low": _usd(m.group("low")),
                       "high": _usd(m.group("high")) if m.group("high") else None, **fee})
+    # §12 asks for every row of the spot schedule: bands from $0 up, each starting where the last ended, the top one open
+    # ($LOW+); a table short of that is loud, like any other malformed field (2026-09-29 review: one row passed the seal)
+    bad = ([f"its first band starts at {tiers[0]['band']}, not $0"] if tiers[0]["low"] != 0 else []) + [
+        f"band {a['band']} is followed by {b['band']}" + (": a gap or an overlap" if a["high"] is not None else
+                                                           ": a band after the open top one")
+        for a, b in zip(tiers, tiers[1:]) if a["high"] != b["low"]] + [
+        f"band {t['band']} ends where it starts or below" for t in tiers if t["high"] is not None and t["high"] <= t["low"]] + (
+        [f"its last band {tiers[-1]['band']} is closed: the top band is $LOW+"] if tiers[-1]["high"] is not None else [])
+    if bad:
+        raise ValueError("PREREG-v2 §12's fee-tier table is not every row of a schedule (bands from $0, contiguous, the top"
+                         " one open): " + "; ".join(bad))
     return {"read": read, "tiers": tiers}
 
 

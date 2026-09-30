@@ -134,18 +134,25 @@ class PreregV2Line(unittest.TestCase):
         self.assertIsNone(self._tiers("________", "________"))
         self.assertIsNone(dash.read_fee_tiers(os.path.join(REPO, "no-such-PREREG-v2.md")))
         got = self._tiers("2026-10-24T21:00Z", "Intro 1: $0-$10K / 0.50% / 0.90%; Intro 2: $10K-$50K / 0.25% / 0.40%;"
-                                               " $50K-$1.5M / 15 bps / 25 bps; Advanced: $1B+ / 0% / 0.07%")
+                                               " $50K-$1B / 15 bps / 25 bps; Advanced: $1B+ / 0% / 0.07%")
         self.assertEqual(got["read"], "2026-10-24T21:00Z")
         self.assertEqual([(t["name"], t["low"], t["high"], t["maker"], t["taker"]) for t in got["tiers"]],
                          [("Intro 1", 0.0, 10_000.0, 50.0, 90.0), ("Intro 2", 10_000.0, 50_000.0, 25.0, 40.0),
-                          (None, 50_000.0, 1_500_000.0, 15.0, 25.0), ("Advanced", 1e9, None, 0.0, 7.0)])
+                          (None, 50_000.0, 1e9, 15.0, 25.0), ("Advanced", 1e9, None, 0.0, 7.0)])
         self.assertEqual(got["tiers"][0]["band"], "$0-$10K")
         for read, table in (("________", "$0+ / 0.5% / 0.9%"),               # a table without its read time
                             ("2026-10-24T21:00Z", "________"),               # a read time without its table
                             ("2026-10-24T21:00Z", "$0+ / 0.5 / 0.9"),        # a fee without its unit
                             ("2026-10-24T21:00Z", "$0+ / 0.5% / 0.9%, $10K+ / 0.2% / 0.4%"),
                             ("2026-10-24T21:00Z", "Intro / 0.5% / 0.9%"),    # no band
-                            ("2026-10-24T21:00Z", "$0-$10K / 0.5% / 0.9%;")):
+                            ("2026-10-24T21:00Z", "$0-$10K / 0.5% / 0.9%;"),
+                            # §12: "every row of the spot schedule" (2026-09-29 lens-5 review: one closed row passed the seal)
+                            ("2026-10-24T21:00Z", "$0-$10K / 0.60 % / 1.20 %"),                            # the top band closed
+                            ("2026-10-24T21:00Z", "$1K-$10K / 0.5% / 0.9%; $10K+ / 0.2% / 0.4%"),          # not from $0
+                            ("2026-10-24T21:00Z", "$0-$10K / 0.5% / 0.9%; $50K+ / 0.2% / 0.4%"),           # a gap
+                            ("2026-10-24T21:00Z", "$0-$10K / 0.5% / 0.9%; $5K+ / 0.2% / 0.4%"),            # an overlap
+                            ("2026-10-24T21:00Z", "$0+ / 0.5% / 0.9%; $10K+ / 0.2% / 0.4%"),               # after the top
+                            ("2026-10-24T21:00Z", "$0-$0 / 0.5% / 0.9%; $0+ / 0.2% / 0.4%")):              # an empty band
             with self.assertRaises(ValueError, msg=table):
                 self._tiers(read, table)
         with self.assertRaises(ValueError):                                 # the field line without its backticks
