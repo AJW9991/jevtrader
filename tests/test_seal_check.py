@@ -818,6 +818,20 @@ class Draft(Scratch):
             self.commit("run.json without its candidates")
             self.assertFails("--draft", says=["probe/2026-09-30/run.json names no candidates"], failed="probe")
 
+    def test_a_table_answered_by_none_or_two_versions_fails(self):
+        # PREREG-v2 §8 pins v2's tables "with the answering Jev version" and switch step (11a) compares it with the
+        # shakedown rows': bin/promote writes "none named" or "a, b" when the night's rows named none or two, and such a
+        # table made (11a) print DIFFERENT for good (2026-09-29 lens-5 review)
+        for model in ("none named", "jev-1.13.0, jev-1.14.0", ""):
+            with self.subTest(model=model):
+                self.table(self.products[1], model)
+                self.commit(f"a table answered by {model!r}")
+                self.assertFails("--draft", says=[f"prompts/v2.table.{self.products[1]}.json names {model!r} as the Jev"
+                                                  " version that answered"], failed="tables")
+        self.table(self.products[1], "jev-1.13.0")
+        self.commit("one version")
+        self.assertPasses("--draft")
+
     def test_a_missing_or_malformed_table_fails(self):
         self.git("rm", "-q", f"prompts/v2.table.{self.products[1]}.json")
         self.commit("a table gone")

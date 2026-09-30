@@ -80,7 +80,8 @@ The seal (no flag) exits 0 only when all of §13's five hold:
 - §2's pre-tag fields are what the tree runs: its Products line is config.PRODUCTS (loop.dash.read_products_v2, in
   order), and its `TICK_p` and `Atoms (a10, a90)` fields give each added product config.TICK_P's value and
   config.LIQ_ATOMS's two numbers;
-- prompts/v2.table.<p>.json is in HEAD for every p in config.PRODUCTS and reads as prompts.table reads it;
+- prompts/v2.table.<p>.json is in HEAD for every p in config.PRODUCTS, reads as prompts.table reads it and names one
+  Jev version as model_answered (not "none named", not two joined by bin/promote's ", ");
 - PREREG-v2.md in HEAD is the tag prereg-v2-doc's, or §14 no longer reads "(none yet)" (no such tag: refused, since
   nothing can be compared).
 The clean tree is the draft command's own `test -z "$(git status --porcelain)"`, before this.
@@ -801,8 +802,16 @@ def draft(repo, products, out):
                 prompts.table("v2", p, root)
             except prompts.PromptError as e:
                 bad.append(f"prompts/v2.table.{p}.json: {e}")
+                continue
+            try:                                         # §8: pinned "with the answering Jev version", one; switch step (11a)
+                model = json.loads(t).get("model_answered")      # compares it with the shakedown rows' model_answered
+            except (ValueError, AttributeError):
+                model = None
+            if not isinstance(model, str) or not model.strip() or "," in model or model == "none named":
+                bad.append(f"prompts/v2.table.{p}.json names {model!r} as the Jev version that answered: one version, as"
+                           " switch step (11a) compares it with the shakedown rows' model_answered (§8)")
         verdict("tables", not bad, f"prompts/v2.table.<p>.json in HEAD for {', '.join(products)}, each a v2 table"
-                if not bad else "; ".join(bad))
+                " answered by one Jev version" if not bad else "; ".join(bad))
     if _git(repo, "rev-parse", "-q", "--verify", DOC_TAG, check=False).returncode != 0:
         verdict("§14", False, f"no tag {DOC_TAG}: whether {PREREG} changed since the doc tag cannot be shown")
     else:
