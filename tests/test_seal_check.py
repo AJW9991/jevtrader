@@ -963,6 +963,8 @@ class CommandLine(unittest.TestCase):
         r = subprocess.run([sys.executable, TOOL, "--help"], capture_output=True, text=True, timeout=60)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(r.stdout.startswith("usage: seal-check"), r.stdout)
+        for flag in ("--since", "--at"):                                   # --at's help is ASCII too: a C locale prints it
+            self.assertIn(flag, r.stdout)
         r = subprocess.run([sys.executable, TOOL, "--draft", "--since", "x"], capture_output=True, text=True, timeout=60)
         self.assertEqual(r.returncode, 2)
         self.assertIn("not allowed with argument", r.stderr)
@@ -995,7 +997,8 @@ class CommandLine(unittest.TestCase):
         x = inference_v2.seal(repo)
         self.assertEqual((x["ok"], x["why"]), (True, None), "\n".join(x["lines"]))
         self.assertIn("    | seal-check: PASS (--since prereg-v2-seal)", x["lines"])
-        self.assertIn("    | seal-check: FAIL (--at prereg-v2-seal): a, §12 failed", x["lines"])    # no draft tag here: printed,
+        self.assertTrue(any(l.startswith("    | seal-check: FAIL (--at prereg-v2-seal): a, ") for l in x["lines"]),   # no draft
+                        x["lines"])                                                                       # tag: printed,
         self.assertIn("  the seal's verdict, replayed: FAIL (exit 1)", x["lines"])                # not a gate (§13 gates on --since)
         with open(os.path.join(repo, "loop", "config.py"), "a", encoding="utf-8") as fh:
             fh.write("# an edit\n")

@@ -866,7 +866,7 @@ def main(argv=None, repo=None, out=None):
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--draft", action="store_true", help="the draft tag's preconditions")
     g.add_argument("--since", metavar="TAG", help="the post-seal allowlist from TAG to the files on disk")
-    g.add_argument("--at", metavar="REV", help="the seal's verdict replayed on the commit REV names (RESULTS-v2 §0)")
+    g.add_argument("--at", metavar="REV", help="the seal's verdict replayed on the commit REV names (RESULTS-v2 section 0)")
     a = ap.parse_args(argv)
     repo = REPO if repo is None else repo
     if out is None:
