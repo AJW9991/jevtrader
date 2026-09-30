@@ -58,8 +58,8 @@ row then says so. Past the lock the
 row is written wherever the alarm lands (inside _run's handlers too); the write
 disarms it. In the guards before the lock it costs the row, never the exit code.
 Under --every-product a round keeps the same bound: each product's tick is armed with
-what is left of WATCHDOG_S from the round's start (the stderr line still names
-WATCHDOG_S), and a product reached with less than a second left is not ticked that
+what is left of WATCHDOG_S from the round's start (its watchdog's stderr line names
+those seconds), and a product reached with less than a second left is not ticked that
 minute (stderr says so; no row), so a round ends before the next minute's fire as one
 tick does. --once's early-fire check reads the first product's heartbeat: it ticks
 first, so its heartbeat names the minute once that minute's round has begun.
@@ -421,7 +421,8 @@ def _run(row, dry, halt=False, where=None, product=None, store=None):
     """Steps 2-7 of CONTRACT §3 into `row` for `product` (SOL-USD by default). Every failure lands in
     row["absence"]; the caller writes the row whatever happened here. `halt`: steps 2-4 run as usual
     and the row is closed with absence "halt" where step 5/6 would begin -- nothing is printed,
-    ledgered or sent. `where` (a dict) receives the stage reached and, after a 401/403,
+    ledgered or sent. `where` (a dict) carries "armed", the seconds this tick's watchdog was
+    given (WATCHDOG_S when absent), and receives the stage reached and, after a 401/403,
     the HALT reason: the watchdog can fire inside one of the handlers below, and tick()
     then closes the row and writes that HALT from them. `store` names the sends ledger."""
     where = {} if where is None else where
@@ -486,7 +487,7 @@ def _run(row, dry, halt=False, where=None, product=None, store=None):
         _err(f"{stage}: {e}")
     except _Watchdog:                        # at "columns" too: the send had left and is billed
         _watchdog_absence(row, stage)
-        _err(f"watchdog: {WATCHDOG_S} s passed during {stage}")
+        _err(f"watchdog: {where.get('armed', WATCHDOG_S)} s passed during {stage}")
     except Exception as e:
         if stage == "columns" and isinstance(e, (TypeError, AttributeError)):
             # a field of the wrong type (a null confidence, probabilities "x"): jev._parse checks
@@ -521,10 +522,11 @@ def _finish(row, store=None):
     return 0
 
 
-def tick(dry=False, now=None, product=None):
+def tick(dry=False, now=None, product=None, armed=None):
     """One tick of `product` (SOL-USD by default; main() passes JEVLOOP_PRODUCT's) in CONTRACT §3
     order. Returns the exit code: EXIT_GUARD before any file is touched, otherwise 0. `now` (epoch s)
-    pins the clock for tests."""
+    pins the clock for tests. `armed`: the seconds its watchdog was given (None: WATCHDOG_S; under
+    --every-product what is left of the round's), which a watchdog line names (PREREG-v2 §14)."""
     p = forbidden()
     if p:
         _err(f"refusing to run under {p}; exit {EXIT_GUARD}")
@@ -564,7 +566,7 @@ def tick(dry=False, now=None, product=None):
         if lk is None:
             row["absence"] = "lock"
         else:
-            where = {}
+            where = {"armed": WATCHDOG_S if armed is None else armed}
             try:
                 _run(row, dry, halt or paused, where, product, st)
             except _Watchdog:                # fired inside one of _run's own handlers (a 401's _halt,
@@ -572,7 +574,7 @@ def tick(dry=False, now=None, product=None):
                     _watchdog_absence(row, where.get("stage"))   # an absence already set stays: it came first
                 if "halt" in where:
                     _halt(where["halt"])     # the key-rejected HALT the handler may not have written
-                _err(f"watchdog: {WATCHDOG_S} s passed while handling {where.get('stage')}")
+                _err(f"watchdog: {where['armed']} s passed while handling {where.get('stage')}")
         _SIG["critical"] = True              # the row is complete: an alarm from here on is ignored and
         return _finish(row, st)              # SIGTERM waits for the write (write_row clears the flag)
     finally:
@@ -585,13 +587,13 @@ def _guarded_tick(dry, product=None, seconds=None):
     tick() fired in the guards, before the lock, when no row is owed yet: it is reported
     and the round ends with 0. One that lands in the finally, after tick() returned and
     before alarm(0) ran, finds the tick over and is dropped; tick()'s code stands."""
-    code = 0
+    code, armed = 0, WATCHDOG_S if seconds is None else seconds
     try:
         try:
-            signal.alarm(WATCHDOG_S if seconds is None else seconds)   # a round arms what is left of it
-            code = tick(dry, product=product)
+            signal.alarm(armed)                  # a round arms what is left of it; the lines name what was armed
+            code = tick(dry, product=product, armed=armed)
         except _Watchdog:
-            _err(f"watchdog: {WATCHDOG_S} s passed in the guards; no row")
+            _err(f"watchdog: {armed} s passed in the guards; no row")
         finally:
             signal.alarm(0)
     except _Watchdog:
@@ -602,8 +604,9 @@ def _guarded_tick(dry, product=None, seconds=None):
 def _round(dry, products):
     """One tick of each product, in order, in this process (--every-product; PREREG-v2 §2's one-process mode).
     The round shares one watchdog budget, WATCHDOG_S from its start: each product's tick is armed with what is
-    left of it, and a product reached with less than a second left is not ticked this minute (said on stderr,
-    no row). A non-zero code (the path guard) ends the round; so does SIGTERM, as _Stop, up to main()."""
+    left of it (its watchdog line names those seconds), and a product reached with less than a second left is not
+    ticked this minute (said on stderr, no row). A non-zero code (the path guard) ends the round; so does SIGTERM,
+    as _Stop, up to main()."""
     start = time.time()
     for p in products:
         left = start + WATCHDOG_S - time.time()

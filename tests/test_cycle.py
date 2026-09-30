@@ -1345,6 +1345,55 @@ class V2TickTest(unittest.TestCase):
         self.assertEqual((len(self.rows()), len(self.rows_of(eth.decisions))), (2, 1))
         self.assertIn("ETH-USD: not ticked this minute", self.err.getvalue())
 
+    def test_the_watchdog_line_names_the_seconds_the_products_tick_was_given(self):
+        # each product's tick is armed with what is left of WATCHDOG_S from the round's start, but its watchdog line
+        # named WATCHDOG_S whatever the tick was given (PREREG-v2 §14, 2026-09-30): an alarm in ETH's feed after SOL's
+        # took 12.4 s said "50 s passed" of a 37 s tick. It names the seconds armed, in _run, in tick's handler and in
+        # the guards; the first product, armed with the whole budget, names WATCHDOG_S.
+        self.two_products()
+        left = int(cycle.WATCHDOG_S - 12.4)
+        real_err = cycle._err
+        want = {"feed": f"watchdog: {left} s passed during feed",
+                "handler": f"watchdog: {left} s passed while handling feed",
+                "guards": f"watchdog: {left} s passed in the guards; no row",
+                "first": f"watchdog: {cycle.WATCHDOG_S} s passed in the guards; no row"}
+        for i, case in enumerate(want):
+            clock, spent, fired = [NOW + 60 * i], [], []
+
+            def alarm_once():
+                if not fired:
+                    fired.append(case)
+                    signal.raise_signal(signal.SIGALRM)
+
+            def spend(now, path=None):                                             # SOL's guards, then ETH's
+                spent.append(now)
+                if (case, len(spent)) in (("first", 1), ("guards", 2)):
+                    alarm_once()
+                return 0.0
+
+            def snap(product=None):
+                clock[0] += 12.4 if product == "SOL-USD" else 0.5                  # SOL's feed took 12.4 s
+                if product == "ETH-USD" and case == "feed":
+                    alarm_once()
+                if product == "ETH-USD" and case == "handler":
+                    raise feed.FeedError("book: timed out")
+                return dict(SNAP, product=product, ts_rx=cycle.iso_ms(clock[0]))
+
+            def err(msg):
+                if case == "handler" and msg.startswith("feed:"):
+                    alarm_once()                                                   # inside _run's feed handler
+                real_err(msg)
+            with self.subTest(case=case):
+                start = len(self.err.getvalue())
+                self.snapshot.side_effect = snap
+                with mock.patch("time.time", side_effect=lambda: clock[0]), mock.patch("signal.alarm", return_value=0), \
+                        mock.patch.object(cycle, "spend_today", side_effect=spend), \
+                        mock.patch.object(cycle, "_err", side_effect=err):
+                    self.assertEqual(cycle.main(["--dry", "--once", "--every-product"]), 0)
+                self.assertEqual(fired, [case])
+                said = [l for l in self.err.getvalue()[start:].splitlines() if l.startswith("cycle: watchdog:")]
+                self.assertEqual(said, ["cycle: " + want[case]])
+
     def test_every_product_once_fired_early_reads_the_first_products_heartbeat(self):
         # the round's first product ticks first, so its heartbeat names the minute once the minute's round began
         eth = self.two_products()
