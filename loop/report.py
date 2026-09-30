@@ -1252,14 +1252,16 @@ ERRATA_TIER = {"name": "Intro", "band": "at 30-day volume $0", "low": 0.0, "high
 ERRATA_TIER_WHERE = "ERRATA.md's 2026-09-27 reading (Alex, in-account, ~22:55Z)"   # PREREG-v2 §6.2: printed beside §12's
 
 
-def _bh_rows(rows):
-    """Buy-and-hold on the replay's own rows (PREREG-v2 §6.1's line): buy on the first priced row in book._order,
-    hold on every other row, whatever the model answered, so book.replay prices it exactly as it prices an arm (SPEC
-    §10: the fill at the ask, the fee on it, the marks to mid). Rows replay reads as intents of arm a, argmax."""
+def _bh_rows(rows, on=None):
+    """Buy-and-hold on the replay's own rows (PREREG-v2 §6.1's line, "over the same span"): buy on the first priced row
+    in book._order whose tick is on a kept day (its tick_id in `on`; None: any), hold on every other row, whatever the
+    model answered, so book.replay prices it exactly as it prices an arm (SPEC §10: the fill at the ask, the fee on it,
+    the marks to mid). Rows replay reads as intents of arm a, argmax. With the first days excluded it bought on them,
+    outside the span, and its E(0) had no fill on a kept day (2026-09-29 review)."""
     out, bought = [], False
     for r in sorted(rows, key=book._order):
         intent = "hold"
-        if not bought and all(book._px(r.get(k)) for k in ("bid", "ask", "mid")):
+        if not bought and all(book._px(r.get(k)) for k in ("bid", "ask", "mid")) and (on is None or r.get("tick_id") in on):
             intent, bought = "buy", True
         out.append({"tick_id": r.get("tick_id"), "ts_rx": r.get("ts_rx"), "bid": r.get("bid"), "ask": r.get("ask"),
                     "mid": r.get("mid"), "mode": "live", "absence": None, "columns": {"a": {"argmax": intent}, "b": None},
@@ -1330,10 +1332,12 @@ def cadence_table(per, anchor, n_of, kept, pool, sampled, tiers=(ERRATA_TIER,), 
     prods = list(per)
     bh_cache = {}
 
-    def bh(p, fee):                                 # buy-and-hold does not depend on the cadence: one replay per product and fee
-        if (p, fee) not in bh_cache:
-            bh_cache[(p, fee)] = book.replay(_bh_rows(per[p]), None, "a", "argmax", fee)
-        return bh_cache[(p, fee)]
+    def bh(p, fee, on_p):                           # buy-and-hold does not depend on the cadence, only on its first kept tick:
+        first = min((r["tick_id"] for r in per[p] if r["tick_id"] in on_p                 # one replay per product, fee and buy
+                     and all(book._px(r.get(k)) for k in ("bid", "ask", "mid"))), default=None)
+        if (p, fee, first) not in bh_cache:
+            bh_cache[(p, fee, first)] = book.replay(_bh_rows(per[p], on_p), None, "a", "argmax", fee)
+        return bh_cache[(p, fee, first)]
     for label, c, transform, pairs in plans:
         n = n_of(c)
         rows_c = {p: (book.at_cadence(per[p], c, anchor) if transform else per[p]) for p in prods}
@@ -1417,7 +1421,8 @@ def cadence_table(per, anchor, n_of, kept, pool, sampled, tiers=(ERRATA_TIER,), 
 def fee_arithmetic(c, prods, pool, on, days, rep, bh, tiers):
     """PREREG-v2 §6's fee arithmetic at one replay cadence c, at argmax, descriptive. on[p]: the tick_ids of p's kept
     blocks (its kept days, after --since); days[p]: p's kept days (kept blocks x c / 86400); rep(p, arm, fee): the
-    arm's replay on p's at_cadence rows; bh(p, fee): the buy-and-hold replay; pool: the non-void products.
+    arm's replay on p's at_cadence rows; bh(p, fee, on[p]): the buy-and-hold replay, bought on p's first kept priced
+    tick; pool: the non-void products.
     1. E_X,p(f) = the sum of the replay's pnl over on[p] (an open position at the window's end is marked; a fill
        counts when its tick is on a kept day); pooled E_X(f) = the sum over pool; f*_X = 90 E(0) / (E(0) - E(90))
        bps per fill; "never pays" when E(0) <= 0; undefined with no fill. For A, B, C, D and buy-and-hold.
@@ -1430,7 +1435,7 @@ def fee_arithmetic(c, prods, pool, on, days, rep, bh, tiers):
     names = list(ARMS) + ["buy-and-hold"]
 
     def one(p, a):
-        r = {f: (bh(p, f) if a == "buy-and-hold" else rep(p, a, f)) for f in fees}
+        r = {f: (bh(p, f, on[p]) if a == "buy-and-hold" else rep(p, a, f)) for f in fees}
         pnl0, pnl90 = r[0.0]["pnl_bps_per_tick"], r[BREAK_EVEN_FEE]["pnl_bps_per_tick"]
         fills = [x for x in r[0.0]["trades"] if x["tick_id"] in on[p]]
         value = sum(x["qty"] * x["price"] for x in fills)

@@ -1078,7 +1078,7 @@ class V2Pooled(unittest.TestCase):
             rows_c = {p: book.at_cadence(self.sample[p], c, self.t0) for p in self.products}
             fa = report.fee_arithmetic(c, list(self.products), self.pool, on, days,
                                        lambda p, a, f: book.replay(rows_c[p], None, a, "argmax", f),
-                                       lambda p, f: book.replay(report._bh_rows(self.sample[p]), None, "a", "argmax", f),
+                                       lambda p, f, on_p: book.replay(report._bh_rows(self.sample[p], on_p), None, "a", "argmax", f),
                                        [report.ERRATA_TIER])
             E = {}
             for a in book.ARMS:
@@ -1123,15 +1123,17 @@ class V2Pooled(unittest.TestCase):
                         self.assertEqual(pr["reading"], f"{X} {'stops' if d0 > 0 else 'starts'} beating {Y} above {fs:.2f} bps per fill")
                     else:
                         self.assertTrue(pr["reading"].startswith("the sign of Delta(90) holds at every fee > 0: "), (c, x, y))
-            # §6.1's buy-and-hold line over the same span: bought at the ask of the first priced row, marked to every mid after
+            # §6.1's buy-and-hold line "over the same span": bought at the ask of the first priced row on a kept day of p,
+            # marked to every mid after (2026-09-29 lens-1 review: it bought on the first priced row, kept or not)
             for p in self.pool:
                 priced_rows = [r for r in self.ordered[p] if priced(r)]
-                qty, marks = NOTIONAL / priced_rows[0]["ask"], {}
-                for prev, r in zip([None] + priced_rows, priced_rows):
-                    usd = qty * (r["mid"] - (priced_rows[0]["ask"] if prev is None else prev["mid"]))
+                held = priced_rows[next(i for i, r in enumerate(priced_rows) if kept(p, r["tick_id"])):]
+                qty, marks = NOTIONAL / held[0]["ask"], {}
+                for prev, r in zip([None] + held, held):
+                    usd = qty * (r["mid"] - (held[0]["ask"] if prev is None else prev["mid"]))
                     marks[r["tick_id"]] = marks.get(r["tick_id"], 0.0) + usd * 1e4 / NOTIONAL
                 self.assertAlmostEqual(fa["per"][p]["buy-and-hold"]["e0"], sum(v for t, v in marks.items() if kept(p, t)), places=6)
-                self.assertEqual(fa["per"][p]["buy-and-hold"]["fills"], 1 if kept(p, priced_rows[0]["tick_id"]) else 0)
+                self.assertEqual(fa["per"][p]["buy-and-hold"]["fills"], 1)
 
 
 if __name__ == "__main__":

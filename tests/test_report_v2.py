@@ -347,6 +347,23 @@ class FeeArithmetic(unittest.TestCase):
         self.assertLess(got["e0"], 0.0)
         self.assertEqual((got["fstar"], got["reading"]), (None, "never pays: E(0) <= 0"))
 
+    def test_buy_and_hold_buys_on_the_first_kept_day(self):
+        # §6.1: "a buy-and-hold line over the same span". With d01 excluded it bought at d01's first row, outside the
+        # span: E(0) carried d02's marks with no fill on a kept day ("undefined") and inflated the pooled f* (2026-09-29
+        # lens-1 review). It buys on the first priced row of the first kept day.
+        rows = [dict(r, mid=100.0, bid=99.99, ask=100.01) for r in _day_rows(1, lambda i: 100.0)]
+        for i in range(0, 96, 10):                                                     # d01 BAD: jev errors > 5 %
+            rows[i] = _row(report.tick_epoch(rows[i]["tick_id"]), 100.0, absence="jev")
+        rows += _day_rows(2, lambda i: 110.0 + i / 10) + _day_rows(3, lambda i: 120.0) + _day_rows(4, lambda i: 120.0)[:8]
+        out = report.render_v2([_store("SOL-USD", rows)], t0=T0, now=END + 86400)
+        self.assertEqual(out["recomputed"], {(1, "SOL-USD")})
+        bh = out["cadence"]["fee_arithmetic"][900]["pooled"]["buy-and-hold"]
+        self.assertEqual(bh["fills"], 1)                                                  # d02's first row, at ask 110.01
+        qty = self.N / 110.01
+        self.assertAlmostEqual(bh["e0"], qty * (120.0 - 110.01) * 1e4 / self.N, places=9)
+        self.assertAlmostEqual(bh["e90"], bh["e0"] - 90.0, places=9)
+        self.assertNotEqual(bh["reading"], "undefined: no fill on a kept day")
+
     def test_pairs_are_sums_of_kept_blocks_and_read_by_f_star(self):
         out = self._render()
         fa = out["cadence"]["fee_arithmetic"]
