@@ -29,6 +29,9 @@ A promotion (PREREG-v2 §8), refused unless all of:
 - candidate k's column answers 81 of 81 states with buy, sell or hold on every product in config.PRODUCTS (the
   product's own 81 strings), and moves at least one state from CURRENT's answer on some product (a candidate that
   moves 0 of 81 on every product is refused);
+- its action, rendered for config.PRODUCT's base, is not CURRENT's rendered action word for word (PREREG-v2 §14,
+  2026-09-30: such a rewrite changes no word Jev reads, its moved states are Jev's noise, and its new sha would still
+  count as a promotion, in the schedule and in §9.2's NO PROMOTION reading, which tests prompt_b_sha);
 - the candidate is a whole action question with no digit and no product word but {BASE} (prompts.build refuses it for
   every product before anything is written: the base-token refusal, §1), and --reason is one non-empty line.
 Then, in this order: prompts/v<N+1>.json (N the highest vN.json present, not CURRENT+1) with activation_tick and
@@ -38,7 +41,7 @@ it every minute). prompts.current(tick_id) follows `replaces` until the activati
 policy table keep asking the version active now until then. A table of the new version already on disk (a stray file)
 is refused before anything is written; a write or the switch of CURRENT that fails removes what this run wrote, so
 prompts/ is as it was and no version file is left to count as a promotion. It prints the diff of the action question,
-and the commit line: the person's reason with the states moved per product.
+rendered for config.PRODUCT's base, and the commit line: the person's reason with the states moved per product.
 
 --table-only <proposal.json> (§8, "v2's own tables"): attended and on a clean tree, no schedule and no T0_v2 (it builds
 v2's tables before the draft tag); copies the CURRENT column of the proposal's .table.json into
@@ -140,10 +143,9 @@ def diff(cur_name, cur_action, new_name, new_action):
 
 def wording_diff(cur_doc, new_doc, base):
     """The person's diff of the two actions, both rendered for `base` (config.PRODUCT's): v2.json spells the base SOL
-    and a promoted file {BASE}, so an unrendered diff showed every line naming the base as changed (2026-09-29 review)."""
-    d = diff(cur_doc["version"], rendered(cur_doc, base), new_doc["version"], rendered(new_doc, base))
-    return d or (f"(action wording identical once rendered for {base}: this rewrite changes no word Jev reads; its sha"
-                 f" differs, so §9.2's NO PROMOTION reading, which tests prompt_b_sha, does not see it)")
+    and a promoted file {BASE}, so an unrendered diff showed every line naming the base as changed (2026-09-29 review).
+    Empty when the two read alike, which main() refuses before anything is written (PREREG-v2 §14, 2026-09-30)."""
+    return diff(cur_doc["version"], rendered(cur_doc, base), new_doc["version"], rendered(new_doc, base))
 
 
 def tick_of(epoch):
@@ -459,6 +461,12 @@ def main(argv=None, now=None):
         for p in config.PRODUCTS:                               # the five wire questions must build, for every product,
             prompts.build(frozen_a, new, config.base(p), v1=v1)  # before anything is written; build() refuses a product
                                                                 # word other than the version's base token
+        base = config.base(config.PRODUCT)
+        if rendered(new, base) == rendered(cur_doc, base):      # was a flag beside the diff (PREREG-v2 §14, 2026-09-30)
+            raise RuntimeError(f"{qid}'s action, rendered for {base}, is {cur_name}'s word for word: it changes no word "
+                               "Jev reads (the states it moves are Jev's noise), and its new sha would count as a "
+                               "promotion, in the schedule and in §9.2's NO PROMOTION reading, which tests prompt_b_sha "
+                               "(PREREG-v2 §8, §14)")
         sha = prompts.sha_of(new)
         tables = [(p, table_file(version, p, sha, cols[p][0], cols[p][2])) for p in config.PRODUCTS]
     except (OSError, ValueError, RuntimeError) as e:            # PromptError is a ValueError

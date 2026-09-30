@@ -169,20 +169,45 @@ class Promote(Base):
         self.assertIn("+++ v3.action", out)
         self.sends.assert_not_called()
 
+    def twin(self, instructions=lambda t: t):
+        """v2's action as a promoted file spells it ({BASE} for SOL), its instructions passed through `instructions`."""
+        v2 = prompts.load("v2", self.root)["action"]
+        return {"rationale": "v2 as it reads", "instructions": instructions(v2["instructions"]).replace("SOL", "{BASE}"),
+                "criteria": {k: v.replace("SOL", "{BASE}") for k, v in v2["criteria"].items()}}
+
+    NOISE = {"cand_0": lambda rc: "hold" if rc == "buy" else rc}              # Jev's noise: a few states move
+
     def test_the_wording_diff_is_of_the_rendered_texts(self):
         # v2.json spells the base SOL and a promoted file {BASE}: the diff compared the files' text, so a first promotion
-        # showed every line naming the base as changed, and a candidate worded exactly as v2 read as a rewrite
-        # (2026-09-29 lens-4 review). Both are rendered for SOL-USD's base before the diff.
-        v2 = prompts.load("v2", self.root)["action"]
-        twin = {"rationale": "v2 as it reads", "instructions": v2["instructions"].replace("SOL", "{BASE}"),
-                "criteria": {k: v.replace("SOL", "{BASE}") for k, v in v2["criteria"].items()}}
-        prop = self.night([twin], policy={"cand_0": lambda rc: "hold" if rc == "buy" else rc})   # Jev's noise: a few move
-        rc, out, err = self.run_promote(prop, "0", "--reason", "a few states move", now=day(7))
+        # showed every line naming the base as changed (2026-09-29 lens-4 review). Both are rendered for SOL-USD's base
+        # before the diff: a candidate one word from v2 shows that one line, the base spelled SOL on both sides.
+        v2 = prompts.load("v2", self.root)["action"]["instructions"]
+        prop = self.night([self.twin(lambda t: t.replace("stretch", "spell"))], policy=self.NOISE)
+        rc, out, err = self.run_promote(prop, "0", "--reason", "one word", now=day(7))
         self.assertEqual(rc, 0, err)
-        self.assertIn("(action wording identical once rendered for SOL: this rewrite changes no word Jev reads; its sha"
-                      " differs, so §9.2's NO PROMOTION reading, which tests prompt_b_sha, does not see it)", out)
-        self.assertNotIn("+++ v3.action", out)
+        self.assertIn("+++ v3.action", out)
+        changed = [l for l in out.splitlines() if l.startswith(("+", "-")) and not l.startswith(("+++", "---"))]
+        self.assertEqual(changed, [f"-instructions: {v2}", f"+instructions: {v2.replace('stretch', 'spell')}"])
         self.assertIn("states moved: SOL-USD 12/81, ETH-USD 12/81, XRP-USD 12/81", out)
+
+    def test_a_candidate_worded_as_current_once_rendered_is_refused(self):
+        # PREREG-v2 §14 (2026-09-30): a rewrite that changes no word Jev reads moves no state but Jev's noise, and its
+        # new sha would count as a promotion (the schedule's slot, §9.2's NO PROMOTION reading). It was promoted with a
+        # flag beside an empty diff; it is refused before anything is written. One word apart, it is a promotion.
+        prop = self.night([self.twin(), self.twin(lambda t: t.replace("stretch", "spell"))],
+                          policy={**self.NOISE, "cand_1": self.NOISE["cand_0"]})
+        rc, out, err = self.run_promote(prop, "0", "--reason", "a few states move", now=day(7))
+        self.assertEqual(rc, 1)
+        self.assertEqual(err, "promote: cand_0's action, rendered for SOL, is v2's word for word: it changes no word Jev "
+                              "reads (the states it moves are Jev's noise), and its new sha would count as a promotion, "
+                              "in the schedule and in §9.2's NO PROMOTION reading, which tests prompt_b_sha "
+                              "(PREREG-v2 §8, §14)\n")
+        self.assertEqual(out, "")
+        self.untouched()
+        rc, out, err = self.run_promote(prop, "1", "--reason", "one word", now=day(7))
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(prompts.named(self.root), "v3")
+        self.assertIn("promote v3 (day 8, activates 2026-10-31T22:00Z)", out)
 
     def test_t0_v2_blank_or_malformed_is_refused(self):
         prop = self.night([HOLDER])
@@ -217,7 +242,8 @@ class Promote(Base):
     def test_spacing_of_at_least_seven_days(self):
         prop = self.night([HOLDER])
         self.assertEqual(self.run_promote(prop, "0", "--reason", "first", now=day(7))[0], 0)       # E = 8, v3
-        prop = self.night([HOLDER], date="2026-11-06", now=day(13))                              # scored against v3
+        again = dict(HOLDER, instructions="Decide whether to be long {BASE}; hold in every state.")   # v3 reworded: v3's
+        prop = self.night([again], date="2026-11-06", now=day(13))     # own words are refused (§14, 2026-09-30); vs v3
         for n in (8, 12, 13):                                                                     # E = 9 .. 14
             rc, _, err = self.run_promote(prop, "0", "--reason", "second", now=day(n))
             self.assertEqual(rc, 1, n)
