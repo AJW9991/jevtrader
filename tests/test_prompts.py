@@ -233,6 +233,23 @@ class PromptsTest(unittest.TestCase):
         with self.assertRaises(prompts.PromptError):
             prompts.current(root=os.path.join(self.tmp, "nowhere"))
 
+    def test_a_version_file_nested_past_the_decoders_depth_is_a_prompt_error(self):
+        # json.load raises RecursionError, not a ValueError, on a file nested past the decoder's depth: load, current,
+        # pending, activation_of and sha let it out of _parse as a traceback where cycle, digest and promote expect
+        # PromptError (prompts.table already turned it into one). Now the version file is refused like any bad one.
+        with open(os.path.join(self.tmp, "v3.json"), "w", encoding="utf-8") as fh:
+            fh.write('{"version": "v3", "action": ' + "[" * 200000 + "]" * 200000 + "}")
+        with open(os.path.join(self.tmp, "CURRENT"), "w", encoding="utf-8") as fh:
+            fh.write("v3\n")
+        reads = {"load": lambda: prompts.load("v3", root=self.tmp), "sha": lambda: prompts.sha("v3", root=self.tmp),
+                 "activation_of": lambda: prompts.activation_of("v3", root=self.tmp),
+                 "current": lambda: prompts.current(root=self.tmp), "pending": lambda: prompts.pending(root=self.tmp)}
+        for name, read in reads.items():
+            with self.subTest(reader=name), self.assertRaises(prompts.PromptError) as cm:
+                read()
+            self.assertIn(os.path.join(self.tmp, "v3.json"), str(cm.exception))
+            self.assertIsNone(cm.exception.__cause__)
+
     def test_committed_v1_is_frozen_and_wire_clean(self):
         self.assertEqual(self.v1["version"], "v1")
         self.assertEqual(sorted(self.v1), ["action", "down15", "frozen", "note", "skip", "up15", "version"])

@@ -108,7 +108,7 @@ def _parse(version, root):
     try:
         with open(p, encoding="utf-8") as fh:        # not the locale's: v2 holds an em dash, and under LC_ALL=C
             doc = json.load(fh)                      # the file was refused (or, elsewhere, read to another sha)
-    except (OSError, ValueError) as e:
+    except (OSError, ValueError, RecursionError) as e:   # RecursionError: nested past the decoder's depth, as table()
         raise PromptError(f"{p}: {e}") from None
     if not isinstance(doc, dict):
         raise PromptError(f"{p}: top level is {type(doc).__name__}, not an object")
