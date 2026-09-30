@@ -426,8 +426,9 @@ which makes none — runs from the worktree with `--root` a temp dir outside bot
 holding a synthetic three-product log from `tests/synth.py`, and `--date` that log's day; it
 writes nothing under the live repo's `data/`, `logs/` or `proposals/`, and only its exit code
 and its `claude model` and "user memory not loaded" lines are read. It must exit 0, the OAuth
-token must answer, `claude model` must log exactly one id, and it shows whether `--settings`
-still applies under the fresh config dir. If it fails on the config dir, the fallback before the
+token must answer, and `claude model` must log exactly one id. (Whether `--settings` applies under
+the fresh config dir cannot be shown with tools off: the trial prints NOT SHOWN for it, and the
+clause is withdrawn, §14.) If it fails on the config dir, the fallback before the
 tag is to pin the user-memory sha instead (`propose.sh` logs FAIL and makes no call on any other
 sha, and `~/.claude/CLAUDE.md` is left unedited until T0_v2 + 28 d). The change of the
 treatment's context versus v1 is recorded for the write-up (ERRATA.md's precedent).
@@ -540,10 +541,13 @@ treatment's context versus v1 is recorded for the write-up (ERRATA.md's preceden
 there, so no report or result can be computed there by accident; the build is blind by
 procedure, header), tested by `make test` and CI, **complete, committed and pinned BEFORE the
 draft tag**, merged to `main` only after RESULTS.md (v1) is committed on 2026-10-23, then
-installed by the switch below. Nothing changes what a v1 row means or how v1's readers read the
-v1 log: v1's committed result and its descriptive cells are reproduced from `results-v1`; a v1
-row's `spec_sha` resolves with `git show prereg-v1:SPEC.md`; no reader prints §4–§7 over a v2
-sample row before T0_v2 + 28 d. **The backup-job fix (STEPS §9) and any other `main` tooling
+installed by the switch below. Nothing changes what a v1 row means; v1's rows are read as before, but
+the report's fee columns over the v1 log are v2's (50 and 90 in place of 60 and 120). v1's
+committed result and its cells are reproduced from `results-v1` only by `loop.report --sample
+--log <the live SOL log>` and `loop.inference --sample --log … --out …` (STEPS §10.5); a v1 row's
+`spec_sha` resolves with `git show prereg-v1:SPEC.md`; no reader prints §4–§7 over a v2 sample
+row before T0_v2 + 28 d, v1's `loop.inference` included (it applies this file's withholding after
+its own cut). **The backup-job fix (STEPS §9) and any other `main` tooling
 land before the draft tag.**
 
 - **SPEC (v2 sha on every v2 row):** §2 `product` takes the loop's `JEVLOOP_PRODUCT` (the key
@@ -756,3 +760,69 @@ Each entry: date, author, what changed, and what the author had read (digest inc
   night's `claude model` line (`claude-sonnet-5`), exactly one id, the rule's first case. Read since the last
   entry: logs/propose.log's lines for that night and the two header lines of proposals/2026-09-28.md (`proposal
   written by`, `model answered`); no rationale, no digest, no transcript.
+- 2026-09-30 ~04:30Z, Claude (Fable 5.1), after the §10 build (seven stages, each built, refuted and fixed; 1,237
+  tests; branch `prereg-v2`, this file edited there from now on, §13 (0)). Readings the build fixed where the
+  text was silent or wrong, adopted as written unless a section is amended below; each is also in the code's
+  docstrings and commit messages:
+  - **§10** was wrong that v1's readers read the v1 log "exactly as before": the fee columns over the v1 log
+    are v2's; §10 now says so, and names the two commands that reproduce `results-v1`. v1's `loop.inference`
+    applies this file's withholding (T0_v2 from §12; a malformed §12 reads blank) after its own cut, exit 3.
+  - **§2/§9.5** `make health` = `report --health --pre-sample --sample`: first the rows from v1's end (PREREG.md
+    §11's T0 + 28 d) to T0_v2, or every later row while §12 is blank, per product and pooled, no day judged;
+    then the sample, or a "none yet" line with exit 0 while §12 is blank.
+  - **§2** T_first_v2 is read by `tick_id` (each product's least `tick_id` among live rows carrying the sealed
+    tree's SPEC sha; the latest over products); T0_v2 = T_first_v2 + 86,400 s, a `tick_id` already being a
+    minute boundary. **§13**'s re-derivation as enforced: a later T0_v2 passes only if a commit in
+    `prereg-v2-draft..HEAD` has committer time ≥ the first boundary and (that time + 86,400 s), rounded up to a
+    minute, equals T0_v2; the seal's clock (or the annotated tag's tagger date, in a replay) must fall in
+    [T_first_v2, T0_v2). `bin/seal-check` checks these as (§2) and §12's fill as (§12) beside (a)–(e).
+  - **§4** `gap_blocks`: HALT and PAUSE rows are priced (observation continues), so they make no gap; only more
+    than 900 s without a priced row does. **§5** trades/day keeps v1's unit: trades on kept blocks per 1,440 of
+    the kept blocks' observed ticks. **§4** the row-level descriptives (A- and D-agreement, direction
+    probabilities, confidence, trades/day) read only the rows of kept product-days of non-void products;
+    health §1–§3 reads every row because it judges the days.
+  - **§6** fee arithmetic runs at `argmax` only, at the three held cadences; "undefined" (no fill on a kept day)
+    is judged before "never pays"; "fees cancel" at |Δ(0) − Δ(90)| ≤ 1e-9 bps; pairs are all five of `PAIRS`;
+    buy-and-hold buys at the ask of the first priced row on a kept day and holds to the window's end, its one
+    fill counting; a position opened on an excluded day brings its kept-day marks into E(0) but not its entry
+    fill; "p's kept days" for the 30-day volume = kept blocks × c / 86,400. While §12's tier table is blank or
+    unreadable, ERRATA's 2026-09-27 reading (maker 50 / taker 90) is the one tier used for naming. **§12**'s
+    tier table form: rows joined by `;`, each `[name:] $LOW-$HIGH / maker / taker` or `[name:] $LOW+ / maker /
+    taker`, bands from $0, contiguous, the last open; read time and table both filled or both blank.
+  - **§6** D-agreement: when modal live answers tie and the table's answer is among them, the state does not
+    differ; the minute-cadence B − C is printed at every column and fee (66 cells).
+  - **§8** `--table-only` targets `prompts/v2.json` only, refuses under any `prereg-v2-seal` tag, and accepts only
+    a CURRENT-only night (no candidates); the once-only rebuild is enforced after the draft tag and refused
+    when the new table's `model_answered` equals the pinned tables'; a promotion, for the count and spacing, is a
+    version file with an `activation_tick` in the block that is on CURRENT's `replaces` chain or whose
+    activation has passed; a promote that cannot finish removes what it wrote; PROMPT.md rules 4 and 9 are
+    applied per candidate (a candidate with a digit or a product word other than `{BASE}` is discarded and the
+    rest are scored; a night fails only when none remain); the product-word screen refuses the uppercase bases
+    of `PRODUCTS` and the probe candidates as whole words in the four question slots, and nothing else (coin
+    names and lowercase forms are the promoter's to catch: rule 9 is his reading, the screen is the floor);
+    **a candidate whose rendered action equals CURRENT's is refused** (it moves no state and changes no word
+    Jev reads; the flag becomes a refusal, §14 decision); the failed-night count is printed in RESULTS-v2 beside
+    §9.2's reading, not in `loop.report`; the nightly's 45-min cap is `${JEVLOOP_CLAUDE_CAP_S:-2700}`, a test
+    knob no plist sets. The `--settings` clause of the trial night is withdrawn (§8 amended above).
+  - **§8** the promoter reads each proposal's rationale, which may quote the digest's outcome proxies: that is
+    the human gate the design has, and it is not a look at §4–§7. Nobody but the promoter reads
+    `data/digest-*.md` or `logs/claude-*.txt` during the block.
+  - **§9.2** the NO PROMOTION row set is §9.2's; **§9.5** every `report --unblind` appends a look, including
+    `--health` and runs where nothing was withheld, into the running tree's `data/looks.tsv` (a look that cannot
+    be recorded is refused, exit 2); a `looks.tsv` made between the switch and the seal is a listed deviation.
+  - **§13** "exactly one `spec_sha`" is a refusal (exit 3) before any number, overridden only by `NO_SEAL=1`, which
+    RESULTS-v2 records; no sample row at all is a void block, not a refusal. RESULTS-v2 §0's seal material is
+    `bin/seal-check --at prereg-v2-seal` printed verbatim ((b) and (e) not rerun; the `--stat` of the excluded
+    paths included). A listed deviation may be any non-merge commit in `prereg-v2-draft..HEAD`, a fix `main` made
+    between the draft tag and switch step (6) included; the VOIDING set (READ lines) adds this file, SPEC.md,
+    `loop/prompts.py`, `loop/report.py` and `loop/outcomes.py`; `--since` passes `prompts/v<N>.json` and tables
+    with N ≥ 3 as additions only. The seal's clean tree commits the shakedown nights' `proposals/<date>.md`.
+    `main`'s readers between `results-v1` and switch step (6) carry no v2 withholding; STEPS §10.5 names the
+    only v1 re-reads made there.
+  - **§10** pinned by sha beyond the list: `nightly/propose.sh`, `nightly/settings.json`, `nightly/capped.py`
+    (the call's shape §8 fixes); every capitalised constant of the named modules is in SPEC §14 unless
+    `tests/test_spec.py` lists it with a reason; bin/promote's schedule constants and tags are §14 rows.
+  - **§2** one-process mode: `python3 -m loop.cycle --once --every-product` shares one watchdog budget across
+    products; a product reached with under 1 s left is not ticked that minute (stderr says so, no row).
+  - Read since the last entry: the build's reports (code, tests, refuters' and verifiers' findings), nothing of
+    the live log. The probe's rows for D are public feed data.

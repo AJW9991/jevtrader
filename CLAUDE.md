@@ -10,6 +10,13 @@ person installs), and `HANDOFF.md` (the dated record: decisions, procedures, wri
 last session left off is the brain's baton block, `~/Projects/Claude/state/blocks/jev-paper-loop.md`;
 Mac only from 2026-09-29, the GitHub remote is the code's off-machine copy and CI.
 
+## Two blocks
+v1 (`PREREG.md`, sealed) runs until 2026-10-23 21:40Z on this Mac; v2 (`PREREG-v2.md`, frozen by tag
+`prereg-v2-draft` before v1 is read, sealed by `bin/seal-check`) starts at T0_v2 after the switch (STEPS §10).
+Until the switch the rules below are v1's; from the switch, read them with PREREG-v2's names: the day-14 look is
+`make health`, the day-28 reading `make results`, the frozen set is `tests/test_frozen.py`'s, and the baton is the
+brain's block. Nobody reads report §4–§7 over either block's sample rows before its day 28.
+
 ## What must not change during the sample (until 2026-10-23 21:40Z)
 - `SPEC.md` (every row carries its sha), `prompts/` (only `bin/promote`, run by Alex, writes
   there), `nightly/PROMPT.md` and the digest's content (the treatment under H1), every
