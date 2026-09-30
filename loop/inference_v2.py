@@ -68,7 +68,7 @@ Standard library only. --out writes a NEW file and never overwrites one."""
 import argparse, collections, datetime, math, os, random, statistics, subprocess, sys
 from fractions import Fraction
 
-from . import book, config, dash, exclusions_v2, inference, outcomes, report
+from . import book, config, dash, exclusions_v2, inference, nights, outcomes, report
 
 SEED_H1 = 20261023                     # PREREG-v2 §5; family F's cell i takes SEED_H1 + i (§6)
 RESAMPLES = 10000                      # R
@@ -596,14 +596,16 @@ def direction_lines(rows, outs, t0):
 
 
 def run(stores, t0, now, resamples=RESAMPLES, accept=False, listed=None, tiers=None, looks=None, tree_sha=None, descriptive=True,
-        sealed=None, no_seal=False):
+        sealed=None, no_seal=False, propose_log=None):
     """The whole computation and its text. stores: load()'s, in config.PRODUCTS order (rows: each product's WHOLE log);
     t0: T0_v2 (epoch); now: the clock (epoch); accept: --accept-pending; listed: {"set", "lines", "path", "error"} from
     data/exclusions-v2.tsv; tiers: dash.read_fee_tiers()'s (None, {"error"} or the table); looks: read_looks()'s;
     tree_sha: dash.v2_spec_sha(); descriptive: False skips report.cadence_table, §7's agreements and the direction
     probabilities (tests of the tested cells); sealed: seal()'s, main's check (None: not checked, said in §0); no_seal:
-    --no-seal (NO_SEAL=1), recorded in the header and §0. Returns {"text", "cells", "rules", "excluded", "kept_days", "void_products",
-    "pool", "void", "promoted", "pending", "shas", "prompt_b", "ct"}. Reads no file."""
+    --no-seal (NO_SEAL=1), recorded in the header and §0; propose_log: nights.read()'s, logs/propose.log, whose failed
+    nights §8 has the report count with their reasons, beside §9.2's reading (None: not read, said). Returns {"text",
+    "cells", "rules", "excluded", "kept_days", "void_products", "pool", "void", "promoted", "pending", "shas", "prompt_b",
+    "ct"}. Reads no file."""
     listed = listed or {"set": set(), "lines": [], "path": config.EXCLUSIONS_V2, "error": None}
     looks = looks or {"path": config.LOOKS, "lines": None, "error": None}
     end = t0 + N_DAYS * 86400
@@ -678,6 +680,10 @@ def run(stores, t0, now, resamples=RESAMPLES, accept=False, listed=None, tiers=N
                  f" prompt_a_sha: {promoted} -> " + ("not read: the block is void" if void else
                                                      "a promotion took effect: F4 is read" if promoted else
                                                      "NO PROMOTION (CURRENT never left v2): F4 is withdrawn, B - A is test-retest"))
+    if propose_log is None:
+        lines.append("  failed nights (PREREG-v2 §8): NOT COUNTED: run() was called without logs/propose.log (a test, never the result)")
+    else:
+        lines += nights.lines(nights.count(propose_log, t0, N_DAYS), propose_log["path"])
     lines += [""] + tested_lines(cells, pool, excluded, void, beside_h1(ct, gaps, pool) if ct else None)
     lines += [""] + reading(cells, rules, void, promoted > 0, da["reading"] if da else None,
                             fee_reading(ct["fee_arithmetic"], used) if ct else None)
@@ -769,7 +775,7 @@ def main(argv=None, now=None, resamples=RESAMPLES):
     except ValueError as e:
         tiers = {"error": str(e)}
     text = run(stores, t0, clock, resamples, args.accept_pending, listed, tiers, read_looks(), dash.v2_spec_sha(),
-               sealed=sealed, no_seal=args.no_seal)["text"]
+               sealed=sealed, no_seal=args.no_seal, propose_log=nights.read())["text"]
     sys.stdout.write(text)
     if args.out:
         try:

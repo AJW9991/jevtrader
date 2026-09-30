@@ -8,7 +8,7 @@ from unittest import mock
 
 from fixture_prereg import pin_prereg_v2
 from fixture_products import add_products
-from loop import book, config, dash, inference, inference_v2, report, rules
+from loop import book, config, dash, inference, inference_v2, nights, report, rules
 
 T0S = "20261024T220000Z"                 # a stand-in T0_v2 (§12 is filled at sealing)
 T0 = report.tick_epoch(T0S)
@@ -735,6 +735,13 @@ class Main(unittest.TestCase):
         cls.enterClassContext(mock.patch.object(config, "DECISIONS", os.path.join(cls.data, "decisions.jsonl")))
         cls.enterClassContext(mock.patch.object(config, "HALT", os.path.join(cls.data, "HALT")))
         pin_prereg_v2(cls, T0S, SHA)
+        cls.propose = os.path.join(cls.data, "propose.log")                  # never the repository's logs/ (PREREG-v2 §8's count)
+        with open(cls.propose, "w", encoding="utf-8") as fh:
+            fh.write("2026-10-25T08:30:00Z propose start date=2026-10-24 dry=0 root=/r\n"
+                     "2026-10-25T08:40:00Z propose OK proposals/2026-10-24.json\n"
+                     "2026-10-26T08:30:00Z propose start date=2026-10-25 dry=0 root=/r\n"
+                     "2026-10-26T08:30:05Z propose FAIL claude exit 1 (see logs/claude-2026-10-25.err)\n")
+        cls.enterClassContext(mock.patch.object(nights, "PROPOSE_LOG", cls.propose))
         _write(config.DECISIONS, _log(mid=_rising, row=lambda n: {"b": "buy" if n == 0 else "hold", "promoted": n > 500}, post=2))
         with open(config.DECISIONS, "rb") as fh:
             cls.sha = hashlib.sha256(fh.read()).hexdigest()
@@ -764,7 +771,10 @@ class Main(unittest.TestCase):
         self.assertIn("one value, as §13 requires\n", self.text)                         # SHA is also this tree's (pinned)
         self.assertIn("\n  seal: <a passing seal check, the fixture's>\n", self.text)
         self.assertNotIn("NO_SEAL", self.text)
-
+        # PREREG-v2 §8: "the report counts failed nights with their reasons" (2026-09-29 lens-4 review: no reader did)
+        self.assertIn(f"\n  failed nights (PREREG-v2 §8; {self.propose}, the nights digesting the UTC days that close in the"
+                      " sample): 27 of 28\n    2026-10-25: FAILED: claude exit 1 (see logs/claude-2026-10-25.err)\n"
+                      "    2026-10-26: NOT RUN: no run logged for this date (no proposal)\n", self.text)
         self.assertIn("H1 B - C, argmax, 0 bps, c = 900 s, seed 20261023, one-sided alpha 1/40, bound sorted[4]", self.text)
         self.assertIn("F4 B - A, argmax, 0 bps, c = 900 s, seed 20261027, one-sided alpha 1/160, bound sorted[1]", self.text)
         self.assertIn("fee columns 0, 2, 10, 25, 50, 90 bps (§6)", self.text)                  # PREREG-v2 §6's, whatever config's are
@@ -858,9 +868,10 @@ class Main(unittest.TestCase):
     def test_a_fresh_interpreter_under_another_hash_seed_prints_the_same_bytes(self):
         boot = ("import sys; sys.path[:0] = [sys.argv[1], sys.argv[2]]\n"
                 "from unittest import mock\n"
-                "from loop import config, dash, inference_v2\n"
+                "from loop import config, dash, inference_v2, nights\n"
                 "data, prereg = sys.argv[3], sys.argv[4]\n"
                 "config.DATA, config.DECISIONS, config.HALT = data, data + '/decisions.jsonl', data + '/HALT'\n"
+                "nights.PROPOSE_LOG = data + '/propose.log'\n"
                 "config.PRODUCTS = tuple(sys.argv[5].split(','))\n"
                 "dash.PREREG_V2_PATH, dash.v2_spec_sha = prereg, (lambda spec=None: sys.argv[6])\n"
                 "inference_v2.seal = lambda repo=None: %r\n"
