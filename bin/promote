@@ -127,9 +127,23 @@ def _lines(q):
     return [f"instructions: {q['instructions']}"] + [f"{k}: {q['criteria'][k]}" for k in prompts.CRITERIA["choice"]]
 
 
+def rendered(doc, base):
+    """A version's action as the wire carries it for `base`: its placeholder (SOL in v1/v2, {BASE} in v3 and later)
+    replaced, so two wordings compare as Jev reads them, not as their files spell the base."""
+    return prompts.render(prompts.question(doc["action"], "choice", f"{doc.get('version')}.action"), doc["version"], base)
+
+
 def diff(cur_name, cur_action, new_name, new_action):
     return "\n".join(difflib.unified_diff(_lines(cur_action), _lines(new_action), fromfile=f"{cur_name}.action",
                                           tofile=f"{new_name}.action", lineterm="", n=4))
+
+
+def wording_diff(cur_doc, new_doc, base):
+    """The person's diff of the two actions, both rendered for `base` (config.PRODUCT's): v2.json spells the base SOL
+    and a promoted file {BASE}, so an unrendered diff showed every line naming the base as changed (2026-09-29 review)."""
+    d = diff(cur_doc["version"], rendered(cur_doc, base), new_doc["version"], rendered(new_doc, base))
+    return d or (f"(action wording identical once rendered for {base}: this rewrite changes no word Jev reads; its sha"
+                 f" differs, so §9.2's NO PROMOTION reading, which tests prompt_b_sha, does not see it)")
 
 
 def tick_of(epoch):
@@ -491,7 +505,7 @@ def main(argv=None, now=None):
         return 1
     states_moved = ", ".join(f"{p} {moved[p]}/81" for p in config.PRODUCTS)
     when = datetime.datetime.fromtimestamp(act, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
-    print(diff(cur_name, cur_doc["action"], version, new["action"]) or "(action wording identical)")
+    print(wording_diff(cur_doc, new, config.base(config.PRODUCT)))
     print(f"\npromote: wrote {target} (sha {sha[:12]}), {len(tables)} table(s), CURRENT -> {version}: pending until "
           f"{when} (day {e}); B asks {new['replaces']} until then")
     msg = (f"promote {version} (day {e}, activates {when}) from {os.path.relpath(a.proposal, REPO)} {qid}: {reason}"

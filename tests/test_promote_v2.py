@@ -169,6 +169,21 @@ class Promote(Base):
         self.assertIn("+++ v3.action", out)
         self.sends.assert_not_called()
 
+    def test_the_wording_diff_is_of_the_rendered_texts(self):
+        # v2.json spells the base SOL and a promoted file {BASE}: the diff compared the files' text, so a first promotion
+        # showed every line naming the base as changed, and a candidate worded exactly as v2 read as a rewrite
+        # (2026-09-29 lens-4 review). Both are rendered for SOL-USD's base before the diff.
+        v2 = prompts.load("v2", self.root)["action"]
+        twin = {"rationale": "v2 as it reads", "instructions": v2["instructions"].replace("SOL", "{BASE}"),
+                "criteria": {k: v.replace("SOL", "{BASE}") for k, v in v2["criteria"].items()}}
+        prop = self.night([twin], policy={"cand_0": lambda rc: "hold" if rc == "buy" else rc})   # Jev's noise: a few move
+        rc, out, err = self.run_promote(prop, "0", "--reason", "a few states move", now=day(7))
+        self.assertEqual(rc, 0, err)
+        self.assertIn("(action wording identical once rendered for SOL: this rewrite changes no word Jev reads; its sha"
+                      " differs, so §9.2's NO PROMOTION reading, which tests prompt_b_sha, does not see it)", out)
+        self.assertNotIn("+++ v3.action", out)
+        self.assertIn("states moved: SOL-USD 12/81, ETH-USD 12/81, XRP-USD 12/81", out)
+
     def test_t0_v2_blank_or_malformed_is_refused(self):
         prop = self.night([HOLDER])
         for t0, why in (("________", "T0_v2 is blank"), ("2026-10-24 22:00", "is not a tick_id")):
