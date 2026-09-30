@@ -628,5 +628,56 @@ class Withheld(unittest.TestCase):
         self.assertEqual(n_lines(), 4)
 
 
+class V1InferenceWithholdsV2(unittest.TestCase):
+    """PREREG-v2 §10 ("no reader prints §4-§7 over a v2 sample row before T0_v2 + 28 d") and §9.5 ("whatever --t0 ...
+    or --log say"; "No bootstrap runs before day 28"): v1's loop.inference, which stays in this tree, refuses (exit 3)
+    before any bootstrap when the rows it would read hold one PREREG-v2 withholds, whatever its own --t0 and --log say.
+    2026-09-29 lens-2 review: a copy of the live log and a --t0 28 days before T0_v2 printed B - C's bound over v2 sample
+    rows. v1's rows (before T0_v2, v1's spec_sha) are unaffected."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.products = add_products(cls)
+        pin_prereg(cls)                                                   # v1's §11: its sample ended 2026-10-23
+        cls.data = cls.enterClassContext(tempfile.TemporaryDirectory())
+        cls.enterClassContext(mock.patch.object(config, "DATA", cls.data))
+        cls.enterClassContext(mock.patch.object(config, "DECISIONS", os.path.join(cls.data, "decisions.jsonl")))
+        logs = synth.generate_products(5, cls.products, t0=T0S, days=1.0, pre_hours=2.0, cadence_s=300, era="v2")
+        paths = synth.write_products(cls.data, logs)
+        cls.copy = os.path.join(cls.enterClassContext(tempfile.TemporaryDirectory()), "copy.jsonl")
+        with open(paths["SOL-USD"], encoding="utf-8") as src, open(cls.copy, "w", encoding="utf-8") as dst:
+            dst.write(src.read())                                         # a copy of the live log is not the live log
+        cls.sha = synth._spec_sha()
+
+    def _run(self, t0, t0_v2, now):
+        from loop import inference
+        with contextlib.ExitStack() as st:
+            pin_prereg_v2(st, t0_v2, self.sha)
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = inference.main(["--sample", "--log", self.copy, "--t0", t0, "--resamples", "20", "--accept-pending"],
+                                      now=datetime.datetime.fromtimestamp(now, UTC))
+        return code, out.getvalue(), err.getvalue()
+
+    def test_a_window_holding_v2_sample_rows_is_refused_sealed_or_blank(self):
+        # v1's window [2026-09-27T22:00, 2026-10-25T22:00) holds the first sample day of T0_v2 2026-10-24T22:00Z
+        for t0_v2 in (T0S, None):
+            with self.subTest(t0_v2=t0_v2):
+                code, out, err = self._run("2026-09-27T22:00", t0_v2, T0 + 2 * 86400)
+                self.assertEqual(code, 3, err)
+                self.assertEqual(out, "")
+                self.assertIn("inference: refusing to look:", err)
+                self.assertIn("PREREG-v2 §9.5", err)
+
+    def test_v1_rows_and_v2_shakedown_rows_before_a_sealed_t0_v2_still_run(self):
+        # a window ending at T0_v2 holds only the shakedown's two hours: not PREREG-v2's sample once §12 is sealed
+        code, out, err = self._run("2026-09-26T22:00", T0S, T0 + 2 * 86400)
+        self.assertEqual(code, 0, err)
+        self.assertIn("B - C", out)
+        # after the v2 sample has ended nothing is withheld
+        code, out, err = self._run("2026-09-27T22:00", T0S, END)
+        self.assertEqual(code, 0, err)
+
+
 if __name__ == "__main__":
     unittest.main()

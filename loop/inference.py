@@ -14,7 +14,10 @@ other than PREREG §11's and another --prereg are refused (exit 3) in both modes
 T0, so a later --t0 never pulls a sample row into the smoke (the seal is read from the
 repository's own PREREG.md as well as from --prereg's). A copy of the live log is the live log
 while the sample runs: a log holding a row of the repository's sealed sample refuses --sample
-until the sample's end on this checkout's real clock, whatever --now, --t0 or --prereg say. The clock is not
+until the sample's end on this checkout's real clock, whatever --now, --t0 or --prereg say. PREREG-v2's
+withholding holds here too (its §9.5 and §10): a run whose rows (the sample's or the shakedown's, as cut) hold one
+report.withheld_v2 withholds (T0_v2 from PREREG-v2.md §12 on the real clock; while that is blank, every row carrying
+the v2 spec_sha) is refused, exit 3, before any bootstrap; v1's own rows are never among them. The clock is not
 the whole guard: the last block's H2 unit needs the row at t + 900 s +- 30 s, which is written
 up to ~15.5 min after T0 + 28 d, so --sample also refuses (exit 3) while any kept block's
 first live row has a gap outcome whose t + h the log has not reached (pending_units); a
@@ -609,6 +612,20 @@ def main(argv=None, now=None):
         anchor = report.tick_epoch(min(r["tick_id"] for r in scope)) if scope else t0
         excluded, excl_lines = set(), []                    # exclusions name sample days; none apply before T0
         kept = N_DAYS
+    from . import dash                                      # here, not at the top: dash imports report
+    try:                                                    # PREREG-v2 §9.5 and §10, whatever --t0, --now or --log say:
+        t0_v2 = dash.read_t0_v2()                           # no reader prints §4-§7 over a v2 sample row before day 28
+    except ValueError:                                      # a malformed seal is withheld as if blank (report's reading)
+        t0_v2 = None
+    w2 = report.withheld_v2(scope, t0_v2, dash.v2_spec_sha(), real_now.timestamp())
+    if w2 is not None:
+        sys.stderr.write("inference: refusing to look: " + (
+            f"{w2['n']} of the rows this run reads are in PREREG-v2's sample [T0_v2 {report._iso_minute(w2['t0'])}, T0_v2 +"
+            f" {N_DAYS} d), which ends {report._iso_minute(w2['until'])} on this checkout's real clock" if w2["until"] is not None
+            else f"PREREG-v2.md §12's T0_v2 is blank and {w2['n']} of the rows this run reads carry the v2 spec_sha"
+                 f" ({str(w2['sha'])[:12]}...)")
+            + ", whatever --t0, --now or --log say (PREREG-v2 §9.5, §10; its own reader is loop.inference_v2, at day 28)\n")
+        return EXIT_NOT_YET
     n_blocks = BLOCKS_PER_DAY * N_DAYS
     if mode == "pre-t0":                                    # the shakedown's own span, like report._blocks
         n_blocks = max((int((report.tick_epoch(r["tick_id"]) - anchor) // report.BLOCK_S) for r in scope), default=-1) + 1
