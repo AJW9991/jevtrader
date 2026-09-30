@@ -442,7 +442,9 @@ the tag.
 `prompts/CURRENT` must name `v2` here (a merge of `main` after one of v1's promotions moves it, and `--table-only`
 then refuses). From the worktree, `jev.py`'s ledger rows land in this tree's `data/sends.tsv` (created by the send,
 gitignored) and `policy_table` reads this tree's `data/HALT`, not the live one, so the first command checks the live
-HALT itself:
+HALT itself. The worktree then has a `data/` holding that ledger alone: still no decision log, so no report or result
+is computed there; but a `loop.report --unblind` run there would now record its look in that `data/looks.tsv`, not the
+live one RESULTS-v2 §0 reproduces (PREREG-v2 §9.5), whatever `--log` it reads: none is run there:
 
 ```bash
 cd ~/Projects/jev-paper-loop-v2 && test "$(cat prompts/CURRENT)" = v2 && test ! -e ~/Projects/jev-paper-loop/data/HALT && printf '{"candidates": []}\n' > proposals/v2-tables.json && python3 -m nightly.policy_table proposals/v2-tables.json && git add proposals/v2-tables.md && git commit -m "proposals/v2-tables.md: v2's own tables, CURRENT only, no candidate (PREREG-v2 §8)"
@@ -695,8 +697,12 @@ Fill §12 in one commit with the PREREG-v2.md pin in `tests/test_frozen.py`: the
 read time (`Fee tiers (30-day band / maker / taker, read UTC `2026-10-24T09:00Z`): `$0-$10K / 0.60 % / 1.20 %;
 $10K-$50K / ...``, rows joined by `;`, the form `make dash` and the report read), the rebuild line if (11a) did not
 write it, T_first_v2 and T0_v2 (each a tick_id, `YYYYMMDDTHHMM00Z`, as printed), who sealed and the date. The tree is
-clean before the seal (`bin/seal-check` (b)): the HANDOFF.md lines of switch steps (8) and (8a) are committed with them.
-Then:
+clean before the seal (`bin/seal-check` (b)): the HANDOFF.md lines of switch steps (8) and (8a) are committed with them,
+and so is everything else `git status --porcelain` lists, the nightly's `proposals/<date>.md` of the shakedown nights
+among them (proposals/ is excluded from (c), so committing them costs nothing). A `data/looks.tsv` there (a `report
+--unblind` between the switch and the seal) is neither excluded from (c) nor allowed by it: left untracked it fails (b),
+committed it fails (c); it goes in as a listed deviation (one row in ERRATA.md's v2 deviations table naming its commit,
+§13), since every look is kept (PREREG-v2 §9.5). Then:
 
 ```bash
 cd ~/Projects/jev-paper-loop && bin/seal-check && git tag -a prereg-v2-seal -m "PREREG-v2 sealed" HEAD && git push origin prereg-v2-seal

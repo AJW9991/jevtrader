@@ -213,6 +213,16 @@ class SwitchGit(unittest.TestCase):
         self.assertIn("committed", text[text.index("(8a)"):text.index("(8b)")])
         self.assertIn("HANDOFF.md lines of switch steps (8) and (8a) are committed", subsection("10.6"))
 
+    def test_the_seals_clean_tree_names_the_nightlys_proposals_and_a_look(self):
+        # (b) names every untracked path: the shakedown nights' proposals/<date>.md too, which the note left out; and a
+        # data/looks.tsv made between the switch and the seal is neither excluded from (c) nor allowed by it, so it goes
+        # in as a listed deviation (2026-09-29 lens-5 review)
+        text = " ".join(subsection("10.6").split())
+        self.assertIn("the nightly's `proposals/<date>.md` of the shakedown nights among them", text)
+        self.assertIn("A `data/looks.tsv` there (a `report --unblind` between the switch and the seal) is neither excluded"
+                      " from (c) nor allowed by it", text)
+        self.assertIn("it goes in as a listed deviation", text)
+
     def test_v1_is_read_again_from_results_v1_with_sample_only(self):
         # PREREG-v2 §10: v1's cells "are reproduced from results-v1", whose readers have no PREREG-v2 withholding: a
         # `loop.report --log` there without --sample printed §4-§7 over v2's sample rows once v1's withholding lifted
