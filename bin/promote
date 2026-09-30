@@ -313,7 +313,8 @@ def _checks(a):
 def table_only(a, root):
     """--table-only: v2's own tables from the proposal night's .table.json (PREREG-v2 §8: "refuses unless the table's
     CURRENT sha equals prompts/v2.json's"), whatever CURRENT names; before the seal, and after the draft tag once only
-    and for another Jev version."""
+    and for another Jev version. The night must have asked CURRENT alone (§8: "a proposal with no candidates (CURRENT =
+    v2 only)"): a table whose requests also carried candidates is refused."""
     _checks(a)
     if tag_exists(a.repo, PREREG_TAG):
         raise RuntimeError(f"the tag {PREREG_TAG} exists: v2's tables are built before the draft tag and rebuilt at most "
@@ -322,6 +323,12 @@ def table_only(a, root):
     with open(a.table_only, "rb") as fh:
         raw = fh.read()
     doc, _ = vouched(a.table_only, raw)
+    asked = {p: sorted((pd or {}).get("questions") or {}) for p, pd in doc["products"].items()}
+    if doc.get("candidates") != [] or any(q != [policy_table.CURRENT] for q in asked.values()):
+        raise RuntimeError(f"the table was scored with {len(doc.get('candidates') or [])} candidate(s) (questions "
+                           f"{', '.join(sorted({q for qs in asked.values() for q in qs}))}): v2's own tables come from a "
+                           "policy_table.py run on a proposal with no candidates, CURRENT alone in every request "
+                           "(PREREG-v2 §8), and the switch's rebuild follows the same rule")
     version = TABLE_ONLY_VERSION
     vsha = prompts.sha(version, root)
     if doc["current"].get("version") != version or doc["current"].get("sha") != vsha:

@@ -595,6 +595,17 @@ class TableOnly(Base):
         self.assertEqual(prompts.named(self.root), "v3")
         self.assertEqual(self.promote.TABLE_ONLY_VERSION, "v2")
 
+    def test_refuses_a_table_scored_with_candidates(self):
+        # PREREG-v2 §8: v2's tables come "from a policy_table.py (v2) run on a proposal with no candidates (CURRENT = v2
+        # only)", and the switch's rebuild follows "the same rule". A night with candidates answered CURRENT in requests
+        # that also carried them, and --table-only copied it (2026-09-29 lens-4 review)
+        prop = self.night([HOLDER, SAME], date="2026-10-29")
+        rc, _, err = self.run_promote("--table-only", prop)
+        self.assertEqual(rc, 1)
+        self.assertIn("the table was scored with 2 candidate(s) (questions cand_0, cand_1, current): v2's own tables come"
+                      " from a policy_table.py run on a proposal with no candidates", err)
+        self.untouched()
+
     def test_refuses_short_of_81_of_81(self):
         prop = self.night([], fail=(policy_table.states("ETH-USD")[3][0],))
         rc, _, err = self.run_promote("--table-only", prop)
