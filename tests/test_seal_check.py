@@ -2,7 +2,7 @@
 draft tag and --since after the seal, each check passing and failing on its own. The tool is loaded in process so a
 test's three products (fixture_products) apply; a few runs go through its command line and through inference_v2.seal,
 which runs it the way v2's make results does. No test runs it on this repository (its (e) runs `make test`)."""
-import calendar, hashlib, importlib.machinery, importlib.util, io, json, os, shutil, subprocess, sys, tempfile, time, unittest
+import calendar, hashlib, importlib.machinery, importlib.util, io, json, os, re, shutil, subprocess, sys, tempfile, time, unittest
 from unittest import mock
 
 from loop import config, inference_v2, prompts, state
@@ -90,6 +90,18 @@ def probe_rows(day="2026-09-30", minutes=1440, transport=0):
                    for i in range(minutes))
 
 
+S2_LINE = "Products: `SOL-USD`, `ETH-USD`, `XRP-USD`."
+
+
+def section2(products):
+    """§2's pre-tag fields as written for `products` (SOL-USD first), from config's TICK_P and LIQ_ATOMS: what
+    --draft holds config to."""
+    rest = [p for p in products if p != config.PRODUCT]
+    return ("Products: " + ", ".join(f"`{p}`" for p in products) + ". `TICK_p`: "
+            + ", ".join(f"`{p}` `{config.TICK_P[p]}`" for p in rest) + ". Atoms (a10, a90): "
+            + ", ".join(f"`{p}` `{config.LIQ_ATOMS[p][0]}, {config.LIQ_ATOMS[p][1]}`" for p in rest) + ".")
+
+
 def epoch(stamp):
     """'2026-10-25T00:00:00Z' or a tick_id -> epoch seconds."""
     fmt = "%Y%m%dT%H%M%SZ" if "-" not in stamp else "%Y-%m-%dT%H:%M:%SZ"
@@ -119,7 +131,9 @@ class Scratch(unittest.TestCase):
             "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
             "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid", "SEALTEST_EXIT": "0"}))
         self.git("init", "-q", "-b", "main")
-        self.write("PREREG-v2.md", PREREG)
+        self.s2 = section2(self.products)
+        self.prereg = PREREG.replace(S2_LINE, self.s2)                    # §2 written for this run's products (--draft)
+        self.write("PREREG-v2.md", self.prereg)
         self.write("ERRATA.md", ERRATA)
         self.write("tests/test_frozen.py", frozen())
         with open(os.path.join(REPO, "prompts", "v2.json"), encoding="utf-8") as fh:
@@ -279,7 +293,7 @@ class Seal(Scratch):
         self.assertFails(says=["(§12) FAIL: PREREG-v2.md §12 still holds 1 ________ (the seal is made once §12 is filled;"
                                " after it, --since refuses any edit of PREREG-v2.md)", "(e) NOT RUN: (§12) failed already"],
                          failed="§12")
-        self.write("PREREG-v2.md", PREREG)
+        self.write("PREREG-v2.md", self.prereg)
         self.commit("§12 blank again")
         self.assertFails(says=["still holds 7 ________", "T0_v2 is blank"], failed="§12")
 
@@ -289,7 +303,7 @@ class Seal(Scratch):
         self.fill(seal=("20261024T213000Z", "20261025T2130Z", "Alex", "2026-10-25"))
         self.commit("T0_v2 not a tick_id")
         self.assertFails(says=["(§12) FAIL:", "T0_v2 '20261025T2130Z' is not a tick_id on a minute boundary"], failed="§12")
-        self.write("PREREG-v2.md", PREREG)
+        self.write("PREREG-v2.md", self.prereg)
         self.commit("back")
         self.fill(fee=("2026-10-24T09:00Z", "$0-$10K / 0.60 / 1.20"))
         self.commit("fees without their unit")
@@ -708,14 +722,35 @@ class Draft(Scratch):
     def test_a_short_blank_or_a_product_placeholder_outside_section_12_fails(self):
         # §1's arm A row reads "`__` of 81 for `<P2>`" and §2's TICK_p and atoms lines name `<P2>` and `<P3>`: fields
         # written before the draft tag like the ________ ones, which the search saw alone (the S5 refuter's defect 13)
-        self.replace("PREREG-v2.md", "Products: `SOL-USD`, `ETH-USD`, `XRP-USD`.",
-                     "Products: `SOL-USD`, `ETH-USD`, `XRP-USD`. `TICK_p`: `<P2>` `0.01`.")
-        self.replace("PREREG-v2.md", "Nothing here is a field.", "`__` of 81 for `ETH-USD`.")
+        p2 = self.products[1]
+        self.replace("PREREG-v2.md", f"`TICK_p`: `{p2}`", "`TICK_p`: `<P2>`")
+        self.replace("PREREG-v2.md", "Nothing here is a field.", f"`__` of 81 for `{p2}`.")
         self.commit("a placeholder and a short blank left")
-        self.assertFails("--draft", says=["remains outside §12 at line 7 (§0), line 12 (§2)"], failed="blanks")
-        self.replace("PREREG-v2.md", "`<P2>` `0.01`", "`ETH-USD` `0.01`")
+        text = self.assertFails("--draft", says=["remains outside §12 at line 7 (§0), line 12 (§2)"])
+        self.assertIn("\nblanks: FAIL: ", text)
+        self.replace("PREREG-v2.md", "`TICK_p`: `<P2>`", f"`TICK_p`: `{p2}`")
         self.replace("PREREG-v2.md", "`__` of 81", "`31` of 81")
         self.commit("written")
+        self.assertPasses("--draft")
+
+    def test_section_2_must_name_what_config_runs(self):
+        # the tree runs config.PRODUCTS, TICK_P and LIQ_ATOMS; §2 writes the probe's choice before the tag. Nothing held
+        # the two together: §2 naming DOGE and AVAX passed with config holding ETH and XRP (2026-09-29 lens-5 review)
+        self.assertPasses("--draft")
+        p2, p3 = self.products[1:3]
+        other = next(c for c in config.PROBE_CANDIDATES if c not in self.products)
+        for old, new, says in (
+                (f"`SOL-USD`, `{p2}`, `{p3}`.", f"`SOL-USD`, `{other}`, `{p3}`.",
+                 f"§2's Products line names SOL-USD, {other}, {p3}; config.PRODUCTS is {', '.join(self.products)}"),
+                (f"`{p2}` `{config.TICK_P[p2]}`", f"`{p2}` `0.5`", f"§2's TICK_p for {p2} is '0.5'"),
+                (f"`{p3}` `{config.LIQ_ATOMS[p3][0]}, {config.LIQ_ATOMS[p3][1]}`", f"`{p3}` `2, 9`",
+                 f"§2's atoms (a10, a90) for {p3} are '2, 9'")):
+            with self.subTest(says=says):
+                self.replace("PREREG-v2.md", old, new)
+                self.commit("§2 not config")
+                self.assertFails("--draft", says=["§2: FAIL: " + says.split(";")[0] if ";" in says else says], failed="§2")
+                self.replace("PREREG-v2.md", new, old)
+                self.commit("back")
         self.assertPasses("--draft")
 
     def test_a_missing_probe_file_or_another_day_fails(self):
@@ -811,8 +846,17 @@ class Draft(Scratch):
         labels = SC.section_labels(lines)
         self.assertTrue(any(BLANK in l for l, s in zip(lines, labels) if s == "13"))   # §13 names the token
         blank12 = {FEE_LINE.split("`")[0]: FEE_LINE, REBUILD.split("`")[0]: REBUILD, SEAL_LINE.split("`")[0]: SEAL_LINE}
+        p2, p3 = self.products[1:3]
+        ticks = {p: str(config.TICK_P[p]) for p in (p2, p3)}
+        atoms = {p: f"{config.LIQ_ATOMS[p][0]}, {config.LIQ_ATOMS[p][1]}" for p in (p2, p3)}
+        text = text.replace("Products: `SOL-USD`, `________`, `________`.", f"Products: `SOL-USD`, `{p2}`, `{p3}`.")
+        text = re.sub(r"`TICK_p`:(\s*)`<P2>` `________`, `<P3>` `________`\. Atoms \(a10, a90\): `<P2>` `________`, `<P3>` `________`\.",
+                      lambda m: f"`TICK_p`:{m.group(1)}`{p2}` `{ticks[p2]}`, `{p3}` `{ticks[p3]}`. Atoms (a10, a90): `{p2}` `{atoms[p2]}`,"
+                                f" `{p3}` `{atoms[p3]}`.", text)
+        lines = text.split("\n")
+
         def written(l):                                                  # §1's `__` counts and §2's `<P2>`/`<P3>` too
-            return l.replace(BLANK, "X").replace("`__`", "`31`").replace("`<P2>`", "`ETH-USD`").replace("`<P3>`", "`XRP-USD`")
+            return l.replace(BLANK, "X").replace("`__`", "`31`").replace("`<P2>`", f"`{p2}`").replace("`<P3>`", f"`{p3}`")
         pre = "\n".join(written(l) if s not in ("12", "13", "14") else    # §12 blank again once it is filled
                         next((v for k, v in blank12.items() if s == "12" and l.startswith(k)), l) for l, s in zip(lines, labels))
         self.write("PREREG-v2.md", pre)

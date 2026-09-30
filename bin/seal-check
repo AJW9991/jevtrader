@@ -77,6 +77,9 @@ The seal (no flag) exits 0 only when all of §13's five hold:
 - D stands by bin/probe's own day verdict on those rows (its read_rows, transport_failed and day_verdict, as `bin/probe
   summarize` reads them): a void D "becomes the next UTC day, once, named in §14", so a §14 entry that moves D while §2
   still names the void day is refused here rather than passed on the void day's directory;
+- §2's pre-tag fields are what the tree runs: its Products line is config.PRODUCTS (loop.dash.read_products_v2, in
+  order), and its `TICK_p` and `Atoms (a10, a90)` fields give each added product config.TICK_P's value and
+  config.LIQ_ATOMS's two numbers;
 - prompts/v2.table.<p>.json is in HEAD for every p in config.PRODUCTS and reads as prompts.table reads it;
 - PREREG-v2.md in HEAD is the tag prereg-v2-doc's, or §14 no longer reads "(none yet)" (no such tag: refused, since
   nothing can be compared).
@@ -110,6 +113,8 @@ UNWRITTEN = re.compile(r"________|`_{2,}`|`<P\d+>`")   # --draft: a blank, §1's
 REBUILD_LINE = "Tables rebuilt at the switch:"
 NO_FIELD_SECTIONS = ("12", "13", "14")      # --draft: §12 keeps its blanks, §13 names the token, §14 is the log
 PROBE_DAY_RE = re.compile(r"\*\*D = (\d{4}-\d{2}-\d{2})\*\*")
+S2_TICKS = re.compile(r"`TICK_p`:\s*(.*?)\.\s+Atoms \(a10, a90\):\s*(.*?)\.(?:\s|$)", re.S)   # §2's two field runs
+S2_PAIR = re.compile(r"`([^`\n]*)`\s*`([^`\n]*)`")                                       # `<product>` `<value>`
 DEVIATIONS_RE = re.compile(r"^(#{1,6}) .*\bv2 deviations\b", re.I)
 COMMIT_CELL = re.compile(r"[0-9a-f]{7,40}")
 PRODUCT_NAME = re.compile(r"[A-Z0-9]{2,12}-[A-Z]{3,5}")      # a run.json candidate, joined into a path (bin/probe's form)
@@ -557,6 +562,43 @@ def judge(repo, tree, products, rev="HEAD"):
     return bad
 
 
+def section2_config(text, products):
+    """--draft: why §2's pre-tag fields (Products, TICK_p, atoms) are not what config holds, one reason a line; empty when
+    they are. The tree tests, pins and runs config.PRODUCTS, config.TICK_P and config.LIQ_ATOMS; §2 writes the probe's
+    choice before the tag; nothing else held the two to each other (2026-09-29 lens-5 review: §2 naming DOGE and AVAX
+    passed with config holding ETH and XRP)."""
+    why = []
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, PREREG)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        try:
+            named = dash.read_products_v2(path)
+        except ValueError as e:
+            return [str(e)]
+    if named is None:
+        return [f"§2's Products line still holds a blank"]
+    if tuple(named) != tuple(products):
+        why.append(f"§2's Products line names {', '.join(named)}; config.PRODUCTS is {', '.join(products)}")
+    m = S2_TICKS.search(" ".join(section(text, 2).split()))
+    ticks, atoms = ({a: b.strip() for a, b in S2_PAIR.findall(m.group(1))},
+                    {a: b.strip() for a, b in S2_PAIR.findall(m.group(2))}) if m else ({}, {})
+    for p in products:
+        if p == config.PRODUCT:
+            continue
+        t, a = ticks.get(p), atoms.get(p)
+        try:
+            ok_t = t is not None and float(t) == config.TICK_P.get(p)
+        except ValueError:
+            ok_t = False
+        if not ok_t:
+            why.append(f"§2's TICK_p for {p} is {t!r}; config.TICK_P holds {config.TICK_P.get(p)!r}")
+        nums = tuple(int(x) for x in re.findall(r"\d+", a or ""))
+        if nums != tuple(config.LIQ_ATOMS.get(p) or ()):
+            why.append(f"§2's atoms (a10, a90) for {p} are {a!r}; config.LIQ_ATOMS holds {config.LIQ_ATOMS.get(p)!r}")
+    return why
+
+
 def _probe_tool():
     """bin/probe as a module, for its day verdict (no bytecode written beside it; its run and volume lock, never taken
     here, are what a running probe holds)."""
@@ -710,6 +752,9 @@ def draft(repo, products, out):
         verdict("blanks", not left, f"no {BLANK}, `__` or `<P2>`/`<P3>` outside §12 (searched: the header and §0-§11; §13"
                 " names the token and §14 is the amendment log)" if not left else
                 f"{BLANK}, `__` or `<P2>`/`<P3>` remains outside §12 at " + ", ".join(left))
+    why2 = section2_config(text, products)
+    verdict("§2", not why2, "§2's Products, TICK_p and atoms are config.PRODUCTS, config.TICK_P and config.LIQ_ATOMS"
+            if not why2 else "; ".join(why2))
     m = PROBE_DAY_RE.search(section(text, 2))
     if m is None:
         verdict("probe", False, f"§2 of {PREREG} names no day as **D = YYYY-MM-DD**")
