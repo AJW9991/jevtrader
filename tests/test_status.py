@@ -228,7 +228,8 @@ class Status(unittest.TestCase):
                                           "--now", "2026-09-23T10:42"]), 0)
         out = buf.getvalue()
         self.assertNotIn("UNREADABLE", out)
-        self.assertIn(f"spend $0.0000 of the ${config.DAILY_SPEND_HALT_USD:g} tripwire (as the guard counts it)", out)
+        self.assertIn(f"spend $0.0000 of the ${config.DAILY_SPEND_HALT_USD:g} tripwire " + ("(as the guard counts it)" if
+                      len(config.PRODUCTS) == 1 else "on this log, "), out)
 
     def test_an_unreadable_log_is_named_not_a_traceback(self):
         # a 0200 log (write_row still appends to it) or a directory: the spend guard trips on it, and
@@ -256,6 +257,23 @@ class Status(unittest.TestCase):
         today = [l for l in text.splitlines() if l.startswith("today ")]
         self.assertEqual(len(today), 1, text)
         return today[0]
+
+    def test_with_several_products_this_logs_spend_is_not_the_guards(self):
+        # PREREG-v2 §2: one tripwire over every product's log. v1's screen printed one log's spend "of the $0.75 tripwire
+        # (as the guard counts it)" while the guard counted every log (2026-09-29 lens-3 review); with one product the
+        # line is v1's, unchanged (test_last_row_today_sample_and_per_day)
+        data = os.path.join(self.tmp, "three")
+        products = add_products(self, 3)
+        with mock.patch.object(config, "DATA", data), mock.patch.object(config, "DECISIONS", os.path.join(data, "decisions.jsonl")):
+            for p in products:
+                os.makedirs(os.path.dirname(config.store(p).decisions), exist_ok=True)
+                shutil.copy(self.log, config.store(p).decisions)
+            text = self._render("2026-09-23T10:42")
+            total = cycle.spend_today(_now("2026-09-23T10:42").timestamp())
+        self.assertAlmostEqual(total, 3 * cycle.spend_today(_now("2026-09-23T10:42").timestamp(), self.log))
+        self.assertIn(f"; spend $0.0016 of the ${config.DAILY_SPEND_HALT_USD:g} tripwire on this log, ${total:.4f} over every"
+                      " product's log (what the guard counts)", text)
+        self.assertNotIn("(as the guard counts it)", text)
 
     def test_a_token_count_past_a_floats_range_is_named_on_the_today_line(self):
         # the spend UNCOUNTED branch had no test: without it the line printed float max as a 309-digit

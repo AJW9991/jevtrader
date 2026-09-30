@@ -75,12 +75,22 @@ def _today_line(rows, now, log):
     absent = collections.Counter(r["absence"] for r in today if r.get("absence"))
     usd = cycle.spend_today(now.timestamp(), log)          # a missing log is $0 there; an unreadable one is inf
     elapsed = max(1, int((now - now.replace(hour=0, minute=0, second=0, microsecond=0)).total_seconds() // config.CADENCE_S))
-    return (f"today {now.strftime('%Y-%m-%d')}Z: {len(today)} rows in {elapsed} min ({100.0 * len(today) / elapsed:.0f}%), live answered {live},"
-            f" absence " + (", ".join(f"{k} {v}" for k, v in sorted(absent.items())) or "none")
-            + (f"; spend UNREADABLE: the log cannot be read, so the next tick's guard trips (HALT) rather than count it" if usd == float("inf")
-               else f"; spend UNCOUNTED: a token count today, or today's sum of them, is past a float's range, so the next tick's guard"
-                    " trips (HALT)" if usd == cycle.SPEND_UNCOUNTED
-               else f"; spend ${usd:.4f} of the ${config.DAILY_SPEND_HALT_USD:g} tripwire (as the guard counts it)"))
+    head = (f"today {now.strftime('%Y-%m-%d')}Z: {len(today)} rows in {elapsed} min ({100.0 * len(today) / elapsed:.0f}%), live answered {live},"
+            f" absence " + (", ".join(f"{k} {v}" for k, v in sorted(absent.items())) or "none"))
+    if usd == float("inf"):
+        return head + "; spend UNREADABLE: the log cannot be read, so the next tick's guard trips (HALT) rather than count it"
+    if usd == cycle.SPEND_UNCOUNTED:
+        return head + ("; spend UNCOUNTED: a token count today, or today's sum of them, is past a float's range, so the next"
+                       " tick's guard trips (HALT)")
+    if len(config.PRODUCTS) == 1:                            # v1's one log is what the guard counts: the line as it was
+        return head + f"; spend ${usd:.4f} of the ${config.DAILY_SPEND_HALT_USD:g} tripwire (as the guard counts it)"
+    # PREREG-v2 §2: one tripwire over every product's log, so this log's dollars are not what the guard compares
+    # (2026-09-29 lens-3 review: "$0.0001 of the $0.75 tripwire (as the guard counts it)" beside a guard counting $0.0002)
+    total = cycle.spend_today(now.timestamp())
+    return head + f"; spend ${usd:.4f} of the ${config.DAILY_SPEND_HALT_USD:g} tripwire on this log, " + (
+        "UNREADABLE over every product's log (one cannot be read), so the next tick's guard trips (HALT)" if total == float("inf") else
+        "UNCOUNTED over every product's log (past a float's range), so the next tick's guard trips (HALT)"
+        if total == cycle.SPEND_UNCOUNTED else f"${total:.4f} over every product's log (what the guard counts)")
 
 
 def _sample_line(t0, now):
