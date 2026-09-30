@@ -36,7 +36,7 @@ FILES = {                                            # sha256 of the bytes on di
     "SPEC.md": "4ce2c3138e478c3aadaa5401a2dc8d1b615c5f0e4ea81983215767e7bbc303b9",   # SPEC v2 (PREREG-v2 §10), 2026-09-29;
                                                  # v1's 5d4f355e... stays in prereg-v1 (V1_FILES)
     "CONTRACT.md": "51568f285e5a7c285d7d0b0e39237d0afca4ddaf4e0fba9e667332c3f7b6f5f8",   # v2's interfaces, 2026-09-29
-    "PREREG-v2.md": "0b417be4cc2f4555ab004f2187bb6eab3f487c33785aa26c3c05d6a451e602e6",
+    "PREREG-v2.md": "d2d60068cba7fa2df544ee694b55e6921c60f1454b2f9601ab2028b40a1fc9b2",
     "PREREG.md": "28dab0a9cba8bb21a596fe06f3a19302476f42e3efbbe40b41480898266b7882",
     "nightly/PROMPT.md": "7ebcd64071700b6da578078e5eec10a846a56852a3c6de54bfd7ce8d786a1e50",   # v2 text (PREREG-v2 §8), 2026-09-29;
                                                  # v1's d20cc08e... stays in prereg-v1 (V1_FILES)

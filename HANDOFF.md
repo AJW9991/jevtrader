@@ -50,6 +50,16 @@ nothing is pending there; its record of what the branch changed is kept below un
   its header and, per candidate, the "where it changes CURRENT's answer" block. On the 09-27 stall:
   tonight's call is the first without the repo as its cwd (no git status, no commit subjects, no repo
   CLAUDE.md in its context), so a stall tonight would rule the repo context out altogether.
+- **Night of 2026-09-29 08:30Z (the first under the pulled code), recorded 2026-09-29 20:05Z** against the
+  bullet above, from logs/propose.log alone (the proposal's rationale was not read: PREREG-v2's header rule):
+  `claude cwd .../jevloop-claude.8HFLVa (empty); user memory ~/.claude/CLAUDE.md sha256 46b9c7b01623; cli
+  2.1.261 (Claude Code)` — matched; `claude exit 0 after 44 s` — no stall (the 09-27 hang did not recur on the
+  first empty-cwd night; one night says little); `claude model claude-sonnet-5 (read from the CLI's transcript
+  of this call, which names no model)` — recorded as the log prints it; `proposals/2026-09-28.{json,md}` written,
+  81/81 answered, the table's header reads `proposal written by: claude-sonnet-5`; dash rebuilt (5,723 rows, 0
+  skipped). Decision 1's context change dates from this night; decision 4 (recorded, not pinned) is in force.
+  PREREG-v2 §8 takes `claude-sonnet-5` as the pinned id (§14). The 04:21-local one-shot that was to do this never
+  fired (the session was not idle); done by hand.
 - Added this session: ERRATA.md SPEC §10 row for the **verified venue fee: 90 bps taker** (Alex,
   in-account, 2026-09-27 ~22:55Z; tier Intro, maker 0.50 %); `config.FEE_BPS_VENUE` stays 120
   through the sample (the digest prints pnl at it; the treatment). `AGENTS.md -> CLAUDE.md`.
@@ -106,7 +116,13 @@ tags; §14 logs every edit after the doc tag. The code is built in the worktree
 `bin/probe run` from the worktree under `caffeinate -i`, public GETs only, 1 req/s, nothing under
 data/. **Alex's blanks before the draft tag:** the header's disclosure line (did he open a digest or
 nightly transcript directly before 09-29), the probe approval date (§2). The model id fills §8 from
-the 2026-09-29 08:30Z night's `claude model` line.
+the 2026-09-29 08:30Z night's `claude model` line. **Probe armed 2026-09-29 ~07:40Z** (Alex approved
+~07:00Z; Claude started it): `caffeinate -i python3 bin/probe run --day 2026-09-30 --out probe/2026-09-30` from
+the worktree, sleeping until 00:00:30Z 09-30, then one row per candidate per minute until the day ends;
+`bin/probe volume --day 2026-09-30` on 10-01, then `summarize`. **The §10 build runs as a seven-stage Opus
+workflow in the worktree** (tick → readers → inference → nightly → tools → docs+pins → whole-branch verify),
+each stage built, refuted and fixed; its choices land in §14 and its commits on branch `prereg-v2` (pushed by
+the Mac session; CI runs on every push). Alex's disclosure and probe-approval blanks are filled (§14).
 
 ## Approved 2026-09-28 ("approved for recommended on all")
 - The nightly model is recorded, not pinned: decision 4.
