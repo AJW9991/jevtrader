@@ -24,6 +24,7 @@ follows; fix the sentence), **gap** (the document is silent where the code decid
 | §8.3 | Jev error share: rows with `absence: "jev"` over rows that "reached the ask" | Every `jev` row counts on both sides, `no-key`, `ledger` and `unsigned` included (raised inside `jev.ask`); the other reading (SPEC §13.3's "reached the model") would make a day of `no-key` 0/0 and never BAD | gap |
 | §8.3 | Stop rule 3 marks days BAD | The exclusions file decides and is applied as written; since 2026-09-28 the day-28 output recomputes the rule from the log beside it and names any day listed but not BAD, or BAD but not listed | gap |
 | §5 | The last block's H2 unit needs its t + h row | `loop.inference --sample` refuses (exit 3) until that row is in the log: ~30 s after the end normally, up to ~15.5 min at worst; `--accept-pending` counts the missing ones as gaps and says so | gap |
+| §8.1 | Stop rule 1's model arms kept "only if a second pre-registration wants them" | `make results` refuses (exit 3) before the run unless the annotated tag `prereg-v2-draft` exists and is an ancestor of `prereg-v2` (PREREG-v2 §0, §10: the second pre-registration is frozen before v1 is read); `make results NO_V2=1` runs it anyway and writes "v2 draft tag absent: v2 as drafted is not run; a second block is a new pre-registration written after v1 was read" into RESULTS.md, whose header otherwise carries the tag's sha (`bin/results-v1`). Tooling only: nothing of §4–§5 changes | gap |
 
 ## SPEC.md
 
@@ -78,3 +79,19 @@ From the night a merge of this branch is pulled onto the Mac, the one `claude -p
 from an empty temporary directory, so the repo's CLAUDE.md and the CLI's per-project state no
 longer reach the slow model; `~/.claude/CLAUDE.md` still loads and its sha is logged. That
 date is a change of the treatment's context and belongs in the write-up (HANDOFF.md decision 1).
+
+## v2 deviations (PREREG-v2 §13: fixes between `prereg-v2-draft` and the seal that §13 (c) does not cover)
+
+Each fix is its own commit and one row here, added at the end: the commit (7 to 40 hex digits), what it fixes, and why
+§13 (c) does not cover it. `bin/seal-check` takes each listed commit's diff out of HEAD before it judges the rest, and
+prints it; RESULTS-v2 §0 reproduces it. A deviation that touches `at_cadence`, `replay`/`paired`, inference, the pooling
+or exclusion readers, `rule_c`, the alphabet or its cuts, PROMPT.md v2, the digest or promote's schedule voids the draft
+tag. Rows under this heading are read as deviations until the next heading of its level; any other addition after the
+draft tag goes under a heading of its own. Main adds at the end of this file after the draft tag (§13), so this table
+stops being the end: a row added after such an addition goes at the end of the file under a new heading
+`## v2 deviations (continued)` with this table's header row (§13 (c) allows only additions at the end, and
+`bin/seal-check` reads every heading that holds "v2 deviations"). A fix main needs before switch step (6) is listed the
+same way, from main.
+
+| Commit | What it fixes | Why outside §13 (c) |
+|---|---|---|
