@@ -9,6 +9,38 @@ the off-machine copy of the code and for CI; push after a commit, expect no clou
 The cloud session of 2026-09-28 (branch `claude/cool-lamport-7sirtw`) is fully merged at 183db6b and
 nothing is pending there; its record of what the branch changed is kept below unchanged.
 
+## 2026-10-26: the loop stopped at d22, the plists are off, v1 is unread (Alex)
+The baton block was retired on 2026-10-26 (now `~/Projects/Claude/state/retired/jev-paper-loop.md`).
+Until a new block opens, this section is where the project stands.
+- **What stopped it.** The repo was moved from `~/Projects/jev-paper-loop` to `~/Projects/JEV/jev-paper-loop`
+  between 2026-10-17 05:07Z and 05:08Z. The plists kept the old path, so launchd recreated an empty
+  `~/Projects/jev-paper-loop/logs/` and logged only errors there. After that, every minute the loop exited 1
+  (`No module named 'loop'`), and nightly and backup exited 127 (script missing). The last good loop row is
+  20261017T050700Z (heartbeat 05:07:03Z). The last good night was 2026-10-16 08:30Z
+  (`proposals/2026-10-15.json`). The Mac stayed awake throughout: the new loop log has one line per minute.
+- **The plists are off.** Alex ran `launchctl bootout` and `launchctl disable` on all three jevloop jobs on
+  2026-10-26 (~02:30Z). Afterwards `launchctl list` showed only `com.alexward.jev.canary` (JEV's, not touched).
+  The plist files are still in `~/Library/LaunchAgents`; `launchctl enable` undoes the disable.
+- **The backup is done (decision 9 closed).** The hourly job never succeeded: TCC refusals until 10-17,
+  then 127. Alex ran `make backup` by hand: `2026-10-26T02:32:34Z backup OK decisions.jsonl 64310097
+  bytes` to iCloud `jevtrader-backup`. That is the full v1 log; nothing more will be added to it.
+- **v1's sample: 22 days kept, so it is not void.** `make health` on 2026-10-26: BAD days 0 in d01–d22
+  (lowest fill d01 95.2 %, highest jev-err d03 0.6 %). d22 has 433 of 448 rows filled; its other 15 never
+  get an outcome because the loop stopped, and it is 96.7 % even counting them as gaps. d23–d28 have no live
+  rows and are excluded whole under decision 2.
+- **Not done (Alex's).** `data/exclusions.tsv` is not written. These lines pass `loop/exclusions.py`:
+  header `day<TAB>fill%<TAB>jev-err%<TAB>reason`, then one per day,
+  `d23<TAB>n/a<TAB>n/a<TAB>NO LIVE ROWS: the plists named the old repo path after the move at 2026-10-17 05:07Z`,
+  and likewise for d24–d28.
+- **v1 stays unread (Alex, 2026-10-26: "don't read v1 yet").** `make results` refuses without the tag
+  `prereg-v2-draft`, which was never made: the v2 build stopped after 2026-09-29, with no probe write-up,
+  tables or trial night. Reading v1 later means writing the exclusions file, then `make results NO_V2=1`.
+  NO_V2=1 records in RESULTS.md that v2 as drafted is not run; any second block is then a new
+  pre-registration.
+- **Left as found.** Git's link to the `prereg-v2` worktree (now `~/Projects/JEV/jev-paper-loop-v2`) is
+  broken in both directions, and `git worktree list` marks it prunable. `git worktree repair` fixes it;
+  `git worktree prune` would drop it. The recreated `~/Projects/jev-paper-loop` holds only error logs.
+
 ## State
 - **The Mac runs 183db6b since 2026-09-28 21:31:50Z.** `git pull --ff-only` between ticks (heartbeat
   21:31:06Z, next tick 21:32:00Z wrote its row; no traceback); `make test` on the Mac: 836 tests,
@@ -95,7 +127,8 @@ nothing is pending there; its record of what the branch changed is kept below un
    launchd job the iCloud folder (`rsync: open: Operation not permitted`), the terminal has the grant. STEPS
    §9 has the two ways out: Full Disk Access for `/usr/bin/rsync` then `launchctl kickstart`, or a daily
    `make backup` beside `make status` and bootout the hourly job. Until one is done the job writes a FAIL
-   line every hour and the iCloud copy is the 04:12Z one.
+   line every hour and the iCloud copy is the 04:12Z one. **Closed 2026-10-26:** the job was booted out,
+   and Alex's `make backup` copied the whole v1 log (64,310,097 bytes); see the 2026-10-26 section above.
 
 ## Prereg-v2 (drafted 2026-09-29, blind by procedure; Alex: "approved for all recommended choices")
 `PREREG-v2.md` is the second block's pre-registration; tag `prereg-v2-doc` (467cda4) marks the text
