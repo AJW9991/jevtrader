@@ -9,7 +9,7 @@ the off-machine copy of the code and for CI; push after a commit, expect no clou
 The cloud session of 2026-09-28 (branch `claude/cool-lamport-7sirtw`) is fully merged at 183db6b and
 nothing is pending there; its record of what the branch changed is kept below unchanged.
 
-## 2026-10-26: the loop stopped at d22, the plists are off, v1 is unread (Alex)
+## 2026-10-26: the loop stopped at d22, the plists are off, v1 read: no hypothesis holds (Alex)
 The baton block was retired on 2026-10-26 (now `~/Projects/Claude/state/retired/jev-paper-loop.md`).
 Until a new block opens, this section is where the project stands.
 - **What stopped it.** The repo was moved from `~/Projects/jev-paper-loop` to `~/Projects/JEV/jev-paper-loop`
@@ -28,15 +28,21 @@ Until a new block opens, this section is where the project stands.
   (lowest fill d01 95.2 %, highest jev-err d03 0.6 %). d22 has 433 of 448 rows filled; its other 15 never
   get an outcome because the loop stopped, and it is 96.7 % even counting them as gaps. d23–d28 have no live
   rows and are excluded whole under decision 2.
-- **Not done (Alex's).** `data/exclusions.tsv` is not written. These lines pass `loop/exclusions.py`:
-  header `day<TAB>fill%<TAB>jev-err%<TAB>reason`, then one per day,
-  `d23<TAB>n/a<TAB>n/a<TAB>NO LIVE ROWS: the plists named the old repo path after the move at 2026-10-17 05:07Z`,
-  and likewise for d24–d28.
-- **v1 stays unread (Alex, 2026-10-26: "don't read v1 yet").** `make results` refuses without the tag
-  `prereg-v2-draft`, which was never made: the v2 build stopped after 2026-09-29, with no probe write-up,
-  tables or trial night. Reading v1 later means writing the exclusions file, then `make results NO_V2=1`.
-  NO_V2=1 records in RESULTS.md that v2 as drafted is not run; any second block is then a new
-  pre-registration.
+- **The exclusions.** Alex wrote `data/exclusions.tsv` on 2026-10-26: d23–d28, `n/a n/a NO LIVE ROWS`.
+- **v1 has been read (Alex approved, 2026-10-26 02:44Z): no hypothesis holds; stop rules 1 and 2 fire.**
+  Full text in `RESULTS.md`. It was run as `make results NO_V2=1`'s command plus `--accept-pending`
+  (ERRATA §5: "a log that really stopped"), which counts the one H2 unit at 20261017T045500Z as a gap.
+  `prereg-v2-draft` was never made, so RESULTS.md records that v2 as drafted is not run; any second
+  block is a new pre-registration. Over 22 kept days, 2,112 blocks, gross of fees:
+  - **H1, B−C:** −0.28 bps, lower bound −0.81, not rejected.
+  - **A−C:** exactly 0. Arm A disagreed with rule C in 0 blocks (797 trades each), so the frozen prompt
+    reproduced the rule.
+  - **B−A:** −0.28 bps, so stop rule 2 fires. B disagreed with A in 18.1 % of blocks, at −1.52 bps on those.
+  - **H2:** r −0.013 over 1,969 units, lower bound −0.068, not rejected. Brier on up15/down15 is worse
+    than the base rate.
+  - **Stop rule 3:** BAD by the rule none; d22 is open (the log ends inside it).
+
+  RESULTS.md's §9 lines say "these 28 days" (the template's wording); the days actually kept are 22.
 - **Left as found.** Git's link to the `prereg-v2` worktree (now `~/Projects/JEV/jev-paper-loop-v2`) is
   broken in both directions, and `git worktree list` marks it prunable. `git worktree repair` fixes it;
   `git worktree prune` would drop it. The recreated `~/Projects/jev-paper-loop` holds only error logs.
